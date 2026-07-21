@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { WebSocketServer, WebSocket } from "ws";
 
 dotenv.config();
 
@@ -688,6 +689,24 @@ app.post("/api/import-playlist", async (req, res) => {
   }
 });
 
+// In-memory store for connected multi-device rooms
+interface RoomState {
+  roomCode: string;
+  clients: { id: string; role: string; name: string }[];
+  isPlaying: boolean;
+  audioVolume: number;
+  alignmentScore: number;
+  deckA: any;
+  deckB: any;
+  kaoss: any;
+  sampler: any;
+  crossfader: number;
+  automix: any;
+  tracks: any[];
+}
+
+const rooms: Record<string, RoomState> = {};
+
 // Setup Vite as development middleware or static serving in production
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -706,9 +725,171 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Attach WebSocket Server for multi-device sync
+  const wss = new WebSocketServer({ server: httpServer });
+
+  wss.on("connection", (ws: any) => {
+    let currentRoom: string | null = null;
+    let clientId = Math.random().toString(36).substring(2, 9);
+    let clientRole = "all";
+    let clientName = `Device-${clientId.substring(0, 4)}`;
+
+    ws.on("message", (message: string) => {
+      try {
+        const data = JSON.parse(message);
+        const { type, roomCode } = data;
+
+        if (type === "join") {
+          currentRoom = roomCode.toUpperCase();
+          clientRole = data.role || "all";
+          clientName = data.name || clientName;
+
+          if (!rooms[currentRoom]) {
+            rooms[currentRoom] = {
+              roomCode: currentRoom,
+              clients: [],
+              isPlaying: false,
+              audioVolume: 0.8,
+              alignmentScore: 100,
+              deckA: {
+                track: null,
+                baseBpm: 120,
+                bpm: 120,
+                pitch: 0,
+                phaseOffset: 0,
+                isMuted: false,
+                autoStretch: true,
+                transposeOffset: 0,
+                currentTime: 0,
+                duration: 180,
+                cues: [null, null, null, null],
+              },
+              deckB: {
+                track: null,
+                baseBpm: 120,
+                bpm: 120,
+                pitch: 0,
+                phaseOffset: 0,
+                isMuted: false,
+                autoStretch: true,
+                transposeOffset: 0,
+                currentTime: 0,
+                duration: 180,
+                cues: [null, null, null, null],
+              },
+              kaoss: {
+                x: 0.5,
+                y: 0.5,
+                fxType: "Filter Lowpass",
+                padId: 1
+              },
+              sampler: {
+                activePreset: "Vocal FX",
+                fxType: "delay",
+                pads: [],
+              },
+              crossfader: 0.5,
+              automix: {
+                isAutoMixing: false,
+                currentIndex: 0,
+                timeRemaining: 0,
+                stage: "idle",
+                crossfader: 0.5,
+              },
+              tracks: [],
+            };
+          }
+
+          const room = rooms[currentRoom];
+          room.clients = room.clients.filter(c => c.id !== clientId);
+          room.clients.push({ id: clientId, role: clientRole, name: clientName });
+
+          ws.roomCode = currentRoom;
+          ws.clientId = clientId;
+
+          // Send initial full room state
+          ws.send(JSON.stringify({
+            type: "init_state",
+            clientId,
+            roomState: room
+          }));
+
+          // Broadcast updated client list
+          broadcastToRoom(currentRoom, {
+            type: "clients_updated",
+            clients: room.clients
+          });
+
+          console.log(`[WS Sync] ${clientName} (${clientRole}) joined room ${currentRoom}`);
+        }
+
+        else if (type === "update_state") {
+          if (currentRoom && rooms[currentRoom]) {
+            const room = rooms[currentRoom];
+            if (data.state) {
+              // Standard merge
+              Object.assign(room, data.state);
+            }
+            // Broadcast state to all other clients in the room
+            broadcastToRoom(currentRoom, {
+              type: "state_synced",
+              state: data.state,
+              senderId: clientId
+            }, clientId);
+          }
+        }
+
+        else if (type === "trigger_event") {
+          if (currentRoom) {
+            broadcastToRoom(currentRoom, {
+              type: "event_triggered",
+              event: data.event,
+              payload: data.payload,
+              senderId: clientId
+            }, clientId);
+          }
+        }
+
+        else if (type === "ping") {
+          ws.send(JSON.stringify({ type: "pong" }));
+        }
+      } catch (err) {
+        console.error("[WS ERROR] Error parsing message:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      if (currentRoom && rooms[currentRoom]) {
+        const room = rooms[currentRoom];
+        room.clients = room.clients.filter(c => c.id !== clientId);
+        console.log(`[WS Sync] ${clientName} disconnected from ${currentRoom}`);
+
+        if (room.clients.length === 0) {
+          delete rooms[currentRoom];
+        } else {
+          broadcastToRoom(currentRoom, {
+            type: "clients_updated",
+            clients: room.clients
+          });
+        }
+      }
+    });
+  });
+
+  function broadcastToRoom(roomCode: string, payload: any, excludeClientId?: string) {
+    const json = JSON.stringify(payload);
+    wss.clients.forEach((client: any) => {
+      if (client.roomCode === roomCode && client.readyState === WebSocket.OPEN) {
+        if (!excludeClientId || client.clientId !== excludeClientId) {
+          client.send(json);
+        }
+      }
+    });
+  }
 }
 
 startServer();

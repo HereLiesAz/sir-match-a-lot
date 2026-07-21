@@ -1,6 +1,8 @@
 {
-  "name": "Sir Match-a-Lot",
+  "name": "Remix: Sir Match-a-Lot",
   "description": "Analyze song tempos, keys, note progressions, and atmospheres using Gemini AI. Generate harmonic mix recommendations, calculate match scores, and practice manual beatmatching with an interactive, visual beatgrid alignment tool.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

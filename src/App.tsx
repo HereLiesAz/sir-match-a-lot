@@ -11,6 +11,7 @@ export default function App() {
   // Application State
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedCrate, setSelectedCrate] = useState<string>("Tech House & Club Grooves");
+  const [librarySort, setLibrarySort] = useState<"default" | "camelot-proximity">("default");
   
   // Track inputs & search
   const [searchQuery, setSearchQuery] = useState("");
@@ -227,12 +228,40 @@ export default function App() {
 
   // Load initial crate on mount
   useEffect(() => {
-    setTracks(MOCK_DJ_CRATES[selectedCrate]);
-    // Pre-load default decks from the crate
-    const crateTracks = MOCK_DJ_CRATES[selectedCrate];
-    if (crateTracks.length >= 2) {
-      setDeckATrack(crateTracks[0]);
-      setDeckBTrack(crateTracks[1]);
+    const params = new URLSearchParams(window.location.search);
+    const deckATrackId = params.get("deckATrackId");
+    const deckBTrackId = params.get("deckBTrackId");
+
+    let foundCrateName = selectedCrate;
+    let trackA: Track | null = null;
+    let trackB: Track | null = null;
+
+    if (deckATrackId || deckBTrackId) {
+      // Find track across crates
+      for (const [crateName, crateTracks] of Object.entries(MOCK_DJ_CRATES)) {
+        const matchA = deckATrackId ? crateTracks.find(t => t.id === deckATrackId) : null;
+        const matchB = deckBTrackId ? crateTracks.find(t => t.id === deckBTrackId) : null;
+        if (matchA) trackA = matchA;
+        if (matchB) trackB = matchB;
+        if (matchA || matchB) {
+          foundCrateName = crateName;
+        }
+      }
+    }
+
+    if (trackA || trackB) {
+      setSelectedCrate(foundCrateName);
+      setTracks(MOCK_DJ_CRATES[foundCrateName]);
+      setDeckATrack(trackA);
+      setDeckBTrack(trackB);
+      setActiveTab("decks");
+    } else {
+      setTracks(MOCK_DJ_CRATES[selectedCrate]);
+      const crateTracks = MOCK_DJ_CRATES[selectedCrate];
+      if (crateTracks.length >= 2) {
+        setDeckATrack(crateTracks[0]);
+        setDeckBTrack(crateTracks[1]);
+      }
     }
   }, []);
 
@@ -406,6 +435,40 @@ export default function App() {
       track.atmosphere.toLowerCase().includes(q)
     );
   });
+
+  // Helper to calculate circular distance on the Camelot wheel (proximity metric)
+  const getCamelotDistance = (camelotA: string, camelotB: string): number => {
+    const parse = (camelot: string) => {
+      const match = camelot.trim().match(/^(\d+)([ABab])$/);
+      if (!match) return null;
+      return {
+        number: parseInt(match[1], 10),
+        mode: match[2].toUpperCase(),
+      };
+    };
+
+    const cA = parse(camelotA);
+    const cB = parse(camelotB);
+    if (!cA || !cB) return 999;
+
+    const numDiff = Math.abs(cA.number - cB.number);
+    const dN = Math.min(numDiff, 12 - numDiff);
+    const dM = cA.mode === cB.mode ? 0 : 1;
+
+    return dN + dM;
+  };
+
+  // Sort and filter tracks for rendering
+  const displayedTracks = librarySort === "camelot-proximity" && deckATrack
+    ? [...filteredTracks].sort((a, b) => {
+        const distA = getCamelotDistance(deckATrack.camelotKey, a.camelotKey);
+        const distB = getCamelotDistance(deckATrack.camelotKey, b.camelotKey);
+        if (distA === distB) {
+          return a.title.localeCompare(b.title);
+        }
+        return distA - distB;
+      })
+    : filteredTracks;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-cyan-500 selection:text-black">
@@ -777,15 +840,56 @@ export default function App() {
                   </div>
                 )}
 
-              {tracks.length === 0 ? (
-                <div className="text-center py-12 border border-dashed border-zinc-800 rounded-lg text-zinc-500 space-y-2">
-                  <Music className="mx-auto text-zinc-600" size={28} />
-                  <p className="text-xs font-medium">Your DJ crate is empty.</p>
-                  <p className="text-4xs">Search for a song or load a preset crate above.</p>
-                </div>
-              ) : (
-                <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
-                  {tracks.map((track) => {
+                {/* Dropdown sort selector */}
+                {filteredTracks.length > 0 && (
+                  <div className="flex flex-col gap-1.5 bg-zinc-950/40 p-3 rounded-lg border border-zinc-850/60 text-2xs animate-fade-in space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="library-sort-select" className="text-4xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-1">
+                        <Sliders size={10} className="text-cyan-400" />
+                        Sort Tracks By
+                      </label>
+                      {librarySort === "camelot-proximity" && deckATrack && (
+                        <span className="text-5xs bg-cyan-950/45 text-cyan-400 border border-cyan-900 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider font-mono">
+                          Proximity Active
+                        </span>
+                      )}
+                    </div>
+                    <select
+                      id="library-sort-select"
+                      value={librarySort}
+                      onChange={(e) => setLibrarySort(e.target.value as any)}
+                      className="w-full bg-zinc-950 border border-zinc-850 hover:border-zinc-800 rounded px-2 py-1.5 text-2xs text-zinc-300 focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
+                    >
+                      <option value="default">Default Crate Order</option>
+                      <option value="camelot-proximity">
+                        Camelot Key Proximity {deckATrack ? `(Relative to A: ${deckATrack.camelotKey})` : "(Requires Deck A)"}
+                      </option>
+                    </select>
+
+                    {librarySort === "camelot-proximity" && !deckATrack && (
+                      <div className="flex items-center gap-1.5 bg-amber-950/20 border border-amber-900/50 p-2 rounded text-amber-400 text-3xs mt-1 animate-fade-in">
+                        <AlertCircle size={10} className="shrink-0 animate-pulse" />
+                        <span>Please load a track into Deck A to sort by key proximity.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+ 
+               {tracks.length === 0 ? (
+                 <div className="text-center py-12 border border-dashed border-zinc-800 rounded-lg text-zinc-500 space-y-2">
+                   <Music className="mx-auto text-zinc-600" size={28} />
+                   <p className="text-xs font-medium">Your DJ crate is empty.</p>
+                   <p className="text-4xs">Search for a song or load a preset crate above.</p>
+                 </div>
+               ) : displayedTracks.length === 0 ? (
+                 <div className="text-center py-12 border border-dashed border-zinc-800 rounded-lg text-zinc-500 space-y-2">
+                   <Search className="mx-auto text-zinc-600" size={28} />
+                   <p className="text-xs font-medium">No matching tracks found.</p>
+                   <p className="text-4xs">Try clearing your search query or choosing a different crate.</p>
+                 </div>
+               ) : (
+                 <div className="space-y-3 max-h-[440px] overflow-y-auto pr-1">
+                   {displayedTracks.map((track) => {
                     const isLoadedA = deckATrack?.id === track.id;
                     const isLoadedB = deckBTrack?.id === track.id;
                     const isExpanded = expandedTracks[track.id] || false;
