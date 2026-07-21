@@ -1,0 +1,42 @@
+name: Dependency Graph
+
+# Submit ONLY the app's shipped (release runtime) dependencies to GitHub's dependency graph, so
+# Dependabot scans what actually ends up in the APK/AAB. Gradle's automatic dependency submission
+# resolves *every* classpath — including the build-tooling / plugin classpath — which drags in
+# transitive libraries (e.g. Netty via the Android Gradle Plugin) that are never shipped and only
+# create false-positive alerts. Scoping to `releaseRuntimeClasspath` excludes those.
+#
+# IMPORTANT: turn OFF the repository's "Automatic dependency submission" setting
+# (Settings -> Code security -> Dependency graph) so this scoped submission is the only one;
+# otherwise the automatic one keeps re-adding the build-tooling dependencies.
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependency-graph-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-submission:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Submit dependency graph
+        uses: gradle/actions/dependency-submission@v4
+        env:
+          # Report only the shipped release runtime classpaths; skip buildscript / plugin classpaths
+          # (named "classpath") so build-time-only transitives aren't flagged by Dependabot.
+          DEPENDENCY_GRAPH_INCLUDE_CONFIGURATIONS: "^releaseRuntimeClasspath$"

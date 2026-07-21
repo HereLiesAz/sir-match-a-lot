@@ -1,0 +1,236 @@
+name: Publish to Google Play
+
+# Manual, safe-by-default publishing of a signed App Bundle to the Play Console.
+# Defaults: internal track, draft status, and publish OFF (build + upload the .aab as a CI
+# artifact only) so a dry run never touches Play.
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Play track to release to"
+        type: choice
+        default: internal
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+      status:
+        description: "Release status"
+        type: choice
+        default: draft
+        options:
+          - draft
+          - completed
+      publish:
+        description: "Publish to Play? (off = build + upload the .aab artifact only)"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # write so the post-publish step can push a tag and create a GitHub Release for the APK.
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the commit count (versionCode) is correct.
+          fetch-depth: 0
+
+      - name: Inject Google Services
+        env:
+          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES" ]; then
+            echo "Google Services secret found. Creating google-services.json..."
+            cat <<< "$GOOGLE_SERVICES" > app/google-services.json
+          else
+            echo "Warning: GOOGLE_SERVICES secret not found. Skipping injection."
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Reconstruct the upload keystore from secrets — same scheme as build-and-release.yml.
+      - name: Prepare Keystore from Secrets
+        env:
+          KEYSTORE_PRIVATE: ${{ secrets.KEYSTORE_PRIVATE }}
+          KEYSTORE_RSA: ${{ secrets.KEYSTORE_RSA }}
+          KEYSTORE_CHAIN: ${{ secrets.KEYSTORE_CHAIN }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+          PRIVATE_KEY="${KEYSTORE_PRIVATE:-$KEYSTORE_RSA}"
+
+          if [ -n "$PRIVATE_KEY" ] && [ -n "$KEYSTORE_CHAIN" ]; then
+             echo "Reconstructing Keystore from Secrets..."
+             echo "$PRIVATE_KEY" > private.key
+             echo "$KEYSTORE_CHAIN" > chain.crt
+
+             PASSIN_ARG=""
+             if [ -n "$KEY_PASSWORD" ]; then
+                PASSIN_ARG="-passin env:KEY_PASSWORD"
+             fi
+
+             openssl pkcs12 -export -in chain.crt -inkey private.key -out release.keystore \
+               -name "$KEY_ALIAS" -passout pass:"$KEYSTORE_PASSWORD" $PASSIN_ARG -legacy
+
+             rm -f private.key chain.crt
+
+             echo "Verifying generated keystore..."
+             keytool -list -keystore release.keystore -storepass "$KEYSTORE_PASSWORD" -v
+
+             echo "KEYSTORE_FILE=$(pwd)/release.keystore" >> $GITHUB_ENV
+             # Gradle's release signingConfig reads KEY_PASSWORD; OpenSSL uses the store password.
+             echo "KEY_PASSWORD<<EOF" >> $GITHUB_ENV
+             echo "$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+             echo "EOF" >> $GITHUB_ENV
+          else
+             echo "::error::KEYSTORE_PRIVATE/KEYSTORE_RSA or KEYSTORE_CHAIN secret is missing — cannot sign the bundle."
+             exit 1
+          fi
+
+      - name: Build signed App Bundle
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          # The release key uses the store password (see keystore reconstruction above).
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          # KEYSTORE_FILE is exported to the env by the previous step.
+        run: |
+          set -e
+          # Strictly-increasing versionCode for Play: the commit count only ever grows.
+          VERSION_BUILD=$(git rev-list --count HEAD)
+          echo "versionBuild (versionCode source) = $VERSION_BUILD"
+          ./gradlew bundleRelease -PversionBuild="$VERSION_BUILD" --build-cache
+
+      - name: Upload .aab artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+
+      # Publish only when the operator opts in. Service-account JSON + Play API access required
+      # (see docs/RELEASING.md). packageName must match the app's applicationId.
+      - name: Publish to Google Play
+        if: ${{ inputs.publish }}
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.hereliesaz.logkitty
+          releaseFiles: app/build/outputs/bundle/release/*.aab
+          mappingFile: app/build/outputs/mapping/release/mapping.txt
+          track: ${{ inputs.track }}
+          status: ${{ inputs.status }}
+
+      # When (and only when) the bundle actually went to Play, also produce a signed, sideloadable
+      # APK and attach it to a GitHub Release pinned to this exact build. Extract a single universal
+      # APK from the same bundle: each dynamic feature declares <dist:fusing include="true">, so
+      # --mode=universal fuses them all into one APK (Play still delivers the modules on-demand).
+      # Runs before "Destroy Keystore" so the same signing key is available.
+      - name: Build universal APK from bundle
+        if: ${{ inputs.publish && success() }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -e
+          BT_VERSION=1.17.2
+          curl -fsSL -o bundletool.jar \
+            "https://github.com/google/bundletool/releases/download/${BT_VERSION}/bundletool-all-${BT_VERSION}.jar"
+
+          AAB=$(find app/build/outputs/bundle -name "*.aab" | head -n 1)
+          if [ -z "$AAB" ]; then echo "Error: no .aab produced!"; exit 1; fi
+          echo "Bundle: $AAB"
+
+          java -jar bundletool.jar build-apks --bundle="$AAB" --output=universal.apks \
+            --mode=universal --overwrite \
+            --ks="$KEYSTORE_FILE" --ks-pass=pass:"$KEYSTORE_PASSWORD" \
+            --ks-key-alias="$KEY_ALIAS" --key-pass=pass:"$KEY_PASSWORD"
+
+          unzip -o -p universal.apks universal.apk > app-universal.apk
+          ls -la app-universal.apk
+          echo "UNIVERSAL_APK=$(pwd)/app-universal.apk" >> $GITHUB_ENV
+
+      # Create/refresh an immutable, per-version GitHub Release for the build that shipped to Play.
+      # Tagged v<version> (distinct from build-and-release.yml's rolling latest-release-* prerelease).
+      # Marked as a full release only for a completed production rollout; otherwise a prerelease.
+      - name: Publish APK to GitHub Releases
+        if: ${{ inputs.publish && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+
+          MAJOR=$(grep 'major=' version.properties | cut -d'=' -f2)
+          MINOR=$(grep 'minor=' version.properties | cut -d'=' -f2)
+          # Patch = commits since the minor= line last changed (matches build-and-release.yml).
+          MINOR_COMMIT=$(git blame -L '/minor=/',+1 version.properties | awk '{print $1}' | tr -d '^')
+          if [ -n "$MINOR_COMMIT" ]; then
+            PATCH=$(git rev-list --count "$MINOR_COMMIT"..HEAD)
+          else
+            PATCH=$(grep 'patch=' version.properties | cut -d'=' -f2)
+          fi
+          VERSION_NAME="$MAJOR.$MINOR.$PATCH.$BUILD_NUMBER"
+          TAG_NAME="v${VERSION_NAME}"
+
+          if [ -z "$UNIVERSAL_APK" ] || [ ! -f "$UNIVERSAL_APK" ]; then
+            echo "Error: universal APK not found!"; exit 1
+          fi
+          APK_FILE="LogKitty-${VERSION_NAME}.apk"
+          cp "$UNIVERSAL_APK" "$APK_FILE"
+
+          # A finished production rollout is a real release; everything else (internal/alpha/beta or
+          # a draft) is a prerelease.
+          PRERELEASE_FLAG="--prerelease"
+          if [ "${{ inputs.track }}" = "production" ] && [ "${{ inputs.status }}" = "completed" ]; then
+            PRERELEASE_FLAG=""
+          fi
+
+          NOTES="Signed APK for the build published to Google Play (track: ${{ inputs.track }}, status: ${{ inputs.status }}).
+
+          Built from commit ${GITHUB_SHA}."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$TAG_NAME" -m "Play release $VERSION_NAME"
+          git push origin "$TAG_NAME" --force
+
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Updating existing release..."
+            gh release edit "$TAG_NAME" $PRERELEASE_FLAG \
+              --title "LogKitty ${VERSION_NAME}" \
+              --notes "$NOTES" \
+              --target "$GITHUB_SHA"
+            gh release upload "$TAG_NAME" "$APK_FILE" --clobber
+          else
+            echo "Creating new release..."
+            gh release create "$TAG_NAME" "$APK_FILE" $PRERELEASE_FLAG \
+              --title "LogKitty ${VERSION_NAME}" \
+              --notes "$NOTES" \
+              --target "$GITHUB_SHA"
+          fi
+
+      - name: Destroy Keystore
+        if: always()
+        run: rm -f release.keystore
