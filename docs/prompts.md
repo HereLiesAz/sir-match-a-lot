@@ -20,10 +20,18 @@ Add to that an automatic loop maker, which samples loops from the active playlis
 
 Implement a feature that exports the currently loaded 'training session' (two tracks, their cue points, and loop settings) as a shareable link using query parameters.
 
-## Prompt 1: Radial Gesture Controller & Circle Waveform Visualizer
 > I want to visualize the songs that are queued up as waveforms that stick out of a circle, color coded for energy, allowing me to use one and two finger gestures to control various factors all in one place. Pinch to zoom slows down or speeds up the bpm. single finger drag vertically adjusts pitch. single finger horizontal adjusts bass/treble. two finger rotation adjusts overlap. two finger up and down adjusts crossfade. two finger horizontal is rewind / fast-forward. three finger rotation spins the circle around. three finger pinch adjusts volume. And the playhead should be visible and moving around the circle like a hand on a stopwatch.
 
----
+Of course we need to support local audio files. We should be able to support any music service that you can grab a link for a song or playlist. For multi-device, we should be able to one-click auto connect while the devices are on the same wifi network. 
 
-## Prompt 2: Session Prompts Archival
-> please save all my prompts from this entire session to docs/prompts.md
+Allow for two axis gestures, performing two functions at once. 
+
+I'm even thinking that we should run the outside of the circle as deck A and the inside of the circle as deck B
+
+the sampler/looper should be able to be placed on a deck space, too, displaying a however many loops the same way it displays a song. This allows the user to put as many loops on a deck as they'd like, alongside however many songs they want queued on that deck
+
+concentric rings? No, there are only two decks. Deck A's waveforms protrude outward from the circle's outline, and Deck B's waveforms protrude inward from the circle's outline. 
+
+Actually, double tapping should select both Deck A and Deck B's waveforms in that spot. Single tap selects only the waveform in that place on deck A or on deck B
+
+Just to make sure we're on the same page, if the user adds a single sample to a deck and only plays that deck, that sample is now looping, with only its waveform circumventing the circle.
