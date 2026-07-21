@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { WebSocketServer, WebSocket } from "ws";
+import dgram from "dgram";
 
 dotenv.config();
 
@@ -727,6 +728,31 @@ async function startServer() {
 
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
+
+  // Start UDP Discovery Server on port 8888 for LAN Auto-Discovery
+  const UDP_PORT = 8888;
+  const udpServer = dgram.createSocket("udp4");
+
+  udpServer.on("message", (msg, rinfo) => {
+    if (msg.toString().trim() === "SIR_MATCH_A_LOT_DISCOVER") {
+      const response = JSON.stringify({
+        serverIp: rinfo.address,
+        port: PORT,
+        wsUrl: `ws://${rinfo.address}:${PORT}`
+      });
+      udpServer.send(response, rinfo.port, rinfo.address, (err) => {
+        if (err) console.error("Error sending UDP discovery response:", err);
+      });
+    }
+  });
+
+  udpServer.on("error", (err) => {
+    console.error("UDP Server error:", err);
+  });
+
+  udpServer.bind(UDP_PORT, "0.0.0.0", () => {
+    console.log(`UDP Discovery Server listening on port ${UDP_PORT}`);
   });
 
   // Attach WebSocket Server for multi-device sync
