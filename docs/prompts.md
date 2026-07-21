@@ -35,3 +35,12 @@ concentric rings? No, there are only two decks. Deck A's waveforms protrude outw
 Actually, double tapping should select both Deck A and Deck B's waveforms in that spot. Single tap selects only the waveform in that place on deck A or on deck B
 
 Just to make sure we're on the same page, if the user adds a single sample to a deck and only plays that deck, that sample is now looping, with only its waveform circumventing the circle.
+
+when a track or tracks are selected, long pressing on that track removes it/them
+
+As the user performs a gesture, I want what the user is doing to appear onscreen for as long as they're doing it, and dissolve away as soon as they stop. because multiple gestures are possible at once, and because gestures may move fast, the text for the first gesture should favor appearing at 12:00 (the top). The second gesture appears at 1:30, the third at 10:30, the fourth at 3, fifth at 9, etc. And a different text can only take one of those spots again once the previous text completes its dissolve.  
+
+4:30, 7:30, and 6:00 are also priority clock spots, with 6:00 being the least tended toward
+
+If a gesture's text is fading and that gesture is performed again before the dissolve is complete, it retakes that spot
+
