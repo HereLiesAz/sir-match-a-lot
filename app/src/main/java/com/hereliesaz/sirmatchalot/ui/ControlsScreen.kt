@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.hereliesaz.sirmatchalot.data.Track
@@ -141,6 +142,35 @@ fun ControlsScreen(
     }
 
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val tts = remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
+    
+    var platterScale by remember { mutableStateOf(1f) }
+    var platterOffsetX by remember { mutableStateOf(0f) }
+    var platterOffsetY by remember { mutableStateOf(0f) }
+    var platterRotation by remember { mutableStateOf(0f) }
+    var playheadAngle by remember { mutableStateOf(0f) }
+    var isGrabbingPlayhead by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        tts.value = android.speech.tts.TextToSpeech(context) { status ->
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                tts.value?.setLanguage(java.util.Locale.US)
+                tts.value?.setPitch(0.2f) // Exceptionally low
+                tts.value?.setSpeechRate(0.5f) // Slowly at first
+            }
+        }
+    }
+
+    LaunchedEffect(isPlaying, isGrabbingPlayhead) {
+        while(true) {
+            if (isPlaying && !isGrabbingPlayhead) {
+                playheadAngle += (2 * Math.PI / 10f).toFloat() * (16f/1000f)
+                if (playheadAngle > 2 * Math.PI) playheadAngle -= (2 * Math.PI).toFloat()
+            }
+            delay(16)
+        }
+    }
 
     Box(modifier = modifier.fillMaxSize().background(Color(0xFF050505))) {
         // EDM Rave Background Visualizer
@@ -205,25 +235,44 @@ fun ControlsScreen(
                     var prevAngle3 = 0f
                     var prevPos1 = Offset.Zero
                     var prevPos2 = Offset.Zero
-
+                    var prevPos3 = Offset.Zero
+                    
                     var initialPos1 = Offset.Zero
                     var isDragging1 = false
+                    
+                    // State for Easter Egg
+                    var consecutiveBackwardScratch = 0f
 
                     while (true) {
                         val event = awaitPointerEvent()
                         val pointers = event.changes.filter { it.pressed }
 
-                        // Platter center approximation for zone fallback
+                        // Platter center approximation
                         val cx = size.width / 2f
-                        val cy = size.height * 0.4f // Platter is roughly at top 40% in Column
+                        val cy = size.height * 0.4f
                         val baseRadius = min(size.width, size.height) * 0.35f
 
-                        // Determine target deck based on selection or fallback to position
+                        // Inverse transform helper to map screen touches to platter space
+                        // We use the same cx, cy as pivot for the transform
+                        val getTransformedPos = { screenPos: Offset ->
+                            val dx = screenPos.x - cx - platterOffsetX
+                            val dy = screenPos.y - cy - platterOffsetY
+                            
+                            val rad = -platterRotation
+                            val rx = dx * cos(rad) - dy * sin(rad)
+                            val ry = dx * sin(rad) + dy * cos(rad)
+                            
+                            val sx = rx / platterScale
+                            val sy = ry / platterScale
+                            
+                            Offset(cx + sx.toFloat(), cy + sy.toFloat())
+                        }
+
                         val getTargetDeck = { pos: Offset ->
                             if (selectedTrackIds.isNotEmpty()) {
                                 val inA = loadedTracksA.any { it.id in selectedTrackIds }
                                 val inB = loadedTracksB.any { it.id in selectedTrackIds }
-                                if (inA && !inB) "A" else if (inB && !inA) "B" else "A" // default A if both or neither selected
+                                if (inA && !inB) "A" else if (inB && !inA) "B" else "A"
                             } else {
                                 val dist = sqrt((pos.x - cx) * (pos.x - cx) + (pos.y - cy) * (pos.y - cy))
                                 if (dist > baseRadius) "A" else "B"
@@ -234,39 +283,71 @@ fun ControlsScreen(
                             1 -> {
                                 val change = pointers[0]
                                 val pos = change.position
+                                val transformedPos = getTransformedPos(pos)
                                 
                                 if (prevPos1 == Offset.Zero) {
-                                    initialPos1 = pos
+                                    initialPos1 = transformedPos
                                     isDragging1 = false
+                                    
+                                    // Check if grab is near the playhead angle
+                                    val dist = sqrt((transformedPos.x - cx) * (transformedPos.x - cx) + (transformedPos.y - cy) * (transformedPos.y - cy))
+                                    if (dist > baseRadius * 0.25f && dist < baseRadius * 1.5f) {
+                                        val touchAngle = atan2(transformedPos.y - cy, transformedPos.x - cx)
+                                        var normalizedTouchAngle = touchAngle
+                                        if (normalizedTouchAngle < 0) normalizedTouchAngle += (2 * Math.PI).toFloat()
+                                        
+                                        var playheadAngleNorm = playheadAngle
+                                        if (playheadAngleNorm < 0) playheadAngleNorm += (2 * Math.PI).toFloat()
+                                        
+                                        // If tap is very close to playhead angle, grab it
+                                        val diff = abs(normalizedTouchAngle - playheadAngleNorm)
+                                        if (diff < 0.2f || diff > (2 * Math.PI - 0.2f)) {
+                                            isGrabbingPlayhead = true
+                                        }
+                                    }
                                 } else {
-                                    val dx = pos.x - prevPos1.x
-                                    val dy = pos.y - prevPos1.y
+                                    val dx = transformedPos.x - initialPos1.x
+                                    val dy = transformedPos.y - initialPos1.y
 
-                                    if (abs(pos.x - initialPos1.x) > 5f || abs(pos.y - initialPos1.y) > 5f) {
+                                    if (abs(dx) > 5f || abs(dy) > 5f) {
                                         isDragging1 = true
                                     }
 
                                     if (isDragging1) {
-                                        val deckZone = getTargetDeck(pos)
-
-                                        if (abs(dy) > 1.5f) {
-                                            val pitchDelta = -dy * 0.02f
-                                            viewModel.adjustPitchOnly(deckZone, pitchDelta)
-                                            updateGestureActive("PITCH SHIFT", true)
-                                        } else {
-                                            updateGestureActive("PITCH SHIFT", false)
-                                        }
+                                        val deckZone = getTargetDeck(transformedPos)
                                         
-                                        if (abs(dx) > 1.5f) {
-                                            val eqDelta = dx * 15f
-                                            viewModel.adjustEqBassTreble(deckZone, eqDelta)
-                                            updateGestureActive("BASS / TREBLE EQ", true)
+                                        if (isGrabbingPlayhead) {
+                                            // Scrub Playhead directly
+                                            val currentTouchAngle = atan2(transformedPos.y - cy, transformedPos.x - cx)
+                                            var normalizedCurrent = currentTouchAngle
+                                            if (normalizedCurrent < 0) normalizedCurrent += (2 * Math.PI).toFloat()
+                                            
+                                            // Calculate shortest angular distance to move playhead
+                                            var angleDiff = normalizedCurrent - playheadAngle
+                                            if (angleDiff > Math.PI) angleDiff -= (2 * Math.PI).toFloat()
+                                            if (angleDiff < -Math.PI) angleDiff += (2 * Math.PI).toFloat()
+                                            
+                                            playheadAngle = normalizedCurrent
+                                            
+                                            // Apply seek based on angle moved (roughly mapped)
+                                            val scrubAmount = angleDiff * 50f
+                                            viewModel.scrubPlayhead("A", scrubAmount)
+                                            viewModel.scrubPlayhead("B", scrubAmount)
+                                            updateGestureActive("SCRUB PLAYHEAD", true)
                                         } else {
-                                            updateGestureActive("BASS / TREBLE EQ", false)
+                                            // 1-Finger manipulate clip
+                                            // Map Y-axis (or X-axis) to adjustOverlap
+                                            val deltaY = transformedPos.y - prevPos1.y
+                                            if (abs(deltaY) > 1.5f) {
+                                                viewModel.adjustOverlap(deltaY * 0.05f, deckZone, 0f, 0f)
+                                                updateGestureActive("CLIP OVERLAP", true)
+                                            } else {
+                                                updateGestureActive("CLIP OVERLAP", false)
+                                            }
                                         }
                                     }
                                 }
-                                prevPos1 = pos
+                                prevPos1 = transformedPos
                                 prevSpan2 = 0f
                                 prevSpan3 = 0f
                             }
@@ -278,7 +359,7 @@ fun ControlsScreen(
                                 val currentSpan = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y))
                                 val currentAngle = atan2(p2.y - p1.y, p2.x - p1.x)
 
-                                val deckZone = getTargetDeck(center)
+                                val deckZone = getTargetDeck(getTransformedPos(center))
 
                                 if (prevSpan2 > 0f) {
                                     val spanDelta = currentSpan - prevSpan2
@@ -289,35 +370,60 @@ fun ControlsScreen(
                                     val dy2 = (center.y - prevPos2.y)
                                     val dx2 = (center.x - prevPos2.x)
 
+                                    // Pinch/Spread -> Bass Boost
                                     if (abs(spanDelta) > 4f) {
-                                        val bpmDelta = spanDelta * 0.005f
-                                        viewModel.adjustBpmSpeed(deckZone, bpmDelta)
-                                        updateGestureActive("BPM SPEED", true)
+                                        val eqDelta = spanDelta * 2f
+                                        viewModel.adjustEqBassTreble(deckZone, eqDelta)
+                                        updateGestureActive("BASS BOOST", true)
                                     } else {
-                                        updateGestureActive("BPM SPEED", false)
+                                        updateGestureActive("BASS BOOST", false)
                                     }
 
+                                    // Rotate -> Volume
                                     if (abs(angleDelta) > 0.05f) {
-                                        val overlapDelta = angleDelta * 0.1f
-                                        viewModel.adjustOverlap(overlapDelta, deckZone, 0f, 0f)
-                                        updateGestureActive("DECK OVERLAP", true)
+                                        val volDelta = angleDelta * 0.5f
+                                        viewModel.setVolume((viewModel.audioVolume.value + volDelta).coerceIn(0f, 0.8f))
+                                        updateGestureActive("VOLUME KNOB", true)
                                     } else {
-                                        updateGestureActive("DECK OVERLAP", false)
+                                        updateGestureActive("VOLUME KNOB", false)
                                     }
 
-                                    if (abs(dy2) > 2f) {
-                                        viewModel.adjustCrossfaderDelta(-dy2 * 1.5f)
+                                    // Horizontal -> Crossfader
+                                    if (abs(dx2) > 2f) {
+                                        viewModel.adjustCrossfaderDelta(dx2 * 1.5f)
                                         updateGestureActive("CROSSFADER", true)
                                     } else {
                                         updateGestureActive("CROSSFADER", false)
                                     }
 
-                                    if (abs(dx2) > 2f) {
-                                        viewModel.scrubPlayhead("A", dx2 * 20f)
-                                        viewModel.scrubPlayhead("B", dx2 * 20f)
-                                        updateGestureActive("SEEK / SCRATCH", true)
+                                    // Vertical -> Smart Scratch (BPM/Pitch drop + Seek backward)
+                                    if (abs(dy2) > 2f) {
+                                        // Dragging down (positive dy2) = pulling backward
+                                        if (dy2 > 0) {
+                                            viewModel.adjustBpmSpeed(deckZone, -dy2 * 0.05f)
+                                            viewModel.adjustPitchOnly(deckZone, -dy2 * 0.05f)
+                                            viewModel.scrubPlayhead("A", -dy2 * 50f)
+                                            viewModel.scrubPlayhead("B", -dy2 * 50f)
+                                            
+                                            // Easter Egg logic
+                                            consecutiveBackwardScratch += dy2
+                                            if (consecutiveBackwardScratch > 1500f) {
+                                                tts.value?.speak("I am Satan, Lord of Darkness.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                consecutiveBackwardScratch = 0f // Reset after playing
+                                            }
+                                        } else {
+                                            // Pushing forward
+                                            viewModel.adjustBpmSpeed(deckZone, -dy2 * 0.05f)
+                                            viewModel.adjustPitchOnly(deckZone, -dy2 * 0.05f)
+                                            viewModel.scrubPlayhead("A", -dy2 * 50f)
+                                            viewModel.scrubPlayhead("B", -dy2 * 50f)
+                                            consecutiveBackwardScratch = 0f
+                                        }
+                                        
+                                        updateGestureActive("SMART SCRATCH", true)
                                     } else {
-                                        updateGestureActive("SEEK / SCRATCH", false)
+                                        updateGestureActive("SMART SCRATCH", false)
+                                        consecutiveBackwardScratch = 0f
                                     }
                                 }
                                 prevPos2 = center
@@ -349,33 +455,44 @@ fun ControlsScreen(
                                     if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
                                     if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
 
-                                    if (abs(spanDelta) > 3f) {
-                                        val volDelta = spanDelta * 0.005f
-                                        viewModel.setVolume((viewModel.audioVolume.value + volDelta).coerceIn(0f, 0.8f))
-                                        updateGestureActive("MASTER VOLUME", true)
-                                    } else {
-                                        updateGestureActive("MASTER VOLUME", false)
+                                    val dx3 = cx3 - prevPos3.x
+                                    val dy3 = cy3 - prevPos3.y
+                                    
+                                    var isPlatterTransformActive = false
+
+                                    if (abs(spanDelta) > 1f) {
+                                        platterScale = (platterScale + spanDelta * 0.005f).coerceIn(0.5f, 3f)
+                                        isPlatterTransformActive = true
                                     }
                                     
-                                    if (abs(angleDelta) > 0.05f) {
-                                        val spinDelta = angleDelta * 0.5f
-                                        viewModel.scrubPlayhead("A", spinDelta * 100f)
-                                        viewModel.scrubPlayhead("B", spinDelta * 100f)
-                                        updateGestureActive("PLATTER SPIN", true)
+                                    if (abs(angleDelta) > 0.02f) {
+                                        platterRotation += angleDelta
+                                        isPlatterTransformActive = true
+                                    }
+                                    
+                                    if (abs(dx3) > 1f || abs(dy3) > 1f) {
+                                        platterOffsetX += dx3
+                                        platterOffsetY += dy3
+                                        isPlatterTransformActive = true
+                                    }
+                                    
+                                    if (isPlatterTransformActive) {
+                                        updateGestureActive("PLATTER TRANSFORM", true)
                                     } else {
-                                        updateGestureActive("PLATTER SPIN", false)
+                                        updateGestureActive("PLATTER TRANSFORM", false)
                                     }
                                 }
+                                prevPos3 = Offset(cx3, cy3)
                                 prevSpan3 = currentSpan3
                                 prevAngle3 = currentAngle3
                             }
                         }
 
                         if (pointers.isEmpty()) {
-                            if (prevPos1 != Offset.Zero && !isDragging1) {
+                            if (prevPos1 != Offset.Zero && !isDragging1 && !isGrabbingPlayhead) {
                                 // Tap!
                                 val dist = sqrt((initialPos1.x - cx) * (initialPos1.x - cx) + (initialPos1.y - cy) * (initialPos1.y - cy))
-                                if (dist > baseRadius * 0.25f && dist < baseRadius * 1.5f) { // Ignore spindle and far off-platter taps
+                                if (dist > baseRadius * 0.25f && dist < baseRadius * 1.5f) {
                                     val deckZone = if (dist > baseRadius) "A" else "B"
                                     val tracksToToggle = if (deckZone == "A") loadedTracksA else loadedTracksB
                                     val targetId = tracksToToggle.firstOrNull()?.id
@@ -395,6 +512,8 @@ fun ControlsScreen(
                             prevSpan2 = 0f
                             prevSpan3 = 0f
                             isDragging1 = false
+                            isGrabbingPlayhead = false
+                            consecutiveBackwardScratch = 0f
                         }
                     }
                 }
@@ -438,7 +557,17 @@ fun ControlsScreen(
             }
         }
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Box(modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = platterScale
+                scaleY = platterScale
+                translationX = platterOffsetX
+                translationY = platterOffsetY
+                rotationZ = Math.toDegrees(platterRotation.toDouble()).toFloat()
+            }
+        ) {
             RadialControllerPlatter(
                 viewModel = viewModel,
                 onPlatterPositioned = { pos, size ->
@@ -454,7 +583,8 @@ fun ControlsScreen(
                 trackVolumes = trackVolumes,
                 trackOverlaps = trackOverlaps,
                 selectedTrackIds = selectedTrackIds,
-                isPlaying = isPlaying
+                isPlaying = isPlaying,
+                playheadAngle = playheadAngle
             )
         }
         
@@ -481,7 +611,8 @@ fun RadialControllerPlatter(
     trackVolumes: Map<String, Float>,
     trackOverlaps: Map<String, Float>,
     selectedTrackIds: Set<String>,
-    isPlaying: Boolean
+    isPlaying: Boolean,
+    playheadAngle: Float
 ) {
     // Rotating Platter Angle (Circle Playhead)
     val maxDurationA = controllersA.maxOfOrNull { it.duration.value } ?: 0f
@@ -489,18 +620,7 @@ fun RadialControllerPlatter(
     val platterDurationSeconds = kotlin.math.max(maxDurationA, maxDurationB).coerceAtLeast(8f)
 
     val infiniteTransition = rememberInfiniteTransition()
-    val platterRotationAngle by if (isPlaying) {
-        infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = (2 * Math.PI).toFloat(),
-            animationSpec = infiniteRepeatable(
-                animation = tween((platterDurationSeconds * 1000).toInt(), easing = LinearEasing),
-                repeatMode = RepeatMode.Restart
-            )
-        )
-    } else {
-        remember { mutableStateOf(0f) }
-    }
+    val platterRotationAngle = playheadAngle
 
     val visualizerPhase by if (isPlaying) {
         infiniteTransition.animateFloat(
