@@ -6,7 +6,8 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
-id("com.google.devtools.ksp") version "1.9.22-1.0.17"
+// FIXED: Updated KSP version to be compatible with Kotlin 2.0.0 (implied by your other plugins)
+id("com.google.devtools.ksp") version "2.0.0-1.0.21"
 }
 
 // Helper to load properties securely
@@ -68,7 +69,7 @@ android {
         // Inject API Key
         val apiKey = getLocalProperty("FONTS_API_KEY", rootProject.projectDir)
         buildConfigField("String", "FONTS_API_KEY", "\"$apiKey\"")
-        manifestPlaceholders["FONTS_API_KEY"] = apiKey // THIS WAS THE MISSING LINE
+        manifestPlaceholders["FONTS_API_KEY"] = apiKey
 
         // AdMob banner unit id. Debug uses Google's official TEST unit so development clicks don't
         // generate invalid traffic on the live unit; release swaps in the real unit (below). The
@@ -309,8 +310,7 @@ dependencies {
 
     implementation("androidx.room:room-runtime:$roomVersion")
 
-    // 2. THIS IS THE MISSING LINE THAT CAUSED YOUR ERROR:
-    // Use 'ksp' to apply the Room annotation processor for Kotlin
+    // FIXED: Moved entirely to KSP. Removed conflicting annotationProcessor lines below.
     ksp("androidx.room:room-compiler:$roomVersion")
 
     // Optional: Kotlin Extensions and Coroutines support for Room
@@ -320,9 +320,9 @@ dependencies {
   implementation(libs.androidx.navigation3.runtime)
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
-  // Room Database
-  implementation(libs.androidx.room.runtime)
-  annotationProcessor(libs.androidx.room.compiler)
+  // REMOVED: Conflicting Java annotation processor lines.
+  // implementation(libs.androidx.room.runtime)
+  // annotationProcessor(libs.androidx.room.compiler)
 
   // Media3 ExoPlayer for local audio files
   implementation(libs.androidx.media3.exoplayer)
