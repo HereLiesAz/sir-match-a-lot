@@ -323,5 +323,5 @@ dependencies {
   // ----------------------------------------------
   
   // Navigation
-  implementation(libs.androidx.navigation3.ui
+  implementation(libs.androidx.navigation3.ui)
 }
