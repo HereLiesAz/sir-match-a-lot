@@ -310,19 +310,16 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
   androidTestImplementation(libs.androidx.test.espresso.core)
 
     // --- Room Dependencies (Added to your file) ---
-    val roomVersion = "2.6.1"
+val roomVersion = "2.8.1"  // Update from 2.6.1 to 2.8.1
 
-    // Room Runtime
-    implementation("androidx.room:room-runtime:$roomVersion")
+// Room Runtime
+implementation("androidx.room:room-runtime:$roomVersion")
 
-    // KSP Compiler - THIS GENERATES THE MISSING CLASS
-    // FIXED: Moved entirely to KSP. Conflicting Java annotation processor lines removed below.
-    ksp("androidx.room:room-compiler:$roomVersion")
+// KSP Compiler - THIS GENERATES THE MISSING CLASS
+ksp("androidx.room:room-compiler:$roomVersion")
 
-    // Kotlin Extensions & Coroutines support for Room
-    implementation("androidx.room:room-ktx:$roomVersion")
-  // ----------------------------------------------
-  
+// Kotlin Extensions & Coroutines support for Room
+implementation("androidx.room:room-ktx:$roomVersion")
   // Navigation
   implementation(libs.androidx.navigation3.ui)
 }
