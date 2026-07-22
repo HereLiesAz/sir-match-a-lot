@@ -80,6 +80,7 @@ fun ControlsScreen(
                         freeSpot.isGestureActive = true
                         freeSpot.alpha = 1.0f
                         freeSpot.fadeStartTime = 0L
+                        freeSpot.yOffset = 0f
                     }
                 }
             } else {
@@ -96,7 +97,9 @@ fun ControlsScreen(
                 val spot = spots[i]
                 if (spot.isGestureActive) {
                     spot.alpha = 1.0f
+                    spot.yOffset += 1f
                 } else if (spot.alpha > 0f) {
+                    spot.yOffset += 1f
                     if (spot.fadeStartTime == 0L) {
                         spot.fadeStartTime = now
                     }
@@ -106,6 +109,7 @@ fun ControlsScreen(
                         spot.alpha = 0f
                         spot.text = ""
                         spot.fadeStartTime = 0L
+                        spot.yOffset = 0f
                     } else {
                         spot.alpha = nextAlpha
                     }
@@ -122,13 +126,77 @@ fun ControlsScreen(
     val trackOverlaps by viewModel.trackOverlaps.collectAsState()
     val selectedTrackIds by viewModel.selectedTrackIds.collectAsState(initial = emptySet())
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val infiniteTransition = rememberInfiniteTransition()
+    val phase by if (isPlaying) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1000f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(10000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            )
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
 
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFF09090B))
+    Box(modifier = modifier.fillMaxSize().background(Color(0xFF050505))) {
+        // EDM Rave Background Visualizer
+        val intensity = if (isPlaying) {
+            val beatPulse = (kotlin.math.sin(phase * 40f) + 1f) / 2f
+            0.4f + 0.6f * beatPulse
+        } else {
+            0f
+        }
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            
+            val colors = listOf(
+                Color(0xFF00E5FF), // Turquoise
+                Color(0xFFFF1744), // Red
+                Color(0xFFD500F9), // Purple
+                Color(0xFF76FF03), // Lime
+                Color(0xFFFFC400)  // Gold
+            )
+            
+            for (i in 0 until 5) {
+                // Animate position slowly using phase
+                val angle = (phase * (0.2f + i * 0.1f)) + (i * Math.PI * 2 / 5)
+                val distance = (min(cx, cy) * 0.4f) + sin(phase * (0.5f + i * 0.2f)) * (min(cx, cy) * 0.4f)
+                
+                val x = cx + cos(angle.toFloat()) * distance
+                val y = cy + sin(angle.toFloat()) * distance
+                
+                // Pulse size and alpha with intensity
+                val baseRadius = min(cx, cy) * 0.5f
+                val pulseRadius = baseRadius + (intensity * baseRadius * 1.5f)
+                
+                val baseAlpha = 0.15f
+                val pulseAlpha = (baseAlpha + (intensity * 0.35f)).coerceIn(0f, 1f)
+                
+                drawCircle(
+                    brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = listOf(
+                            colors[i].copy(alpha = pulseAlpha),
+                            colors[i].copy(alpha = 0f)
+                        ),
+                        center = androidx.compose.ui.geometry.Offset(x, y),
+                        radius = pulseRadius
+                    ),
+                    radius = pulseRadius,
+                    center = androidx.compose.ui.geometry.Offset(x, y),
+                    blendMode = androidx.compose.ui.graphics.BlendMode.Screen
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
             .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
                 awaitPointerEventScope {
                     var prevSpan2 = 0f
@@ -181,16 +249,20 @@ fun ControlsScreen(
                                     if (isDragging1) {
                                         val deckZone = getTargetDeck(pos)
 
-                                        if (abs(dy) > abs(dx) && abs(dy) > 1.5f) {
+                                        if (abs(dy) > 1.5f) {
                                             val pitchDelta = -dy * 0.02f
                                             viewModel.adjustPitchOnly(deckZone, pitchDelta)
                                             updateGestureActive("PITCH SHIFT", true)
-                                            updateGestureActive("BASS / TREBLE EQ", false)
-                                        } else if (abs(dx) > abs(dy) && abs(dx) > 1.5f) {
+                                        } else {
+                                            updateGestureActive("PITCH SHIFT", false)
+                                        }
+                                        
+                                        if (abs(dx) > 1.5f) {
                                             val eqDelta = dx * 15f
                                             viewModel.adjustEqBassTreble(deckZone, eqDelta)
                                             updateGestureActive("BASS / TREBLE EQ", true)
-                                            updateGestureActive("PITCH SHIFT", false)
+                                        } else {
+                                            updateGestureActive("BASS / TREBLE EQ", false)
                                         }
                                     }
                                 }
@@ -221,18 +293,31 @@ fun ControlsScreen(
                                         val bpmDelta = spanDelta * 0.005f
                                         viewModel.adjustBpmSpeed(deckZone, bpmDelta)
                                         updateGestureActive("BPM SPEED", true)
-                                    } else if (abs(angleDelta) > 0.05f) {
+                                    } else {
+                                        updateGestureActive("BPM SPEED", false)
+                                    }
+
+                                    if (abs(angleDelta) > 0.05f) {
                                         val overlapDelta = angleDelta * 0.1f
-                                        // Use approximate playhead angle for relative overlap
                                         viewModel.adjustOverlap(overlapDelta, deckZone, 0f, 0f)
                                         updateGestureActive("DECK OVERLAP", true)
-                                    } else if (abs(dy2) > abs(dx2) && abs(dy2) > 2f) {
+                                    } else {
+                                        updateGestureActive("DECK OVERLAP", false)
+                                    }
+
+                                    if (abs(dy2) > 2f) {
                                         viewModel.adjustCrossfaderDelta(-dy2 * 1.5f)
                                         updateGestureActive("CROSSFADER", true)
-                                    } else if (abs(dx2) > abs(dy2) && abs(dx2) > 2f) {
+                                    } else {
+                                        updateGestureActive("CROSSFADER", false)
+                                    }
+
+                                    if (abs(dx2) > 2f) {
                                         viewModel.scrubPlayhead("A", dx2 * 20f)
                                         viewModel.scrubPlayhead("B", dx2 * 20f)
                                         updateGestureActive("SEEK / SCRATCH", true)
+                                    } else {
+                                        updateGestureActive("SEEK / SCRATCH", false)
                                     }
                                 }
                                 prevPos2 = center
@@ -268,11 +353,17 @@ fun ControlsScreen(
                                         val volDelta = spanDelta * 0.005f
                                         viewModel.setVolume((viewModel.audioVolume.value + volDelta).coerceIn(0f, 0.8f))
                                         updateGestureActive("MASTER VOLUME", true)
-                                    } else if (abs(angleDelta) > 0.05f) {
+                                    } else {
+                                        updateGestureActive("MASTER VOLUME", false)
+                                    }
+                                    
+                                    if (abs(angleDelta) > 0.05f) {
                                         val spinDelta = angleDelta * 0.5f
                                         viewModel.scrubPlayhead("A", spinDelta * 100f)
                                         viewModel.scrubPlayhead("B", spinDelta * 100f)
                                         updateGestureActive("PLATTER SPIN", true)
+                                    } else {
+                                        updateGestureActive("PLATTER SPIN", false)
                                     }
                                 }
                                 prevSpan3 = currentSpan3
@@ -370,6 +461,7 @@ fun ControlsScreen(
         Box(modifier = Modifier.height(140.dp).fillMaxWidth().padding(bottom = 16.dp)) {
             HorizontalSongList(viewModel = viewModel)
         }
+    }
     }
 }
 
@@ -583,10 +675,11 @@ fun RadialControllerPlatter(
                     for (i in 0 until numSpikes) {
                         val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
                         
-                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f) / 2f else 0.1f
-                        val pulse = 0.7f + 0.6f * spatialEnergy
-                        val pattern = 10f + (track.id.hashCode() % (i + 5) % 18f) * pulse
-                        val peakH = (pattern * volMultiplier).coerceIn(4f, 80f)
+                        val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
+                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f).toFloat() / 2f else 0.1f
+                        val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
+                        val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
+                        val peakH = (pattern * volMultiplier).coerceIn(4f, 120f)
 
                         val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                         val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -669,10 +762,11 @@ fun RadialControllerPlatter(
                 for (i in 0 until numSpikes) {
                     val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
                     
-                    val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f) / 2f else 0.1f
-                    val pulse = 0.7f + 0.6f * spatialEnergy
-                    val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f) * pulse
-                    val peakH = (pattern * volMultiplier).coerceIn(4f, 60f)
+                        val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
+                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f).toFloat() / 2f else 0.1f
+                        val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
+                        val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
+                        val peakH = (pattern * volMultiplier).coerceIn(4f, 120f)
 
                     val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                     val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -696,7 +790,8 @@ fun RadialControllerPlatter(
 
                 val strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
                 val strokeJoin = androidx.compose.ui.graphics.StrokeJoin.Round
-                val glowIntensity = if(isPlaying) 1.5f else 1f
+                val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
+                val glowIntensity = if(isPlaying) 1.5f + 1.0f * globalIntensity else 1f
 
                 drawPath(
                     path = path,
@@ -736,31 +831,44 @@ fun RadialControllerPlatter(
                 style = Stroke(width = 1.5.dp.toPx())
             )
 
-            // 5. Stopwatch Rotating Red Playhead Line (Hand on a Stopwatch)
+            // 5. Stopwatch Rotating Red Playhead Line (Glowing Slash)
             val currentPlayheadAngle = platterRotationAngle - Math.PI.toFloat() / 2f
-            val maxWaveProtrusion = 45f
-            val playheadLineLength = baseRadius + maxWaveProtrusion
-
-            val redLineEndX = cx + cos(currentPlayheadAngle) * playheadLineLength
-            val redLineEndY = cy + sin(currentPlayheadAngle) * playheadLineLength
+            
+            val waveformZoneWidth = 120f * 2f
+            val playheadHalfLength = waveformZoneWidth
+            val playheadCenterRadius = baseRadius
+            
+            val startRadius = playheadCenterRadius - playheadHalfLength
+            val endRadius = playheadCenterRadius + playheadHalfLength
+            
+            val startX = cx + cos(currentPlayheadAngle.toDouble()).toFloat() * startRadius
+            val startY = cy + sin(currentPlayheadAngle.toDouble()).toFloat() * startRadius
+            val endX = cx + cos(currentPlayheadAngle.toDouble()).toFloat() * endRadius
+            val endY = cy + sin(currentPlayheadAngle.toDouble()).toFloat() * endRadius
+            
+            val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
+            val playheadGlow = 0.4f + 0.6f * globalIntensity
 
             drawLine(
-                color = Color(0xFFFF1744), // Bright Red
-                start = Offset(cx, cy),
-                end = Offset(redLineEndX, redLineEndY),
-                strokeWidth = 3.dp.toPx()
+                color = Color(0xFFFF1744).copy(alpha = playheadGlow * 0.4f),
+                start = Offset(startX, startY),
+                end = Offset(endX, endY),
+                strokeWidth = 24.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round
             )
-
-            // Red Playhead Tip Bulb & Spindle Cap
-            drawCircle(
-                color = Color(0xFFFF1744),
-                radius = 5.dp.toPx(),
-                center = Offset(redLineEndX, redLineEndY)
+            drawLine(
+                color = Color(0xFFFF1744).copy(alpha = playheadGlow * 0.8f),
+                start = Offset(startX, startY),
+                end = Offset(endX, endY),
+                strokeWidth = 10.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round
             )
-            drawCircle(
-                color = Color(0xFFFF1744),
-                radius = 7.dp.toPx(),
-                center = Offset(cx, cy)
+            drawLine(
+                color = Color.White,
+                start = Offset(startX, startY),
+                end = Offset(endX, endY),
+                strokeWidth = 3.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round
             )
             // 6. Draw Stationary Song Beat Grid Lines around Circle (Lines on a Grid)
             val numBeatGridTicks = 32
@@ -936,7 +1044,7 @@ fun RadialControllerPlatter(
                     val posY = cy + sin(spot.angleRad) * radiusOffset
 
                     val posXDp = with(density) { posX.toDp() } - 50.dp
-                    val posYDp = with(density) { posY.toDp() } - 15.dp
+                    val posYDp = with(density) { posY.toDp() } - 15.dp - with(density) { spot.yOffset.toDp() }
 
                     Box(
                         modifier = Modifier
@@ -1029,4 +1137,5 @@ class GestureSpot(
     var isGestureActive by androidx.compose.runtime.mutableStateOf(false)
     var alpha by androidx.compose.runtime.mutableStateOf(0f)
     var fadeStartTime by androidx.compose.runtime.mutableStateOf(0L)
+    var yOffset by androidx.compose.runtime.mutableStateOf(0f)
 }
