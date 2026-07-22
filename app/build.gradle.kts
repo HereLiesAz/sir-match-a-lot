@@ -7,7 +7,7 @@ plugins {
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 // UPDATED: KSP version must match the Kotlin 2.4.x version used by your other plugins.
-id("com.google.devtools.ksp") version "2.4.10-1.0.30"
+id("com.google.devtools.ksp") version "2.3.10"
 }
 
 // Helper to load properties securely
@@ -274,6 +274,7 @@ configurations.all {
 }
 
 dependencies {
+ksp("com.squareup.moshi:moshi-kotlin-codegen:1.15.2")
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
