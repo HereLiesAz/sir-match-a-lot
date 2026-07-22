@@ -743,11 +743,11 @@ fun RadialControllerPlatter(
                         val dist = sqrt((offset.x - cx) * (offset.x - cx) + (offset.y - cy) * (offset.y - cy))
                         val isOuter = dist > min(cx, cy) * 0.7f
                         val list = if (isOuter) loadedTracksA else loadedTracksB
-                        val arcSpan = (2 * Math.PI) / list.size
-                        var angle = atan2(offset.y - cy, offset.x - cx) + Math.PI / 2
-                        if (angle < 0) angle += 2 * Math.PI
-                        val idx = (angle / arcSpan).toInt().coerceIn(0, list.size - 1)
                         if (list.isNotEmpty()) {
+                            val arcSpan = (2 * Math.PI) / list.size
+                            var angle = atan2(offset.y - cy, offset.x - cx) + Math.PI / 2
+                            if (angle < 0) angle += 2 * Math.PI
+                            val idx = (angle / arcSpan).toInt().coerceIn(0, list.size - 1)
                             val track = list[idx]
                             if (selectedTrackIds.contains(track.id)) {
                                 viewModel.setSelectedTracks(selectedTrackIds - track.id)
