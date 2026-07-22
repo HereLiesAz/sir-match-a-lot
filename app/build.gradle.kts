@@ -274,7 +274,7 @@ configurations.all {
 }
 
 dependencies {
-implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+implementation(libs.kotlinx.serialization.json)
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
@@ -292,7 +292,7 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.compose.material3)
-  implementation("androidx.compose.material:material-icons-core")
+  implementation(libs.androidx.compose.material.icons.core)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests
@@ -313,18 +313,18 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 val roomVersion = "2.8.1"  // Update from 2.6.1 to 2.8.1
 
 // Room Runtime
-implementation("androidx.room:room-runtime:$roomVersion")
+implementation(libs.androidx.room.runtime.v281)
 
 // KSP Compiler - THIS GENERATES THE MISSING CLASS
-ksp("androidx.room:room-compiler:$roomVersion")
+ksp(libs.androidx.room.compiler.v281)
 
 // Kotlin Extensions & Coroutines support for Room
-implementation("androidx.room:room-ktx:$roomVersion")
+implementation(libs.androidx.room.ktx)
   // Navigation
   implementation(libs.androidx.navigation3.ui)
   implementation(libs.google.ai.client)
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.okhttp.core)
-  implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:11.1.0")
+  implementation(libs.core.v1110)
 
 }
