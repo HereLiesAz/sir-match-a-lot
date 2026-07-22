@@ -7,7 +7,7 @@ plugins {
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 // UPDATED: KSP version must match the Kotlin 2.4.x version used by your other plugins.
-id("com.google.devtools.ksp") version "2.0.10-1.0.24"
+id("com.google.devtools.ksp") version "2.4.10-1.0.30"
 }
 
 // Helper to load properties securely
