@@ -101,6 +101,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _selectedTrackIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedTrackIds: StateFlow<Set<String>> = _selectedTrackIds
 
+    // Per-track volume multipliers (1.0 = normal, scaled up/down by vertical gesture)
+    private val _trackVolumes = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val trackVolumes: StateFlow<Map<String, Float>> = _trackVolumes
+
+    // Per-track angular overlap amount (in radians)
+    private val _trackOverlaps = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val trackOverlaps: StateFlow<Map<String, Float>> = _trackOverlaps
+
     // UI Mixer controls
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -335,7 +343,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    // Dynamic Platter loading functions
+    // Dynamic Platter loading functions with AutoSync BPM & Harmonize on drop
     fun addTrackToDeckA(track: Track) {
         val list = _loadedTracksA.value.toMutableList()
         if (list.any { it.id == track.id }) return
@@ -347,6 +355,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val controllers = _controllersA.value.toMutableList()
         controllers.add(controller)
         _controllersA.value = controllers
+
+        // AutoSync BPM & Harmonize against reference track (Deck B or Deck A first)
+        val refTrack = _loadedTracksB.value.firstOrNull() ?: _loadedTracksA.value.firstOrNull()
+        if (refTrack != null && refTrack.id != track.id && track.bpm > 0) {
+            val bpmRate = refTrack.bpm.toFloat() / track.bpm.toFloat()
+            val keyDistance = HarmonicEngine.getCamelotDistance(track.camelotKey, refTrack.camelotKey)
+            val pitchFactor = Math.pow(2.0, (keyDistance % 3).toDouble() / 12.0).toFloat()
+            val finalRate = (bpmRate * pitchFactor).coerceIn(0.5f, 2.0f)
+            controller.setPlaybackRate(finalRate)
+            _feedbackMsg.value = "AUTOSYNCED: ${track.title} -> ${refTrack.bpm} BPM (Harmonized)"
+        }
 
         if (_isPlaying.value) controller.play()
         updateAllVolumes()
@@ -365,6 +384,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val controllers = _controllersB.value.toMutableList()
         controllers.add(controller)
         _controllersB.value = controllers
+
+        // AutoSync BPM & Harmonize against reference track (Deck A or Deck B first)
+        val refTrack = _loadedTracksA.value.firstOrNull() ?: _loadedTracksB.value.firstOrNull()
+        if (refTrack != null && refTrack.id != track.id && track.bpm > 0) {
+            val bpmRate = refTrack.bpm.toFloat() / track.bpm.toFloat()
+            val keyDistance = HarmonicEngine.getCamelotDistance(track.camelotKey, refTrack.camelotKey)
+            val pitchFactor = Math.pow(2.0, (keyDistance % 3).toDouble() / 12.0).toFloat()
+            val finalRate = (bpmRate * pitchFactor).coerceIn(0.5f, 2.0f)
+            controller.setPlaybackRate(finalRate)
+            _feedbackMsg.value = "AUTOSYNCED: ${track.title} -> ${refTrack.bpm} BPM (Harmonized)"
+        }
 
         if (_isPlaying.value) controller.play()
         updateAllVolumes()
@@ -426,29 +456,182 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val crossA = if (cf < 0) 1f else (100f - cf) / 100f
         val crossB = if (cf > 0) 1f else (100f + cf) / 100f
 
-        _controllersA.value.forEach { it.setVolume(vol * crossA) }
-        _controllersB.value.forEach { it.setVolume(vol * crossB) }
+        val map = _trackVolumes.value
+        _loadedTracksA.value.forEachIndexed { idx, track ->
+            val trackMult = map[track.id] ?: 1.0f
+            _controllersA.value.getOrNull(idx)?.setVolume((vol * crossA * trackMult).coerceIn(0f, 1f))
+        }
+        _loadedTracksB.value.forEachIndexed { idx, track ->
+            val trackMult = map[track.id] ?: 1.0f
+            _controllersB.value.getOrNull(idx)?.setVolume((vol * crossB * trackMult).coerceIn(0f, 1f))
+        }
+    }
+
+    fun adjustTrackVolume(deck: String, delta: Float) {
+        val currentMap = _trackVolumes.value.toMutableMap()
+        val targetedIds = _selectedTrackIds.value
+        if (targetedIds.isNotEmpty()) {
+            targetedIds.forEach { id ->
+                val prev = currentMap[id] ?: 1.0f
+                currentMap[id] = (prev + delta).coerceIn(0.15f, 3.5f)
+            }
+        } else {
+            val targets = if (deck == "A") _loadedTracksA.value else _loadedTracksB.value
+            targets.forEach { tr ->
+                val prev = currentMap[tr.id] ?: 1.0f
+                currentMap[tr.id] = (prev + delta).coerceIn(0.15f, 3.5f)
+            }
+        }
+        _trackVolumes.value = currentMap
+        updateAllVolumes()
     }
 
     fun adjustPitch(deck: String, percent: Float) {
+        adjustPitchOnly(deck, percent / 100f)
+    }
+
+    fun adjustBpmSpeed(deck: String, delta: Float) {
         val targetedIds = _selectedTrackIds.value
+        if (targetedIds.isNotEmpty()) {
+            targetedIds.forEach { selId ->
+                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
+                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
+                val targetCtrl = cA ?: cB
+                targetCtrl?.let { ctrl ->
+                    val newRate = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
+                    ctrl.setPlaybackRate(newRate)
+                }
+            }
+        } else {
+            val list = if (deck == "A") _controllersA.value else _controllersB.value
+            list.forEach { ctrl ->
+                val newRate = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
+                ctrl.setPlaybackRate(newRate)
+            }
+        }
+    }
+
+    fun adjustPitchOnly(deck: String, delta: Float) {
+        val targetedIds = _selectedTrackIds.value
+        if (targetedIds.isNotEmpty()) {
+            targetedIds.forEach { selId ->
+                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
+                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
+                val targetCtrl = cA ?: cB
+                targetCtrl?.let { ctrl ->
+                    val newPitch = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
+                    ctrl.setPitchOnly(newPitch)
+                }
+            }
+        } else {
+            val list = if (deck == "A") _controllersA.value else _controllersB.value
+            list.forEach { ctrl ->
+                val newPitch = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
+                ctrl.setPitchOnly(newPitch)
+            }
+        }
+    }
+
+    fun adjustEqBassTreble(deck: String, delta: Float) {
+        val currentCutoff = synthEngine.filterCutoff
+        synthEngine.filterCutoff = (currentCutoff + delta).coerceIn(100f, 12000f)
+    }
+
+    fun adjustOverlap(delta: Float, deckZone: String, playheadAngle: Float, platterRotationAngle: Float) {
+        val targetedIds = _selectedTrackIds.value
+        val currentMap = _trackOverlaps.value.toMutableMap()
+
+        val list = if (deckZone == "A") _loadedTracksA.value else _loadedTracksB.value
+        if (list.isEmpty()) return
+
+        val numClips = list.size
+        val arcSpan = (2 * Math.PI) / numClips
+
+        // Normalize playheadAngle into 0..2PI relative to platter
+        var normalizedPlayhead = (playheadAngle - platterRotationAngle + Math.PI / 2) % (2 * Math.PI)
+        if (normalizedPlayhead < 0) normalizedPlayhead += 2 * Math.PI
+
+        val currentPlayingIdx = (normalizedPlayhead / arcSpan).toInt().coerceIn(0, numClips - 1)
+
+        val targetTrackId = if (targetedIds.isNotEmpty()) {
+            val selIdx = list.indexOfFirst { targetedIds.contains(it.id) }
+            if (selIdx != -1) {
+                // If it is playing, we adjust its own overlap (end of song)
+                // If it is NOT playing, we adjust the previous song's overlap (beginning of song)
+                if (selIdx == currentPlayingIdx) {
+                    list[selIdx].id
+                } else {
+                    val prevIdx = if (selIdx - 1 < 0) numClips - 1 else selIdx - 1
+                    list[prevIdx].id
+                }
+            } else null
+        } else {
+            // No selection: adjust currently playing track's overlap
+            list[currentPlayingIdx].id
+        }
+
+        if (targetTrackId != null) {
+            val prev = currentMap[targetTrackId] ?: 0f
+            // Adjust overlap (allow up to half the arc span)
+            currentMap[targetTrackId] = (prev + delta).coerceIn(0f, (arcSpan / 2).toFloat())
+            _trackOverlaps.value = currentMap
+        }
+    }
+
+    fun adjustCrossfaderDelta(delta: Float) {
+        val newCross = (_crossfader.value + delta).toInt().coerceIn(-100, 100)
+        _crossfader.value = newCross
+        updateAllVolumes()
+    }
+
+    fun seekTrack(deck: String, deltaSeconds: Float) {
+        val targetedIds = _selectedTrackIds.value
+        if (targetedIds.isNotEmpty()) {
+            targetedIds.forEach { selId ->
+                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
+                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
+                val targetCtrl = cA ?: cB
+                targetCtrl?.let { ctrl ->
+                    val newTime = (ctrl.currentTime.value + deltaSeconds).coerceAtLeast(0f)
+                    ctrl.seekTo(newTime)
+                }
+            }
+        } else {
+            val list = if (deck == "A") _controllersA.value else _controllersB.value
+            list.forEach { ctrl ->
+                val newTime = (ctrl.currentTime.value + deltaSeconds).coerceAtLeast(0f)
+                ctrl.seekTo(newTime)
+            }
+        }
+    }
+
+    fun scrubPlayhead(deck: String, deltaAngleRad: Float) {
+        val targetedIds = _selectedTrackIds.value
+        val deltaSeconds = (deltaAngleRad / (2 * Math.PI).toFloat()) * 10f
         if (targetedIds.isNotEmpty()) {
             targetedIds.forEach { targetedId ->
                 val idxA = _loadedTracksA.value.indexOfFirst { it.id == targetedId }
                 if (idxA != -1) {
-                    _controllersA.value[idxA].setPlaybackRate(1f + percent / 100f)
+                    val controller = _controllersA.value.getOrNull(idxA)
+                    controller?.let {
+                        val newTime = (it.currentTime.value + deltaSeconds).coerceAtLeast(0f)
+                        it.seekTo(newTime)
+                    }
                 }
                 val idxB = _loadedTracksB.value.indexOfFirst { it.id == targetedId }
                 if (idxB != -1) {
-                    _controllersB.value[idxB].setPlaybackRate(1f + percent / 100f)
+                    val controller = _controllersB.value.getOrNull(idxB)
+                    controller?.let {
+                        val newTime = (it.currentTime.value + deltaSeconds).coerceAtLeast(0f)
+                        it.seekTo(newTime)
+                    }
                 }
             }
         } else {
-            // Modify all tracks in the respective Deck Zone
-            if (deck == "A") {
-                _controllersA.value.forEach { it.setPlaybackRate(1f + percent / 100f) }
-            } else {
-                _controllersB.value.forEach { it.setPlaybackRate(1f + percent / 100f) }
+            val controllers = if (deck == "A") _controllersA.value else _controllersB.value
+            controllers.forEach { controller ->
+                val newTime = (controller.currentTime.value + deltaSeconds).coerceAtLeast(0f)
+                controller.seekTo(newTime)
             }
         }
     }

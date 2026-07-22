@@ -137,6 +137,14 @@ class DeckController(
         }
     }
 
+    fun setPitchOnly(pitchRatio: Float) {
+        pitch = (pitchRatio - 1f) * 100f
+        if (loadedTrack?.localPath != null) {
+            // Speed remains locked at 1.0f (tempo/speed unaffected)
+            exoPlayer?.playbackParameters = PlaybackParameters(1.0f, pitchRatio)
+        }
+    }
+
     fun setVolume(vol: Float) {
         masterVolume = vol
         val actualVol = if (isMuted) 0f else vol

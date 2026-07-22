@@ -33,7 +33,8 @@ fun MainScreen(
     modifier: Modifier = Modifier,
     viewModel: SirMatchALotViewModel = viewModel()
 ) {
-    var currentTab by remember { mutableStateOf(DjTab.LIBRARY) }
+    // Waveform Circle Platter is the Unified Main Screen
+    var currentTab by remember { mutableStateOf(DjTab.CONTROLS) }
     val crossfader by viewModel.crossfader.collectAsState()
     val isWsConnected by viewModel.isWsConnected.collectAsState()
     val roomCode by viewModel.roomCode.collectAsState()
@@ -121,6 +122,19 @@ fun MainScreen(
                     modifier = Modifier.height(64.dp)
                 ) {
                     NavigationBarItem(
+                        selected = currentTab == DjTab.CONTROLS,
+                        onClick = { currentTab = DjTab.CONTROLS },
+                        label = { Text("Platter Main", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+                        icon = { Icon(Icons.Default.Refresh, contentDescription = "Platter Main") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Cyan,
+                            selectedTextColor = Color.Cyan,
+                            unselectedIconColor = Color.Gray,
+                            unselectedTextColor = Color.Gray,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+                    NavigationBarItem(
                         selected = currentTab == DjTab.LIBRARY,
                         onClick = { currentTab = DjTab.LIBRARY },
                         label = { Text("Library", fontSize = 10.sp) },
@@ -138,19 +152,6 @@ fun MainScreen(
                         onClick = { currentTab = DjTab.DECKS },
                         label = { Text("Decks", fontSize = 10.sp) },
                         icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Decks") },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Cyan,
-                            selectedTextColor = Color.Cyan,
-                            unselectedIconColor = Color.Gray,
-                            unselectedTextColor = Color.Gray,
-                            indicatorColor = Color.Transparent
-                        )
-                    )
-                    NavigationBarItem(
-                        selected = currentTab == DjTab.CONTROLS,
-                        onClick = { currentTab = DjTab.CONTROLS },
-                        label = { Text("Controls", fontSize = 10.sp) },
-                        icon = { Icon(Icons.Default.Refresh, contentDescription = "Controls") },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = Color.Cyan,
                             selectedTextColor = Color.Cyan,

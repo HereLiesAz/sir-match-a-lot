@@ -177,7 +177,10 @@ fun RadialControllerSplitPane(viewModel: SirMatchALotViewModel) {
                     platterSize = size
                 },
                 spots = spots,
-                updateGestureActive = updateGestureActive
+                updateGestureActive = updateGestureActive,
+                draggingTrack = draggingTrack,
+                dragTouchOffset = dragTouchOffset,
+                platterPositionInWindow = platterPositionInWindow
             )
         }
 
@@ -264,24 +267,33 @@ fun RadialControllerPlatter(
     viewModel: SirMatchALotViewModel,
     onPlatterPositioned: (Offset, IntSize) -> Unit,
     spots: List<GestureSpot>,
-    updateGestureActive: (String, Boolean) -> Unit
+    updateGestureActive: (String, Boolean) -> Unit,
+    draggingTrack: Track? = null,
+    dragTouchOffset: Offset = Offset.Zero,
+    platterPositionInWindow: Offset = Offset.Zero
 ) {
     val loadedTracksA by viewModel.loadedTracksA.collectAsState()
     val loadedTracksB by viewModel.loadedTracksB.collectAsState()
     val controllersA by viewModel.controllersA.collectAsState()
     val controllersB by viewModel.controllersB.collectAsState()
+    val trackVolumes by viewModel.trackVolumes.collectAsState()
+    val trackOverlaps by viewModel.trackOverlaps.collectAsState()
 
     val selectedTrackIds by viewModel.selectedTrackIds.collectAsState(initial = emptySet())
-
     val isPlaying by viewModel.isPlaying.collectAsState()
 
+    // Rotating Platter Angle (Circle Playhead)
+    val maxDurationA = controllersA.maxOfOrNull { it.duration.value } ?: 0f
+    val maxDurationB = controllersB.maxOfOrNull { it.duration.value } ?: 0f
+    val platterDurationSeconds = kotlin.math.max(maxDurationA, maxDurationB).coerceAtLeast(8f)
+
     val infiniteTransition = rememberInfiniteTransition()
-    val autoRotationAngle by if (isPlaying) {
+    val platterRotationAngle by if (isPlaying) {
         infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = (2 * Math.PI).toFloat(),
             animationSpec = infiniteRepeatable(
-                animation = tween(6000, easing = LinearEasing),
+                animation = tween((platterDurationSeconds * 1000).toInt(), easing = LinearEasing),
                 repeatMode = RepeatMode.Restart
             )
         )
@@ -289,11 +301,63 @@ fun RadialControllerPlatter(
         remember { mutableStateOf(0f) }
     }
 
-    var manualRotationOffset by remember { mutableStateOf(0f) }
-    val totalRotation = autoRotationAngle + manualRotationOffset
-
     val scope = rememberCoroutineScope()
     var platterSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Continuous Beat-Grid Snapping for Selected Tracks
+    LaunchedEffect(selectedTrackIds, isPlaying) {
+        if (isPlaying && selectedTrackIds.isNotEmpty()) {
+            while (true) {
+                delay(250) // Beat grid check interval
+                val refController = controllersA.firstOrNull() ?: controllersB.firstOrNull()
+                val refTrack = loadedTracksA.firstOrNull() ?: loadedTracksB.firstOrNull()
+                val refBpm = refTrack?.bpm ?: 120
+                val beatDurationSecs = 60f / refBpm.toFloat()
+                val refTime = refController?.currentTime?.value ?: 0f
+
+                selectedTrackIds.forEach { selId ->
+                    val cA = controllersA.firstOrNull { it.loadedTrack?.id == selId }
+                    val cB = controllersB.firstOrNull { it.loadedTrack?.id == selId }
+                    val targetCtrl = cA ?: cB
+                    targetCtrl?.let { ctrl ->
+                        val curT = ctrl.currentTime.value
+                        val targetBeatIndex = kotlin.math.round(curT / beatDurationSecs)
+                        val refBeatPhase = refTime % beatDurationSecs
+                        val syncedTime = (targetBeatIndex * beatDurationSecs) + refBeatPhase
+                        if (kotlin.math.abs(curT - syncedTime) > 0.04f) {
+                            ctrl.seekTo(syncedTime)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Vibrant Distinct Clip Colors
+    val clipColorsA = remember {
+        listOf(
+            Color(0xFFFF5722), // Vibrant Orange
+            Color(0xFFE91E63), // Vibrant Pink
+            Color(0xFF9C27B0), // Purple
+            Color(0xFF3F51B5), // Indigo
+            Color(0xFF00BCD4), // Cyan
+            Color(0xFFFFEB3B), // Yellow
+            Color(0xFF4CAF50), // Green
+            Color(0xFFFF9800)  // Amber
+        )
+    }
+    val clipColorsB = remember {
+        listOf(
+            Color(0xFF00E676), // Bright Green
+            Color(0xFF00E5FF), // Bright Turquoise
+            Color(0xFFFF1744), // Bright Red
+            Color(0xFFFFC400), // Gold
+            Color(0xFFD500F9), // Neon Purple
+            Color(0xFF2979FF), // Bright Blue
+            Color(0xFFFF3D00), // Deep Orange
+            Color(0xFF76FF03)  // Lime
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -301,111 +365,172 @@ fun RadialControllerPlatter(
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF121214))
             .border(1.dp, Color(0xFF27272A), RoundedCornerShape(16.dp))
-            .onGloballyPositioned { layoutCoordinates ->
-                onPlatterPositioned(
-                    layoutCoordinates.positionInWindow(),
-                    layoutCoordinates.size
-                )
-                platterSize = layoutCoordinates.size
-            }
             .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
-                detectDragGestures(
-                    onDrag = { change, dragAmount ->
-                        val dx = dragAmount.x
-                        val dy = dragAmount.y
+                awaitPointerEventScope {
+                    var prevSpan2 = 0f
+                    var prevSpan3 = 0f
+                    var prevAngle2 = 0f
+                    var prevAngle3 = 0f
+                    var prevPos1 = Offset.Zero
+                    var prevPos2 = Offset.Zero
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pointers = event.changes.filter { it.pressed }
 
                         val cx = size.width / 2f
                         val cy = size.height / 2f
-                        val tx = change.position.x - cx
-                        val ty = change.position.y - cy
-                        val dist = sqrt(tx * tx + ty * ty)
-
                         val baseRadius = min(cx, cy) * 0.7f
-                        val isOuter = dist > baseRadius
 
-                        // Pitch adjustment rate delta
-                        val pitchDelta = -dy * 0.05f
+                        when (pointers.size) {
+                            1 -> {
+                                val change = pointers[0]
+                                val pos = change.position
+                                if (prevPos1 != Offset.Zero) {
+                                    val dx = pos.x - prevPos1.x
+                                    val dy = pos.y - prevPos1.y
 
-                        if (selectedTrackIds.isNotEmpty()) {
-                            // Apply to all targeted tracks simultaneously
-                            selectedTrackIds.forEach { selId ->
-                                val idxA = loadedTracksA.indexOfFirst { it.id == selId }
-                                if (idxA != -1) {
-                                    val currentPitch = controllersA.getOrNull(idxA)?.pitch ?: 0f
-                                    viewModel.adjustPitch("A", (currentPitch + pitchDelta).coerceIn(-8f, 8f))
+                                    val dist = sqrt((pos.x - cx) * (pos.x - cx) + (pos.y - cy) * (pos.y - cy))
+                                    val isOuter = dist > baseRadius
+                                    val deckZone = if (isOuter) "A" else "B"
+
+                                    if (abs(dy) > abs(dx) && abs(dy) > 1.5f) {
+                                        // 1-Finger Vertical = PITCH SHIFT (Pitch Only!)
+                                        val pitchDelta = -dy * 0.02f
+                                        viewModel.adjustPitchOnly(deckZone, pitchDelta)
+
+                                        updateGestureActive("PITCH SHIFT", true)
+                                        updateGestureActive("BASS / TREBLE EQ", false)
+                                    } else if (abs(dx) > abs(dy) && abs(dx) > 1.5f) {
+                                        // 1-Finger Horizontal = BASS / TREBLE EQ!
+                                        val eqDelta = dx * 15f
+                                        viewModel.adjustEqBassTreble(deckZone, eqDelta)
+
+                                        updateGestureActive("BASS / TREBLE EQ", true)
+                                        updateGestureActive("PITCH SHIFT", false)
+                                    }
                                 }
-                                val idxB = loadedTracksB.indexOfFirst { it.id == selId }
-                                if (idxB != -1) {
-                                    val currentPitch = controllersB.getOrNull(idxB)?.pitch ?: 0f
-                                    viewModel.adjustPitch("B", (currentPitch + pitchDelta).coerceIn(-8f, 8f))
-                                }
+                                prevPos1 = pos
+                                prevSpan2 = 0f
+                                prevSpan3 = 0f
                             }
-                        } else {
-                            // Apply to zone (Deck A vs Deck B)
-                            if (isOuter) {
-                                val currentPitch = controllersA.firstOrNull()?.pitch ?: 0f
-                                viewModel.adjustPitch("A", (currentPitch + pitchDelta).coerceIn(-8f, 8f))
-                            } else {
-                                val currentPitch = controllersB.firstOrNull()?.pitch ?: 0f
-                                viewModel.adjustPitch("B", (currentPitch + pitchDelta).coerceIn(-8f, 8f))
+                            2 -> {
+                                val p1 = pointers[0].position
+                                val p2 = pointers[1].position
+
+                                val center = Offset((p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+                                val currentSpan = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y))
+                                val currentAngle = atan2(p2.y - p1.y, p2.x - p1.x)
+
+                                val dist = sqrt((center.x - cx) * (center.x - cx) + (center.y - cy) * (center.y - cy))
+                                val deckZone = if (dist > baseRadius) "A" else "B"
+
+                                if (prevSpan2 > 0f) {
+                                    val spanDelta = currentSpan - prevSpan2
+                                    var angleDelta = currentAngle - prevAngle2
+                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
+                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
+
+                                    val dx2 = (center.x - prevPos2.x)
+                                    val dy2 = (center.y - prevPos2.y)
+
+                                    if (abs(spanDelta) > 4f) {
+                                        // 2-Finger Pinch to Zoom = BPM SPEED!
+                                        val bpmDelta = spanDelta * 0.005f
+                                        viewModel.adjustBpmSpeed(deckZone, bpmDelta)
+
+                                        updateGestureActive("BPM SPEED", true)
+                                    } else if (abs(angleDelta) > 0.05f) {
+                                        // 2-Finger Rotation = DECK OVERLAP!
+                                        val overlapDelta = angleDelta * 0.1f
+                                        val playhead = platterRotationAngle - Math.PI.toFloat() / 2f
+                                        viewModel.adjustOverlap(overlapDelta, deckZone, playhead, 0f)
+
+                                        updateGestureActive("DECK OVERLAP", true)
+                                    } else if (abs(dy2) > abs(dx2) && abs(dy2) > 2f) {
+                                        // 2-Finger Vertical Drag = CROSSFADER!
+                                        viewModel.adjustCrossfaderDelta(-dy2 * 1.5f)
+
+                                        updateGestureActive("CROSSFADER", true)
+                                    } else if (abs(dx2) > abs(dy2) && abs(dx2) > 2f) {
+                                        // 2-Finger Horizontal Drag = REWIND / FAST-FORWARD!
+                                        val seekSecs = dx2 * 0.1f
+                                        viewModel.seekTrack(deckZone, seekSecs)
+
+                                        updateGestureActive("REWIND / FAST-FORWARD", true)
+                                    }
+                                }
+
+                                prevSpan2 = currentSpan
+                                prevAngle2 = currentAngle
+                                prevPos2 = center
+                                prevPos1 = Offset.Zero
+                                prevSpan3 = 0f
+                            }
+                            3 -> {
+                                val p1 = pointers[0].position
+                                val p2 = pointers[1].position
+                                val p3 = pointers[2].position
+
+                                val cxP = (p1.x + p2.x + p3.x) / 3f
+                                val cyP = (p1.y + p2.y + p3.y) / 3f
+
+                                val currentSpan = (
+                                    sqrt((p1.x - cxP) * (p1.x - cxP) + (p1.y - cyP) * (p1.y - cyP)) +
+                                    sqrt((p2.x - cxP) * (p2.x - cxP) + (p2.y - cyP) * (p2.y - cyP)) +
+                                    sqrt((p3.x - cxP) * (p3.x - cxP) + (p3.y - cyP) * (p3.y - cyP))
+                                ) / 3f
+                                val currentAngle = atan2(cyP - cy, cxP - cx)
+
+                                val dist = sqrt((cxP - cx) * (cxP - cx) + (cyP - cy) * (cyP - cy))
+                                val deckZone = if (dist > baseRadius) "A" else "B"
+
+                                if (prevSpan3 > 0f) {
+                                    val spanDelta = currentSpan - prevSpan3
+                                    var angleDelta = currentAngle - prevAngle3
+                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
+                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
+
+                                    if (abs(angleDelta) > 0.04f) {
+                                        // 3-Finger Rotation = VINYL PLATTER SPIN (Manual Circle Spin)!
+                                        viewModel.scrubPlayhead(deckZone, angleDelta)
+
+                                        updateGestureActive("VINYL PLATTER SPIN", true)
+                                        updateGestureActive("VOLUME GAIN", false)
+                                    } else if (abs(spanDelta) > 2f) {
+                                        // 3-Finger Pinch In/Out = VOLUME GAIN!
+                                        val volDelta = spanDelta * 0.015f
+                                        viewModel.adjustTrackVolume("A", volDelta)
+                                        viewModel.adjustTrackVolume("B", volDelta)
+
+                                        updateGestureActive("VOLUME GAIN", true)
+                                        updateGestureActive("VINYL PLATTER SPIN", false)
+                                    }
+                                }
+                                prevSpan3 = currentSpan
+                                prevAngle3 = currentAngle
+                                prevSpan2 = 0f
+                                prevPos1 = Offset.Zero
+                            }
+                            else -> {
+                                prevPos1 = Offset.Zero
+                                prevSpan2 = 0f
+                                prevSpan3 = 0f
                             }
                         }
-
-                        // Apply visual spin fader
-                        manualRotationOffset += dx * 0.005f
-
-                        // Detect drag direction and trigger gesture names
-                        if (abs(dy) > abs(dx) && abs(dy) > 2f) {
-                            updateGestureActive("PITCH FADER", true)
-                            updateGestureActive("VINYL SCRATCH", false)
-                        } else if (abs(dx) > abs(dy) && abs(dx) > 2f) {
-                            updateGestureActive("VINYL SCRATCH", true)
-                            updateGestureActive("PITCH FADER", false)
-                        }
-                    },
-                    onDragEnd = {
-                        updateGestureActive("PITCH FADER", false)
-                        updateGestureActive("VINYL SCRATCH", false)
-                    },
-                    onDragCancel = {
-                        updateGestureActive("PITCH FADER", false)
-                        updateGestureActive("VINYL SCRATCH", false)
                     }
-                )
+                }
             }
             .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
                 detectTapGestures(
                     onDoubleTap = { offset ->
+                        // Center Play/Pause button bounds
                         val cx = size.width / 2f
                         val cy = size.height / 2f
                         val tx = offset.x - cx
                         val ty = offset.y - cy
-                        val touchRadius = sqrt(tx * tx + ty * ty)
-
-                        val baseRadius = min(cx, cy) * 0.7f
-                        val layerOffset = 18.dp.toPx()
-
-                        // Calculate layer index regardless of which zone was tapped
-                        val layerIdx = if (touchRadius > baseRadius) {
-                            ((touchRadius - baseRadius) / layerOffset).toInt()
-                        } else {
-                            ((baseRadius - touchRadius) / layerOffset).toInt()
-                        }
-
-                        // Select both Deck A and Deck B waveforms in that spot
-                        val selectedSet = mutableSetOf<String>()
-                        if (layerIdx in loadedTracksA.indices) {
-                            selectedSet.add(loadedTracksA[layerIdx].id)
-                        }
-                        if (layerIdx in loadedTracksB.indices) {
-                            selectedSet.add(loadedTracksB[layerIdx].id)
-                        }
-                        viewModel.setSelectedTracks(selectedSet)
-
-                        updateGestureActive("DOUBLE-TAP DUAL SELECT", true)
-                        scope.launch {
-                            delay(800)
-                            updateGestureActive("DOUBLE-TAP DUAL SELECT", false)
+                        if (sqrt(tx * tx + ty * ty) < 60f) {
+                            viewModel.togglePlayback()
                         }
                     },
                     onTap = { offset ->
@@ -413,213 +538,360 @@ fun RadialControllerPlatter(
                         val cy = size.height / 2f
                         val tx = offset.x - cx
                         val ty = offset.y - cy
-                        val touchRadius = sqrt(tx * tx + ty * ty)
-
+                        val dist = sqrt(tx * tx + ty * ty)
                         val baseRadius = min(cx, cy) * 0.7f
-                        val layerOffset = 18.dp.toPx()
 
-                        // Single tap selects ONLY the waveform in that place on Deck A or Deck B
-                        var selectedId: String? = null
-                        if (touchRadius > baseRadius) {
-                            val layerIdx = ((touchRadius - baseRadius) / layerOffset).toInt()
-                            if (layerIdx in loadedTracksA.indices) {
-                                selectedId = loadedTracksA[layerIdx].id
+                        if (dist > baseRadius * 0.35f) { // Ignore spindle area taps
+                            val isOuter = dist > baseRadius
+                            val list = if (isOuter) loadedTracksA else loadedTracksB
+                            if (list.isNotEmpty()) {
+                                val arcSpan = (2 * Math.PI) / list.size
+                                // Use playhead zero since tracks don't spin!
+                                var angle = atan2(ty, tx) + Math.PI / 2
+                                if (angle < 0) angle += 2 * Math.PI
+                                val idx = (angle / arcSpan).toInt().coerceIn(0, list.size - 1)
+                                val track = list[idx]
+                                if (selectedTrackIds.contains(track.id)) {
+                                    viewModel.setSelectedTracks(selectedTrackIds - track.id)
+                                } else {
+                                    viewModel.setSelectedTracks(selectedTrackIds + track.id)
+                                }
                             }
-                        } else {
-                            val layerIdx = ((baseRadius - touchRadius) / layerOffset).toInt()
-                            if (layerIdx in loadedTracksB.indices) {
-                                selectedId = loadedTracksB[layerIdx].id
-                            }
-                        }
-                        viewModel.selectTrack(selectedId)
-
-                        updateGestureActive("TAP SELECT", true)
-                        scope.launch {
-                            delay(800)
-                            updateGestureActive("TAP SELECT", false)
                         }
                     },
                     onLongPress = { offset ->
                         val cx = size.width / 2f
                         val cy = size.height / 2f
-                        val tx = offset.x - cx
-                        val ty = offset.y - cy
-                        val touchRadius = sqrt(tx * tx + ty * ty)
-
-                        val baseRadius = min(cx, cy) * 0.7f
-                        val layerOffset = 18.dp.toPx()
-
-                        if (selectedTrackIds.isNotEmpty()) {
-                            val layerIdx = if (touchRadius > baseRadius) {
-                                ((touchRadius - baseRadius) / layerOffset).toInt()
+                        val dist = sqrt((offset.x - cx) * (offset.x - cx) + (offset.y - cy) * (offset.y - cy))
+                        val isOuter = dist > min(cx, cy) * 0.7f
+                        val list = if (isOuter) loadedTracksA else loadedTracksB
+                        val arcSpan = (2 * Math.PI) / list.size
+                        var angle = atan2(offset.y - cy, offset.x - cx) + Math.PI / 2
+                        if (angle < 0) angle += 2 * Math.PI
+                        val idx = (angle / arcSpan).toInt().coerceIn(0, list.size - 1)
+                        if (list.isNotEmpty()) {
+                            val track = list[idx]
+                            if (selectedTrackIds.contains(track.id)) {
+                                viewModel.setSelectedTracks(selectedTrackIds - track.id)
                             } else {
-                                ((baseRadius - touchRadius) / layerOffset).toInt()
-                            }
-
-                            var touchedTrackId: String? = null
-                            if (touchRadius > baseRadius) {
-                                if (layerIdx in loadedTracksA.indices) {
-                                    touchedTrackId = loadedTracksA[layerIdx].id
-                                }
-                            } else {
-                                if (layerIdx in loadedTracksB.indices) {
-                                    touchedTrackId = loadedTracksB[layerIdx].id
-                                }
-                            }
-
-                            if (touchedTrackId != null && selectedTrackIds.contains(touchedTrackId)) {
-                                selectedTrackIds.forEach { id ->
-                                    viewModel.removeTrackFromDecks(id)
-                                }
-                                viewModel.setSelectedTracks(emptySet())
-
-                                updateGestureActive("UNLOAD TRACK", true)
-                                scope.launch {
-                                    delay(1000)
-                                    updateGestureActive("UNLOAD TRACK", false)
-                                }
+                                viewModel.setSelectedTracks(selectedTrackIds + track.id)
                             }
                         }
                     }
                 )
             }
+            .onGloballyPositioned { layoutCoordinates ->
+                platterSize = layoutCoordinates.size
+                onPlatterPositioned(layoutCoordinates.positionInWindow(), layoutCoordinates.size)
+            }
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val cx = size.width / 2f
             val cy = size.height / 2f
-            val baseRadius = min(cx, cy) * 0.7f
-            val layerOffset = 18.dp.toPx()
+            val baseRadius = min(cx, cy) * 0.68f
 
-            // Draw primary deck dividing circle outline
+            // 1. Draw Single Primary Dividing Circle Outline
             drawCircle(
                 color = Color(0xFF3F3F46),
                 radius = baseRadius,
                 center = Offset(cx, cy),
-                style = Stroke(width = 2.dp.toPx())
+                style = Stroke(width = 2.5.dp.toPx())
             )
 
-            // 1. Draw outer zone Deck A waveforms (protruding outward)
-            loadedTracksA.forEachIndexed { idx, track ->
-                val r = baseRadius + idx * layerOffset
-                val isTargeted = selectedTrackIds.contains(track.id)
-                val color = if (isTargeted) Color.Cyan else Color(0xFF0891B2).copy(alpha = 0.7f)
+            // 2. Deck A Audio Clips (Outer Zone - Waveforms Protruding OUTWARD)
+            if (loadedTracksA.isNotEmpty()) {
+                val numClipsA = loadedTracksA.size
+                val arcSpanA = (2 * Math.PI) / numClipsA
 
-                // Optional guide circle for stacked layers
-                if (idx > 0) {
-                    drawCircle(
-                        color = if (isTargeted) Color.Cyan.copy(alpha = 0.15f) else Color.DarkGray.copy(alpha = 0.1f),
-                        radius = r,
-                        center = Offset(cx, cy),
-                        style = Stroke(width = 0.8f.dp.toPx())
-                    )
-                }
+                loadedTracksA.forEachIndexed { clipIdx, track ->
+                    val startAngle = clipIdx * arcSpanA - Math.PI / 2 // Removed platterRotationAngle!
+                    val isTargeted = selectedTrackIds.contains(track.id)
+                    val baseColor = clipColorsA[clipIdx % clipColorsA.size]
+                    val clipColor = if (isTargeted) Color.White else baseColor
+                    val volMultiplier = trackVolumes[track.id] ?: 1.0f
+                    val trackOverlap = trackOverlaps[track.id] ?: 0f
+                    val effectiveArcSpan = arcSpanA + trackOverlap
 
-                val count = 72
-                for (i in 0 until count) {
-                    val angle = (i.toFloat() / count) * 2 * Math.PI + totalRotation
-                    val peakH = 10f + (track.id.hashCode() % (i + 4) % 12f)
-                    val sx = cx + cos(angle).toFloat() * r
-                    val sy = cy + sin(angle).toFloat() * r
-                    val ex = cx + cos(angle).toFloat() * (r + peakH)
-                    val ey = cy + sin(angle).toFloat() * (r + peakH)
+                    val numSpikes = (42 * (effectiveArcSpan / arcSpanA)).toInt()
+                    for (i in 0 until numSpikes) {
+                        val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
+                        val pattern = 10f + (track.id.hashCode() % (i + 5) % 18f)
+                        val peakH = (pattern * volMultiplier).coerceIn(4f, 60f)
 
-                    drawLine(
-                        color = color,
-                        start = Offset(sx, sy),
-                        end = Offset(ex, ey),
-                        strokeWidth = if (isTargeted) 2.2f.dp.toPx() else 1.2f.dp.toPx()
-                    )
-                }
-            }
+                        val sx = cx + cos(angle).toFloat() * baseRadius
+                        val sy = cy + sin(angle).toFloat() * baseRadius
+                        val ex = cx + cos(angle).toFloat() * (baseRadius + peakH)
+                        val ey = cy + sin(angle).toFloat() * (baseRadius + peakH)
 
-            // 2. Draw inner zone Deck B waveforms (protruding inward)
-            loadedTracksB.forEachIndexed { idx, track ->
-                val r = baseRadius - idx * layerOffset
-                val isTargeted = selectedTrackIds.contains(track.id)
-                val color = if (isTargeted) Color.Yellow else Color(0xFFD97706).copy(alpha = 0.7f)
+                        drawLine(
+                            color = clipColor,
+                            start = Offset(sx, sy),
+                            end = Offset(ex, ey),
+                            strokeWidth = if (isTargeted) 2.5f.dp.toPx() else 1.5f.dp.toPx()
+                        )
+                    }
 
-                if (idx > 0) {
-                    drawCircle(
-                        color = if (isTargeted) Color.Yellow.copy(alpha = 0.15f) else Color.DarkGray.copy(alpha = 0.1f),
-                        radius = r,
-                        center = Offset(cx, cy),
-                        style = Stroke(width = 0.8f.dp.toPx())
-                    )
-                }
-
-                val count = 54
-                for (i in 0 until count) {
-                    val angle = (i.toFloat() / count) * 2 * Math.PI - totalRotation
-                    val peakH = 8f + (track.id.hashCode() % (i + 3) % 10f)
-                    val sx = cx + cos(angle).toFloat() * r
-                    val sy = cy + sin(angle).toFloat() * r
-                    val ex = cx + cos(angle).toFloat() * (r - peakH)
-                    val ey = cy + sin(angle).toFloat() * (r - peakH)
-
-                    drawLine(
-                        color = color,
-                        start = Offset(sx, sy),
-                        end = Offset(ex, ey),
-                        strokeWidth = if (isTargeted) 2.0f.dp.toPx() else 1.0f.dp.toPx()
-                    )
+                    // Draw clip segment border accent
+                    if (isTargeted) {
+                        drawCircle(
+                            color = baseColor.copy(alpha = 0.3f),
+                            radius = baseRadius + 25f * volMultiplier,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 2.dp.toPx())
+                        )
+                    }
                 }
             }
 
-            // Center Platter Spindle
-            val innerSpindleRadius = baseRadius - (loadedTracksB.size * layerOffset).coerceAtLeast(0f) - 15f
-            if (innerSpindleRadius > 20f) {
-                drawCircle(
-                    color = Color(0xFF1F1F23),
-                    radius = innerSpindleRadius.coerceAtLeast(15f),
-                    center = Offset(cx, cy)
+            // 3. Deck B Audio Clips (Inner Zone - Waveforms Protruding INWARD)
+            if (loadedTracksB.isNotEmpty()) {
+                val numClipsB = loadedTracksB.size
+                val arcSpanB = (2 * Math.PI) / numClipsB
+
+                loadedTracksB.forEachIndexed { clipIdx, track ->
+                    val startAngle = clipIdx * arcSpanB - Math.PI / 2 // Removed platterRotationAngle!
+                    val isTargeted = selectedTrackIds.contains(track.id)
+                    val baseColor = clipColorsB[clipIdx % clipColorsB.size]
+                    val clipColor = if (isTargeted) Color.White else baseColor
+                    val volMultiplier = trackVolumes[track.id] ?: 1.0f
+                    val trackOverlap = trackOverlaps[track.id] ?: 0f
+                    val effectiveArcSpan = arcSpanB + trackOverlap
+
+                    val numSpikes = (36 * (effectiveArcSpan / arcSpanB)).toInt()
+                    for (i in 0 until numSpikes) {
+                        val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
+                        val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f)
+                        val peakH = (pattern * volMultiplier).coerceIn(4f, 45f)
+
+                        val sx = cx + cos(angle).toFloat() * baseRadius
+                        val sy = cy + sin(angle).toFloat() * baseRadius
+                        val ex = cx + cos(angle).toFloat() * (baseRadius - peakH)
+                        val ey = cy + sin(angle).toFloat() * (baseRadius - peakH)
+
+                        drawLine(
+                            color = clipColor,
+                            start = Offset(sx, sy),
+                            end = Offset(ex, ey),
+                            strokeWidth = if (isTargeted) 2.5f.dp.toPx() else 1.5f.dp.toPx()
+                        )
+                    }
+                }
+            }
+
+            // 4. Center Spindle
+            val innerSpindleRadius = baseRadius * 0.35f
+            drawCircle(
+                color = Color(0xFF18181B),
+                radius = innerSpindleRadius,
+                center = Offset(cx, cy)
+            )
+            drawCircle(
+                color = Color(0xFF3F3F46),
+                radius = innerSpindleRadius,
+                center = Offset(cx, cy),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+
+            // 5. Stopwatch Rotating Red Playhead Line (Hand on a Stopwatch)
+            val currentPlayheadAngle = platterRotationAngle - Math.PI.toFloat() / 2f
+            val maxWaveProtrusion = 45f
+            val playheadLineLength = baseRadius + maxWaveProtrusion
+
+            val redLineEndX = cx + cos(currentPlayheadAngle) * playheadLineLength
+            val redLineEndY = cy + sin(currentPlayheadAngle) * playheadLineLength
+
+            drawLine(
+                color = Color(0xFFFF1744), // Bright Red
+                start = Offset(cx, cy),
+                end = Offset(redLineEndX, redLineEndY),
+                strokeWidth = 3.dp.toPx()
+            )
+
+            // Red Playhead Tip Bulb & Spindle Cap
+            drawCircle(
+                color = Color(0xFFFF1744),
+                radius = 5.dp.toPx(),
+                center = Offset(redLineEndX, redLineEndY)
+            )
+            drawCircle(
+                color = Color(0xFFFF1744),
+                radius = 7.dp.toPx(),
+                center = Offset(cx, cy)
+            )
+            // 6. Draw Stationary Song Beat Grid Lines around Circle (Lines on a Grid)
+            val numBeatGridTicks = 32
+            val beatGridAngles = List(numBeatGridTicks) { b ->
+                (b * (2 * Math.PI / numBeatGridTicks) - Math.PI / 2).toFloat()
+            }
+
+            beatGridAngles.forEachIndexed { bIdx, gridAngle ->
+                val isMajorBeat = bIdx % 4 == 0
+                val tickLen = if (isMajorBeat) 12f else 6f
+                val tickColor = if (isMajorBeat) Color.Cyan.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.15f)
+
+                val tickSx = cx + cos(gridAngle) * (baseRadius - tickLen)
+                val tickSy = cy + sin(gridAngle) * (baseRadius - tickLen)
+                val tickEx = cx + cos(gridAngle) * (baseRadius + tickLen)
+                val tickEy = cy + sin(gridAngle) * (baseRadius + tickLen)
+
+                drawLine(
+                    color = tickColor,
+                    start = Offset(tickSx, tickSy),
+                    end = Offset(tickEx, tickEy),
+                    strokeWidth = if (isMajorBeat) 1.5.dp.toPx() else 0.8.dp.toPx()
                 )
-                drawCircle(
-                    color = Color.DarkGray,
-                    radius = innerSpindleRadius.coerceAtLeast(15f),
-                    center = Offset(cx, cy),
-                    style = Stroke(width = 1.dp.toPx())
-                )
             }
-            drawCircle(Color(0xFF312E81), radius = 8.dp.toPx(), center = Offset(cx, cy))
-            drawCircle(Color.White, radius = 3.dp.toPx(), center = Offset(cx, cy))
+
+            // 7. Semi-Transparent Drag Placement Preview Waveform (snapping song edges to grid lines)
+            if (draggingTrack != null && platterSize.width > 0) {
+                val px = dragTouchOffset.x - platterPositionInWindow.x
+                val py = dragTouchOffset.y - platterPositionInWindow.y
+
+                val dx = px - cx
+                val dy = py - cy
+                val dist = sqrt(dx * dx + dy * dy)
+
+                val isOuter = dist > baseRadius
+                val dropAngle = atan2(dy, dx)
+
+                // MAGNETIC BEAT GRID SNAPPING: Find closest beat grid line for song edge
+                var closestBeatAngle = dropAngle
+                var minAngleDiff = Float.MAX_VALUE
+                beatGridAngles.forEach { gridAngle ->
+                    var diff = abs(dropAngle - gridAngle)
+                    if (diff > Math.PI.toFloat()) diff = (2 * Math.PI.toFloat()) - diff
+                    if (diff < minAngleDiff) {
+                        minAngleDiff = diff
+                        closestBeatAngle = gridAngle
+                    }
+                }
+
+                // Snap song placement angle to nearest beat grid line if within snap threshold
+                val isSnapped = minAngleDiff < 0.35f
+                val effectiveDropAngle = if (isSnapped) closestBeatAngle else dropAngle
+                val normDropAngle = (effectiveDropAngle + Math.PI / 2 + 2 * Math.PI) % (2 * Math.PI)
+
+                val previewColor = if (isSnapped) Color.Cyan.copy(alpha = 0.7f) else Color.Cyan.copy(alpha = 0.4f)
+                val numSpikes = 32
+
+                if (isOuter) {
+                    val numExisting = loadedTracksA.size
+                    val newTotal = (numExisting + 1).coerceAtLeast(1)
+                    val arcSpan = (2 * Math.PI) / newTotal
+                    val startAngle = normDropAngle - arcSpan / 2 - Math.PI / 2
+
+                    for (i in 0 until numSpikes) {
+                        val angle = (startAngle + (i.toFloat() / numSpikes) * arcSpan).toFloat()
+                        val peakH = 18f + (i % 6) * 4f
+                        val sx = cx + cos(angle) * baseRadius
+                        val sy = cy + sin(angle) * baseRadius
+                        val ex = cx + cos(angle) * (baseRadius + peakH)
+                        val ey = cy + sin(angle) * (baseRadius + peakH)
+
+                        drawLine(
+                            color = previewColor,
+                            start = Offset(sx, sy),
+                            end = Offset(ex, ey),
+                            strokeWidth = if (isSnapped) 3.5.dp.toPx() else 2.5.dp.toPx()
+                        )
+                    }
+                    // Highlight magnetic snapped beat line
+                    if (isSnapped) {
+                        val snapSx = cx + cos(closestBeatAngle) * (baseRadius - 20f)
+                        val snapSy = cy + sin(closestBeatAngle) * (baseRadius - 20f)
+                        val snapEx = cx + cos(closestBeatAngle) * (baseRadius + 45f)
+                        val snapEy = cy + sin(closestBeatAngle) * (baseRadius + 45f)
+                        drawLine(
+                            color = Color.Cyan,
+                            start = Offset(snapSx, snapSy),
+                            end = Offset(snapEx, snapEy),
+                            strokeWidth = 2.5.dp.toPx()
+                        )
+                    }
+                    drawCircle(
+                        color = Color.Cyan.copy(alpha = 0.3f),
+                        radius = baseRadius + 32f,
+                        center = Offset(cx, cy),
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                } else {
+                    val numExisting = loadedTracksB.size
+                    val newTotal = (numExisting + 1).coerceAtLeast(1)
+                    val arcSpan = (2 * Math.PI) / newTotal
+                    val startAngle = normDropAngle - arcSpan / 2 - Math.PI / 2
+
+                    for (i in 0 until numSpikes) {
+                        val angle = (startAngle + (i.toFloat() / numSpikes) * arcSpan).toFloat()
+                        val peakH = 14f + (i % 5) * 3f
+                        val sx = cx + cos(angle) * baseRadius
+                        val sy = cy + sin(angle) * baseRadius
+                        val ex = cx + cos(angle) * (baseRadius - peakH)
+                        val ey = cy + sin(angle) * (baseRadius - peakH)
+
+                        drawLine(
+                            color = previewColor,
+                            start = Offset(sx, sy),
+                            end = Offset(ex, ey),
+                            strokeWidth = if (isSnapped) 3.5.dp.toPx() else 2.5.dp.toPx()
+                        )
+                    }
+                    if (isSnapped) {
+                        val snapSx = cx + cos(closestBeatAngle) * (baseRadius + 20f)
+                        val snapSy = cy + sin(closestBeatAngle) * (baseRadius + 20f)
+                        val snapEx = cx + cos(closestBeatAngle) * (baseRadius - 35f)
+                        val snapEy = cy + sin(closestBeatAngle) * (baseRadius - 35f)
+                        drawLine(
+                            color = Color.Cyan,
+                            start = Offset(snapSx, snapSy),
+                            end = Offset(snapEx, snapEy),
+                            strokeWidth = 2.5.dp.toPx()
+                        )
+                    }
+                    drawCircle(
+                        color = Color.Cyan.copy(alpha = 0.3f),
+                        radius = baseRadius - 28f,
+                        center = Offset(cx, cy),
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                }
+            }
         }
 
-        // HUD overlay showing targeted track names
+        // HUD Overlay Showing Selected Track Info & Volume
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(12.dp)
-                .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             if (selectedTrackIds.isNotEmpty()) {
-                val selectedTitles = (loadedTracksA + loadedTracksB)
-                    .filter { selectedTrackIds.contains(it.id) }
-                    .map { it.title }
-                Text("TARGETED: ${selectedTitles.joinToString(" + ")}", color = Color.Cyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                Text("Single tap targets one | Double tap targets both decks in spot", color = Color.LightGray, fontSize = 8.sp)
+                val selectedTracks = (loadedTracksA + loadedTracksB).filter { selectedTrackIds.contains(it.id) }
+                val titleStr = selectedTracks.joinToString(" + ") { it.title }
+                val avgVol = selectedTracks.map { trackVolumes[it.id] ?: 1.0f }.average()
+                Text("TARGETED: $titleStr", color = Color.Cyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                Text("Volume: ${(avgVol * 100).toInt()}% (Drag Vertically to Scale Waveform)", color = Color.Yellow, fontSize = 8.5.sp, fontFamily = FontFamily.Monospace)
             } else {
-                Text("GLOBAL MODE (Apply to Deck Zones)", color = Color.LightGray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                Text("Single tap to target one | Double tap targets both decks", color = Color.Gray, fontSize = 8.sp)
+                Text("SINGLE CIRCLE PLATTER", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                Text("Outer: Deck A | Inner: Deck B | Red Line: Playhead", color = Color.Gray, fontSize = 8.sp)
             }
         }
 
-        // Floating gesture text overlays aligned to radial clock positions
+        // Floating Gesture Text Overlays Aligned to Radial Clock Positions
         val density = androidx.compose.ui.platform.LocalDensity.current
         val cx = platterSize.width / 2f
         val cy = platterSize.height / 2f
-        val baseRadius = min(cx, cy) * 0.7f
-        val layerOffset = with(density) { 18.dp.toPx() }
+        val baseRadius = min(cx, cy) * 0.68f
 
         if (platterSize.width > 0) {
             spots.forEach { spot ->
                 if (spot.alpha > 0f) {
-                    val radiusOffset = baseRadius + (loadedTracksA.size * layerOffset).coerceAtLeast(0f) + 30f
+                    val radiusOffset = baseRadius + 45f
                     val posX = cx + cos(spot.angleRad) * radiusOffset
                     val posY = cy + sin(spot.angleRad) * radiusOffset
 
-                    val posXDp = with(density) { posX.toDp() } - 60.dp
+                    val posXDp = with(density) { posX.toDp() } - 50.dp
                     val posYDp = with(density) { posY.toDp() } - 15.dp
 
                     Box(
@@ -627,7 +899,7 @@ fun RadialControllerPlatter(
                             .offset(x = posXDp, y = posYDp)
                             .alpha(spot.alpha)
                             .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
-                            .border(1.dp, Color.Cyan.copy(alpha = 0.4f * spot.alpha), RoundedCornerShape(6.dp))
+                            .border(1.dp, Color.Cyan.copy(alpha = 0.5f * spot.alpha), RoundedCornerShape(6.dp))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
