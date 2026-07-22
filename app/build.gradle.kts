@@ -274,7 +274,8 @@ configurations.all {
 }
 
 dependencies {
-ksp("com.squareup.moshi:moshi-kotlin-codegen:1.15.2")
+ksp("com.squareup.moshi:moshi-kotlin-codegen:1.16.1")
+implementation("com.squareup.moshi:moshi-kotlin:1.16.1")
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
