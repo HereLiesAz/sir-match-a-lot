@@ -19,12 +19,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
-import com.hereliesaz.sirmatchalot.ui.DecksScreen
 import com.hereliesaz.sirmatchalot.ui.ControlsScreen
 import com.hereliesaz.sirmatchalot.ui.PerformanceScreen
 
 enum class DjTab {
-    LIBRARY, DECKS, CONTROLS, PERFORMANCE
+    LIBRARY, CONTROLS, PERFORMANCE
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,6 +41,7 @@ fun MainScreen(
     var showSyncDialog by remember { mutableStateOf(false) }
     var inputIp by remember { mutableStateOf("192.168.1.100") }
     var inputCode by remember { mutableStateOf("ROOM") }
+    val isPlaying by viewModel.isPlaying.collectAsState()
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -147,19 +147,25 @@ fun MainScreen(
                             indicatorColor = Color.Transparent
                         )
                     )
+
                     NavigationBarItem(
-                        selected = currentTab == DjTab.DECKS,
-                        onClick = { currentTab = DjTab.DECKS },
-                        label = { Text("Decks", fontSize = 10.sp) },
-                        icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Decks") },
+                        selected = false,
+                        onClick = { viewModel.togglePlayback() },
+                        label = { Text(if (isPlaying) "HALT MIX" else "PLAY MIX", fontSize = 10.sp, fontWeight = FontWeight.Black, color = if (isPlaying) Color(0xFFF59E0B) else Color(0xFF06B6D4)) },
+                        icon = { 
+                            Icon(
+                                Icons.Default.PlayArrow, 
+                                contentDescription = "Play/Pause",
+                                tint = if (isPlaying) Color(0xFFF59E0B) else Color(0xFF06B6D4)
+                            ) 
+                        },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Cyan,
-                            selectedTextColor = Color.Cyan,
-                            unselectedIconColor = Color.Gray,
-                            unselectedTextColor = Color.Gray,
+                            selectedIconColor = Color.Transparent,
+                            unselectedIconColor = Color.Transparent,
                             indicatorColor = Color.Transparent
                         )
                     )
+
                     NavigationBarItem(
                         selected = currentTab == DjTab.PERFORMANCE,
                         onClick = { currentTab = DjTab.PERFORMANCE },
@@ -185,7 +191,6 @@ fun MainScreen(
         ) {
             when (currentTab) {
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
-                DjTab.DECKS -> DecksScreen(viewModel = viewModel)
                 DjTab.CONTROLS -> ControlsScreen(viewModel = viewModel)
                 DjTab.PERFORMANCE -> PerformanceScreen(viewModel = viewModel)
             }

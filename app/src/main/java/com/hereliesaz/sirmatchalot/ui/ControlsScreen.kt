@@ -9,6 +9,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,63 +44,11 @@ fun ControlsScreen(
     viewModel: SirMatchALotViewModel,
     modifier: Modifier = Modifier
 ) {
-    var activeSubTab by remember { mutableStateOf("radial") }
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFF09090B))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFF18181B))
-                .padding(4.dp)
-        ) {
-            Button(
-                onClick = { activeSubTab = "radial" },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (activeSubTab == "radial") Color.Cyan else Color.Transparent
-                ),
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                Text("RADIAL CONTROLLER", color = if (activeSubTab == "radial") Color.Black else Color.Gray, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-            }
-            Button(
-                onClick = { activeSubTab = "energy" },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (activeSubTab == "energy") Color.Cyan else Color.Transparent
-                ),
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                Text("SESSION ENERGY GRAPH", color = if (activeSubTab == "energy") Color.Black else Color.Gray, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-            }
-        }
-
-        if (activeSubTab == "radial") {
-            RadialControllerSplitPane(viewModel = viewModel)
-        } else {
-            EnergyGraphView(viewModel = viewModel)
-        }
-    }
-}
-
-@Composable
-fun RadialControllerSplitPane(viewModel: SirMatchALotViewModel) {
     var draggingTrack by remember { mutableStateOf<Track?>(null) }
     var dragTouchOffset by remember { mutableStateOf(Offset.Zero) }
 
     var platterPositionInWindow by remember { mutableStateOf(Offset.Zero) }
     var platterSize by remember { mutableStateOf(IntSize.Zero) }
-
-    val scope = rememberCoroutineScope()
 
     val spots = remember {
         mutableStateListOf(
@@ -160,16 +110,239 @@ fun RadialControllerSplitPane(viewModel: SirMatchALotViewModel) {
         }
     }
 
-    Row(
-        modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    val loadedTracksA by viewModel.loadedTracksA.collectAsState()
+    val loadedTracksB by viewModel.loadedTracksB.collectAsState()
+    val controllersA by viewModel.controllersA.collectAsState()
+    val controllersB by viewModel.controllersB.collectAsState()
+    val trackVolumes by viewModel.trackVolumes.collectAsState()
+    val trackOverlaps by viewModel.trackOverlaps.collectAsState()
+    val selectedTrackIds by viewModel.selectedTrackIds.collectAsState(initial = emptySet())
+    val isPlaying by viewModel.isPlaying.collectAsState()
+
+    val scope = rememberCoroutineScope()
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF09090B))
+            .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
+                awaitPointerEventScope {
+                    var prevSpan2 = 0f
+                    var prevSpan3 = 0f
+                    var prevAngle2 = 0f
+                    var prevAngle3 = 0f
+                    var prevPos1 = Offset.Zero
+                    var prevPos2 = Offset.Zero
+
+                    var initialPos1 = Offset.Zero
+                    var isDragging1 = false
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pointers = event.changes.filter { it.pressed }
+
+                        // Platter center approximation for zone fallback
+                        val cx = size.width / 2f
+                        val cy = size.height * 0.4f // Platter is roughly at top 40% in Column
+                        val baseRadius = min(size.width, size.height) * 0.35f
+
+                        // Determine target deck based on selection or fallback to position
+                        val getTargetDeck = { pos: Offset ->
+                            if (selectedTrackIds.isNotEmpty()) {
+                                val inA = loadedTracksA.any { it.id in selectedTrackIds }
+                                val inB = loadedTracksB.any { it.id in selectedTrackIds }
+                                if (inA && !inB) "A" else if (inB && !inA) "B" else "A" // default A if both or neither selected
+                            } else {
+                                val dist = sqrt((pos.x - cx) * (pos.x - cx) + (pos.y - cy) * (pos.y - cy))
+                                if (dist > baseRadius) "A" else "B"
+                            }
+                        }
+
+                        when (pointers.size) {
+                            1 -> {
+                                val change = pointers[0]
+                                val pos = change.position
+                                
+                                if (prevPos1 == Offset.Zero) {
+                                    initialPos1 = pos
+                                    isDragging1 = false
+                                } else {
+                                    val dx = pos.x - prevPos1.x
+                                    val dy = pos.y - prevPos1.y
+
+                                    if (abs(pos.x - initialPos1.x) > 5f || abs(pos.y - initialPos1.y) > 5f) {
+                                        isDragging1 = true
+                                    }
+
+                                    if (isDragging1) {
+                                        val deckZone = getTargetDeck(pos)
+
+                                        if (abs(dy) > abs(dx) && abs(dy) > 1.5f) {
+                                            val pitchDelta = -dy * 0.02f
+                                            viewModel.adjustPitchOnly(deckZone, pitchDelta)
+                                            updateGestureActive("PITCH SHIFT", true)
+                                            updateGestureActive("BASS / TREBLE EQ", false)
+                                        } else if (abs(dx) > abs(dy) && abs(dx) > 1.5f) {
+                                            val eqDelta = dx * 15f
+                                            viewModel.adjustEqBassTreble(deckZone, eqDelta)
+                                            updateGestureActive("BASS / TREBLE EQ", true)
+                                            updateGestureActive("PITCH SHIFT", false)
+                                        }
+                                    }
+                                }
+                                prevPos1 = pos
+                                prevSpan2 = 0f
+                                prevSpan3 = 0f
+                            }
+                            2 -> {
+                                val p1 = pointers[0].position
+                                val p2 = pointers[1].position
+
+                                val center = Offset((p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+                                val currentSpan = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y))
+                                val currentAngle = atan2(p2.y - p1.y, p2.x - p1.x)
+
+                                val deckZone = getTargetDeck(center)
+
+                                if (prevSpan2 > 0f) {
+                                    val spanDelta = currentSpan - prevSpan2
+                                    var angleDelta = currentAngle - prevAngle2
+                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
+                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
+
+                                    val dy2 = (center.y - prevPos2.y)
+                                    val dx2 = (center.x - prevPos2.x)
+
+                                    if (abs(spanDelta) > 4f) {
+                                        val bpmDelta = spanDelta * 0.005f
+                                        viewModel.adjustBpmSpeed(deckZone, bpmDelta)
+                                        updateGestureActive("BPM SPEED", true)
+                                    } else if (abs(angleDelta) > 0.05f) {
+                                        val overlapDelta = angleDelta * 0.1f
+                                        // Use approximate playhead angle for relative overlap
+                                        viewModel.adjustOverlap(overlapDelta, deckZone, 0f, 0f)
+                                        updateGestureActive("DECK OVERLAP", true)
+                                    } else if (abs(dy2) > abs(dx2) && abs(dy2) > 2f) {
+                                        viewModel.adjustCrossfaderDelta(-dy2 * 1.5f)
+                                        updateGestureActive("CROSSFADER", true)
+                                    } else if (abs(dx2) > abs(dy2) && abs(dx2) > 2f) {
+                                        viewModel.scrubPlayhead("A", dx2 * 20f)
+                                        viewModel.scrubPlayhead("B", dx2 * 20f)
+                                        updateGestureActive("SEEK / SCRATCH", true)
+                                    }
+                                }
+                                prevPos2 = center
+                                prevSpan2 = currentSpan
+                                prevAngle2 = currentAngle
+                                prevSpan3 = 0f
+                            }
+                            3 -> {
+                                val p1 = pointers[0].position
+                                val p2 = pointers[1].position
+                                val p3 = pointers[2].position
+
+                                val cx3 = (p1.x + p2.x + p3.x) / 3f
+                                val cy3 = (p1.y + p2.y + p3.y) / 3f
+
+                                val d1 = sqrt((p1.x - cx3)*(p1.x - cx3) + (p1.y - cy3)*(p1.y - cy3))
+                                val d2 = sqrt((p2.x - cx3)*(p2.x - cx3) + (p2.y - cy3)*(p2.y - cy3))
+                                val d3 = sqrt((p3.x - cx3)*(p3.x - cx3) + (p3.y - cy3)*(p3.y - cy3))
+                                val currentSpan3 = (d1 + d2 + d3) / 3f
+
+                                val a1 = atan2(p1.y - cy3, p1.x - cx3)
+                                val a2 = atan2(p2.y - cy3, p2.x - cx3)
+                                val a3 = atan2(p3.y - cy3, p3.x - cx3)
+                                val currentAngle3 = (a1 + a2 + a3) / 3f
+
+                                if (prevSpan3 > 0f) {
+                                    val spanDelta = currentSpan3 - prevSpan3
+                                    var angleDelta = currentAngle3 - prevAngle3
+                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
+                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
+
+                                    if (abs(spanDelta) > 3f) {
+                                        val volDelta = spanDelta * 0.005f
+                                        viewModel.setVolume((viewModel.audioVolume.value + volDelta).coerceIn(0f, 0.8f))
+                                        updateGestureActive("MASTER VOLUME", true)
+                                    } else if (abs(angleDelta) > 0.05f) {
+                                        val spinDelta = angleDelta * 0.5f
+                                        viewModel.scrubPlayhead("A", spinDelta * 100f)
+                                        viewModel.scrubPlayhead("B", spinDelta * 100f)
+                                        updateGestureActive("PLATTER SPIN", true)
+                                    }
+                                }
+                                prevSpan3 = currentSpan3
+                                prevAngle3 = currentAngle3
+                            }
+                        }
+
+                        if (pointers.isEmpty()) {
+                            if (prevPos1 != Offset.Zero && !isDragging1) {
+                                // Tap!
+                                val dist = sqrt((initialPos1.x - cx) * (initialPos1.x - cx) + (initialPos1.y - cy) * (initialPos1.y - cy))
+                                if (dist > baseRadius * 0.25f && dist < baseRadius * 1.5f) { // Ignore spindle and far off-platter taps
+                                    val deckZone = if (dist > baseRadius) "A" else "B"
+                                    val tracksToToggle = if (deckZone == "A") loadedTracksA else loadedTracksB
+                                    val targetId = tracksToToggle.firstOrNull()?.id
+                                    
+                                    if (targetId != null) {
+                                        if (selectedTrackIds.contains(targetId)) {
+                                            viewModel.setSelectedTracks(selectedTrackIds - targetId)
+                                        } else {
+                                            viewModel.setSelectedTracks(selectedTrackIds + targetId)
+                                        }
+                                    }
+                                }
+                            }
+
+                            prevPos1 = Offset.Zero
+                            prevSpan2 = 0f
+                            prevSpan3 = 0f
+                            isDragging1 = false
+                        }
+                    }
+                }
+            }
     ) {
-        // Left Column: Radial Platter Controller (55% width)
-        Box(
-            modifier = Modifier
-                .weight(0.55f)
-                .fillMaxHeight()
+        // Controls Row: Play/Sync/Harmonize/Gain etc.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            val audioVolume by viewModel.audioVolume.collectAsState()
+            
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.autoSync() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("AUTO BEAT SYNC", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+
+                Button(
+                    onClick = { /* viewModel.applyHarmonicMatch() */ },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEC4899)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("HARMONIZE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+            }
+
+            Column(horizontalAlignment = Alignment.End) {
+                Text("GAIN: ${(audioVolume * 125).roundToInt()}%", color = Color.Gray, fontSize = 9.sp)
+                Slider(
+                    value = audioVolume,
+                    onValueChange = { viewModel.setVolume(it) },
+                    valueRange = 0f..0.8f,
+                    modifier = Modifier.width(100.dp),
+                    colors = SliderDefaults.colors(thumbColor = Color.Cyan, activeTrackColor = Color.Cyan)
+                )
+            }
+        }
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             RadialControllerPlatter(
                 viewModel = viewModel,
                 onPlatterPositioned = { pos, size ->
@@ -178,86 +351,19 @@ fun RadialControllerSplitPane(viewModel: SirMatchALotViewModel) {
                 },
                 spots = spots,
                 updateGestureActive = updateGestureActive,
-                draggingTrack = draggingTrack,
-                dragTouchOffset = dragTouchOffset,
-                platterPositionInWindow = platterPositionInWindow
+                loadedTracksA = loadedTracksA,
+                loadedTracksB = loadedTracksB,
+                controllersA = controllersA,
+                controllersB = controllersB,
+                trackVolumes = trackVolumes,
+                trackOverlaps = trackOverlaps,
+                selectedTrackIds = selectedTrackIds,
+                isPlaying = isPlaying
             )
         }
-
-        // Right Column: Draggable/Sortable Side Library List (45% width)
-        Box(
-            modifier = Modifier
-                .weight(0.45f)
-                .fillMaxHeight()
-        ) {
-            SideLibraryList(
-                viewModel = viewModel,
-                onDragStart = { track, offset ->
-                    draggingTrack = track
-                    dragTouchOffset = offset
-                },
-                onDragMove = { offset ->
-                    dragTouchOffset += offset
-                },
-                onDragEnd = {
-                    val track = draggingTrack
-                    if (track != null && platterSize.width > 0) {
-                        val px = dragTouchOffset.x
-                        val py = dragTouchOffset.y
-
-                        val cx = platterPositionInWindow.x + platterSize.width / 2f
-                        val cy = platterPositionInWindow.y + platterSize.height / 2f
-
-                        val dx = px - cx
-                        val dy = py - cy
-                        val dist = sqrt(dx * dx + dy * dy)
-
-                        val maxRadius = platterSize.width / 2f
-
-                        if (dist <= maxRadius) {
-                            // Check outer vs inner zone drops
-                            val boundary = maxRadius * 0.65f
-                            if (dist > boundary) {
-                                viewModel.addTrackToDeckA(track)
-                            } else {
-                                viewModel.addTrackToDeckB(track)
-                            }
-                            // Trigger TRACK LOAD gesture text
-                            scope.launch {
-                                updateGestureActive("TRACK LOAD", true)
-                                delay(1200)
-                                updateGestureActive("TRACK LOAD", false)
-                            }
-                        }
-                    }
-                    draggingTrack = null
-                }
-            )
-
-            // Floating drag card overlay representation
-            draggingTrack?.let { track ->
-                Card(
-                    modifier = Modifier
-                        .offset(
-                            x = (dragTouchOffset.x - platterPositionInWindow.x - 70f).dp,
-                            y = (dragTouchOffset.y - platterPositionInWindow.y - 30f).dp
-                        )
-                        .size(140.dp, 60.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Cyan.copy(alpha = 0.8f))
-                        .border(1.dp, Color.White, RoundedCornerShape(8.dp)),
-                    colors = CardDefaults.cardColors(containerColor = Color.Cyan.copy(alpha = 0.8f))
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(8.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(track.title, color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 10.sp, maxLines = 1)
-                        Text(track.artist, color = Color.DarkGray, fontSize = 8.sp, maxLines = 1)
-                    }
-                }
-            }
+        
+        Box(modifier = Modifier.height(140.dp).fillMaxWidth().padding(bottom = 16.dp)) {
+            HorizontalSongList(viewModel = viewModel)
         }
     }
 }
@@ -270,18 +376,16 @@ fun RadialControllerPlatter(
     updateGestureActive: (String, Boolean) -> Unit,
     draggingTrack: Track? = null,
     dragTouchOffset: Offset = Offset.Zero,
-    platterPositionInWindow: Offset = Offset.Zero
+    platterPositionInWindow: Offset = Offset.Zero,
+    loadedTracksA: List<Track>,
+    loadedTracksB: List<Track>,
+    controllersA: List<com.hereliesaz.sirmatchalot.audio.DeckController>,
+    controllersB: List<com.hereliesaz.sirmatchalot.audio.DeckController>,
+    trackVolumes: Map<String, Float>,
+    trackOverlaps: Map<String, Float>,
+    selectedTrackIds: Set<String>,
+    isPlaying: Boolean
 ) {
-    val loadedTracksA by viewModel.loadedTracksA.collectAsState()
-    val loadedTracksB by viewModel.loadedTracksB.collectAsState()
-    val controllersA by viewModel.controllersA.collectAsState()
-    val controllersB by viewModel.controllersB.collectAsState()
-    val trackVolumes by viewModel.trackVolumes.collectAsState()
-    val trackOverlaps by viewModel.trackOverlaps.collectAsState()
-
-    val selectedTrackIds by viewModel.selectedTrackIds.collectAsState(initial = emptySet())
-    val isPlaying by viewModel.isPlaying.collectAsState()
-
     // Rotating Platter Angle (Circle Playhead)
     val maxDurationA = controllersA.maxOfOrNull { it.duration.value } ?: 0f
     val maxDurationB = controllersB.maxOfOrNull { it.duration.value } ?: 0f
@@ -365,162 +469,6 @@ fun RadialControllerPlatter(
             .clip(RoundedCornerShape(16.dp))
             .background(Color(0xFF121214))
             .border(1.dp, Color(0xFF27272A), RoundedCornerShape(16.dp))
-            .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
-                awaitPointerEventScope {
-                    var prevSpan2 = 0f
-                    var prevSpan3 = 0f
-                    var prevAngle2 = 0f
-                    var prevAngle3 = 0f
-                    var prevPos1 = Offset.Zero
-                    var prevPos2 = Offset.Zero
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val pointers = event.changes.filter { it.pressed }
-
-                        val cx = size.width / 2f
-                        val cy = size.height / 2f
-                        val baseRadius = min(cx, cy) * 0.7f
-
-                        when (pointers.size) {
-                            1 -> {
-                                val change = pointers[0]
-                                val pos = change.position
-                                if (prevPos1 != Offset.Zero) {
-                                    val dx = pos.x - prevPos1.x
-                                    val dy = pos.y - prevPos1.y
-
-                                    val dist = sqrt((pos.x - cx) * (pos.x - cx) + (pos.y - cy) * (pos.y - cy))
-                                    val isOuter = dist > baseRadius
-                                    val deckZone = if (isOuter) "A" else "B"
-
-                                    if (abs(dy) > abs(dx) && abs(dy) > 1.5f) {
-                                        // 1-Finger Vertical = PITCH SHIFT (Pitch Only!)
-                                        val pitchDelta = -dy * 0.02f
-                                        viewModel.adjustPitchOnly(deckZone, pitchDelta)
-
-                                        updateGestureActive("PITCH SHIFT", true)
-                                        updateGestureActive("BASS / TREBLE EQ", false)
-                                    } else if (abs(dx) > abs(dy) && abs(dx) > 1.5f) {
-                                        // 1-Finger Horizontal = BASS / TREBLE EQ!
-                                        val eqDelta = dx * 15f
-                                        viewModel.adjustEqBassTreble(deckZone, eqDelta)
-
-                                        updateGestureActive("BASS / TREBLE EQ", true)
-                                        updateGestureActive("PITCH SHIFT", false)
-                                    }
-                                }
-                                prevPos1 = pos
-                                prevSpan2 = 0f
-                                prevSpan3 = 0f
-                            }
-                            2 -> {
-                                val p1 = pointers[0].position
-                                val p2 = pointers[1].position
-
-                                val center = Offset((p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
-                                val currentSpan = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y))
-                                val currentAngle = atan2(p2.y - p1.y, p2.x - p1.x)
-
-                                val dist = sqrt((center.x - cx) * (center.x - cx) + (center.y - cy) * (center.y - cy))
-                                val deckZone = if (dist > baseRadius) "A" else "B"
-
-                                if (prevSpan2 > 0f) {
-                                    val spanDelta = currentSpan - prevSpan2
-                                    var angleDelta = currentAngle - prevAngle2
-                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
-                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
-
-                                    val dx2 = (center.x - prevPos2.x)
-                                    val dy2 = (center.y - prevPos2.y)
-
-                                    if (abs(spanDelta) > 4f) {
-                                        // 2-Finger Pinch to Zoom = BPM SPEED!
-                                        val bpmDelta = spanDelta * 0.005f
-                                        viewModel.adjustBpmSpeed(deckZone, bpmDelta)
-
-                                        updateGestureActive("BPM SPEED", true)
-                                    } else if (abs(angleDelta) > 0.05f) {
-                                        // 2-Finger Rotation = DECK OVERLAP!
-                                        val overlapDelta = angleDelta * 0.1f
-                                        val playhead = platterRotationAngle - Math.PI.toFloat() / 2f
-                                        viewModel.adjustOverlap(overlapDelta, deckZone, playhead, 0f)
-
-                                        updateGestureActive("DECK OVERLAP", true)
-                                    } else if (abs(dy2) > abs(dx2) && abs(dy2) > 2f) {
-                                        // 2-Finger Vertical Drag = CROSSFADER!
-                                        viewModel.adjustCrossfaderDelta(-dy2 * 1.5f)
-
-                                        updateGestureActive("CROSSFADER", true)
-                                    } else if (abs(dx2) > abs(dy2) && abs(dx2) > 2f) {
-                                        // 2-Finger Horizontal Drag = REWIND / FAST-FORWARD!
-                                        val seekSecs = dx2 * 0.1f
-                                        viewModel.seekTrack(deckZone, seekSecs)
-
-                                        updateGestureActive("REWIND / FAST-FORWARD", true)
-                                    }
-                                }
-
-                                prevSpan2 = currentSpan
-                                prevAngle2 = currentAngle
-                                prevPos2 = center
-                                prevPos1 = Offset.Zero
-                                prevSpan3 = 0f
-                            }
-                            3 -> {
-                                val p1 = pointers[0].position
-                                val p2 = pointers[1].position
-                                val p3 = pointers[2].position
-
-                                val cxP = (p1.x + p2.x + p3.x) / 3f
-                                val cyP = (p1.y + p2.y + p3.y) / 3f
-
-                                val currentSpan = (
-                                    sqrt((p1.x - cxP) * (p1.x - cxP) + (p1.y - cyP) * (p1.y - cyP)) +
-                                    sqrt((p2.x - cxP) * (p2.x - cxP) + (p2.y - cyP) * (p2.y - cyP)) +
-                                    sqrt((p3.x - cxP) * (p3.x - cxP) + (p3.y - cyP) * (p3.y - cyP))
-                                ) / 3f
-                                val currentAngle = atan2(cyP - cy, cxP - cx)
-
-                                val dist = sqrt((cxP - cx) * (cxP - cx) + (cyP - cy) * (cyP - cy))
-                                val deckZone = if (dist > baseRadius) "A" else "B"
-
-                                if (prevSpan3 > 0f) {
-                                    val spanDelta = currentSpan - prevSpan3
-                                    var angleDelta = currentAngle - prevAngle3
-                                    if (angleDelta > Math.PI.toFloat()) angleDelta -= (2 * Math.PI).toFloat()
-                                    if (angleDelta < -Math.PI.toFloat()) angleDelta += (2 * Math.PI).toFloat()
-
-                                    if (abs(angleDelta) > 0.04f) {
-                                        // 3-Finger Rotation = VINYL PLATTER SPIN (Manual Circle Spin)!
-                                        viewModel.scrubPlayhead(deckZone, angleDelta)
-
-                                        updateGestureActive("VINYL PLATTER SPIN", true)
-                                        updateGestureActive("VOLUME GAIN", false)
-                                    } else if (abs(spanDelta) > 2f) {
-                                        // 3-Finger Pinch In/Out = VOLUME GAIN!
-                                        val volDelta = spanDelta * 0.015f
-                                        viewModel.adjustTrackVolume("A", volDelta)
-                                        viewModel.adjustTrackVolume("B", volDelta)
-
-                                        updateGestureActive("VOLUME GAIN", true)
-                                        updateGestureActive("VINYL PLATTER SPIN", false)
-                                    }
-                                }
-                                prevSpan3 = currentSpan
-                                prevAngle3 = currentAngle
-                                prevSpan2 = 0f
-                                prevPos1 = Offset.Zero
-                            }
-                            else -> {
-                                prevPos1 = Offset.Zero
-                                prevSpan2 = 0f
-                                prevSpan3 = 0f
-                            }
-                        }
-                    }
-                }
-            }
             .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
                 detectTapGestures(
                     onDoubleTap = { offset ->
@@ -917,273 +865,58 @@ fun RadialControllerPlatter(
 }
 
 @Composable
-fun SideLibraryList(
-    viewModel: SirMatchALotViewModel,
-    onDragStart: (Track, Offset) -> Unit,
-    onDragMove: (Offset) -> Unit,
-    onDragEnd: () -> Unit
-) {
-    val sortedTracks by viewModel.sortedTracks.collectAsState(initial = emptyList())
-    val sortOption by viewModel.sortOption.collectAsState()
+fun HorizontalSongList(viewModel: SirMatchALotViewModel) {
+    val tracks by viewModel.tracks.collectAsState()
+    val loadedTracksA by viewModel.loadedTracksA.collectAsState()
+    val loadedTracksB by viewModel.loadedTracksB.collectAsState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF18181B))
-            .padding(8.dp)
+    LazyRow(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Title
-        Text("DECK BUILDER DRAG-ZONE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 11.sp, letterSpacing = 1.sp)
-        Spacer(Modifier.height(8.dp))
-
-        // Sorting Toolbar Buttons
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            val sortOptions = listOf(
-                Pair(SirMatchALotViewModel.SortOption.BPM, "BPM"),
-                Pair(SirMatchALotViewModel.SortOption.PITCH, "KEY"),
-                Pair(SirMatchALotViewModel.SortOption.BOTH, "MIX"),
-                Pair(SirMatchALotViewModel.SortOption.ORIGINAL, "ORIG"),
-                Pair(SirMatchALotViewModel.SortOption.CUSTOM, "CUST")
-            )
-
-            sortOptions.forEach { opt ->
-                Button(
-                    onClick = { viewModel.setSortOption(opt.first) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (sortOption == opt.first) Color.Cyan else Color(0xFF27272A)
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                    modifier = Modifier.weight(1f).height(24.dp)
-                ) {
-                    Text(opt.second, color = if (sortOption == opt.first) Color.Black else Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black)
+        items(tracks) { track ->
+            SongListItemCard(
+                track = track,
+                onClick = {
+                    if (loadedTracksA.isEmpty()) {
+                        viewModel.addTrackToDeckA(track)
+                    } else if (loadedTracksB.isEmpty()) {
+                        viewModel.addTrackToDeckB(track)
+                    } else {
+                        viewModel.addTrackToDeckA(track)
+                    }
                 }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // Scrollable Lists
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            itemsIndexed(sortedTracks) { index, track ->
-                DraggableTrackItemCard(
-                    track = track,
-                    index = index,
-                    sortOption = sortOption,
-                    onMoveUp = { viewModel.moveTrackInCustomOrder(index, max(0, index - 1)) },
-                    onMoveDown = { viewModel.moveTrackInCustomOrder(index, min(sortedTracks.size - 1, index + 1)) },
-                    onDragStart = { offset -> onDragStart(track, offset) },
-                    onDragMove = onDragMove,
-                    onDragEnd = onDragEnd,
-                    onLoadA = { viewModel.addTrackToDeckA(track) },
-                    onLoadB = { viewModel.addTrackToDeckB(track) }
-                )
-            }
+            )
         }
     }
 }
 
 @Composable
-fun DraggableTrackItemCard(
-    track: Track,
-    index: Int,
-    sortOption: SirMatchALotViewModel.SortOption,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onDragStart: (Offset) -> Unit,
-    onDragMove: (Offset) -> Unit,
-    onDragEnd: () -> Unit,
-    onLoadA: () -> Unit,
-    onLoadB: () -> Unit
-) {
+fun SongListItemCard(track: Track, onClick: () -> Unit) {
     Card(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF27272A))
-            .border(1.dp, Color(0xFF3F3F46), RoundedCornerShape(8.dp)),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF27272A))
+            .width(220.dp)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .background(Color(0xFF18181B))
+            .border(1.dp, Color(0xFF27272A), RoundedCornerShape(12.dp)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF18181B))
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        Column(
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.Center
         ) {
-            // Drag handle to drag onto Platter
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { offset -> onDragStart(changeToWindowOffset(offset, size)) },
-                            onDragEnd = onDragEnd,
-                            onDragCancel = onDragEnd,
-                            onDrag = { change, dragAmount -> onDragMove(dragAmount) }
-                        )
-                    },
-                contentAlignment = Alignment.Center
+            Text(track.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1)
+            Spacer(Modifier.height(4.dp))
+            Text(track.artist, color = Color.LightGray, fontSize = 12.sp, maxLines = 1)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Icon(Icons.Default.Menu, contentDescription = "Drag to Circle", tint = Color.LightGray, modifier = Modifier.size(16.dp))
-            }
-
-            Spacer(Modifier.width(6.dp))
-
-            // Track details
-            Column(modifier = Modifier.weight(1f)) {
-                Text(track.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
-                Text(track.artist, color = Color.Gray, fontSize = 9.sp, maxLines = 1)
-                Text("${track.bpm} BPM | ${track.camelotKey}", color = Color.Cyan, fontSize = 8.sp, fontFamily = FontFamily.Monospace)
-            }
-
-            // Quick add load helpers or reorder buttons
-            if (sortOption == SirMatchALotViewModel.SortOption.CUSTOM) {
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    IconButton(onClick = onMoveUp, modifier = Modifier.size(22.dp)) {
-                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Up", tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
-                    IconButton(onClick = onMoveDown, modifier = Modifier.size(22.dp)) {
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Button(
-                        onClick = onLoadA,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0891B2)),
-                        shape = RoundedCornerShape(4.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                        modifier = Modifier.height(20.dp)
-                    ) {
-                        Text("+A", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black)
-                    }
-                    Button(
-                        onClick = onLoadB,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
-                        shape = RoundedCornerShape(4.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                        modifier = Modifier.height(20.dp)
-                    ) {
-                        Text("+B", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Black)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Convert local gesture touch coordinate to relative drag position
-private fun changeToWindowOffset(localOffset: Offset, size: IntSize): Offset {
-    return Offset(localOffset.x, localOffset.y)
-}
-
-@Composable
-fun EnergyGraphView(viewModel: SirMatchALotViewModel) {
-    val energyPoints = remember {
-        mutableStateListOf(25f, 35f, 45f, 40f, 55f, 70f, 85f, 75f, 90f, 95f, 80f, 65f, 50f, 40f, 30f, 20f)
-    }
-
-    val averageBpm = 122f
-    val bpmFactor = 1.0f
-
-    val adjustedPoints = remember(energyPoints.toList(), bpmFactor) {
-        energyPoints.map { (it * bpmFactor).coerceIn(5f, 100f).roundToInt() }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("INTERACTIVE ENERGY CURVE (16 BARS)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFF09090B))
-                .border(1.dp, Color(0xFF27272A), RoundedCornerShape(16.dp))
-                .pointerInput(Unit) {
-                    detectDragGestures { change, dragAmount ->
-                        val colWidth = size.width / 15f
-                        val colIndex = (change.position.x / colWidth).roundToInt().coerceIn(0, 15)
-                        
-                        val maxH = size.height - 40f
-                        val relativeY = size.height - 20f - change.position.y
-                        val percent = ((relativeY / maxH) * 100f).coerceIn(5f, 100f)
-
-                        energyPoints[colIndex] = percent / bpmFactor
-                    }
-                }
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val width = size.width
-                val height = size.height
-                val colWidth = width / 15f
-
-                for (j in 0..4) {
-                    val y = (height - 30f) * (j / 4f) + 15f
-                    drawLine(Color(0xFF18181B), Offset(0f, y), Offset(width, y), strokeWidth = 1f)
-                }
-
-                drawRect(Color(0xFF06B6D4).copy(alpha = 0.08f), Offset(0f, 0f), size = androidx.compose.ui.geometry.Size(colWidth * 3, height))
-                drawRect(Color(0xFFEC4899).copy(alpha = 0.06f), Offset(colWidth * 12, 0f), size = androidx.compose.ui.geometry.Size(colWidth * 3, height))
-
-                val pointsList = adjustedPoints
-                val getX = { idx: Int -> idx * colWidth }
-                val getY = { valPercent: Int ->
-                    val maxH = height - 40f
-                    height - 20f - (valPercent / 100f) * maxH
-                }
-
-                for (k in 0 until pointsList.size - 1) {
-                    val x1 = getX(k)
-                    val y1 = getY(pointsList[k])
-                    val x2 = getX(k + 1)
-                    val y2 = getY(pointsList[k + 1])
-
-                    drawLine(
-                        Brush.linearGradient(listOf(Color(0xFF06B6D4), Color(0xFFA855F7))),
-                        Offset(x1, y1),
-                        Offset(x2, y2),
-                        strokeWidth = 3.dp.toPx()
-                    )
-                }
-
-                pointsList.forEachIndexed { idx, valPercent ->
-                    val x = getX(idx)
-                    val y = getY(valPercent)
-                    drawCircle(Color.White, radius = 3.dp.toPx(), center = Offset(x, y))
-                }
-            }
-        }
-
-        val peak = adjustedPoints.maxOrNull() ?: 50
-        val end = adjustedPoints.lastOrNull() ?: 20
-        val mixRecommendation = when {
-            peak > 85 && end < 35 -> Pair("Intense Drop & Quick Outro", "High visual spike matches raw peak time tech-house energy. Plan a quick blend mix to transition safely before energy bottoms out.")
-            peak > 70 && abs(peak - end) < 15 -> Pair("Sustained Peak Power", "Steady elevated energy is excellent for main-room techno loops. Keep channels fully open and loop key vocal stems for high impact.")
-            else -> Pair("Classic Dynamic Wave", "Perfect dynamic narrative for open-format DJ sets. Introduces a steady build, peak impact, and gentle tail-off for the next track.")
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF18181B)),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, Color(0xFF27272A), RoundedCornerShape(12.dp))
-        ) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("RECOMMENDED TRANSITION STYLE", color = Color.Cyan, fontWeight = FontWeight.Bold, fontSize = 9.sp)
-                Text(mixRecommendation.first, color = Color.White, fontWeight = FontWeight.Black, fontSize = 12.sp)
-                Text(mixRecommendation.second, color = Color.LightGray, fontSize = 10.sp)
+                Text("${track.bpm} BPM", color = Color.Cyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Text(track.camelotKey, color = Color.Magenta, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             }
         }
     }
