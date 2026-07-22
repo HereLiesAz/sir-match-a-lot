@@ -768,13 +768,41 @@ fun RadialControllerPlatter(
             val cy = size.height / 2f
             val baseRadius = min(cx, cy) * 0.68f
 
-            // 1. Draw Single Primary Dividing Circle Outline
-            drawCircle(
-                color = Color(0xFF3F3F46),
-                radius = baseRadius,
-                center = Offset(cx, cy),
-                style = Stroke(width = 2.5.dp.toPx())
-            )
+            // Helper to get waveform height at a specific angle
+            fun getPeakHeightAtAngle(angle: Float, isOuter: Boolean): Float {
+                val list = if (isOuter) loadedTracksA else loadedTracksB
+                if (list.isEmpty()) return 0f
+                
+                val numClips = list.size
+                val arcSpan = (2 * Math.PI) / numClips
+                
+                var normalizedAngle = (angle + Math.PI / 2) % (2 * Math.PI)
+                if (normalizedAngle < 0) normalizedAngle += 2 * Math.PI
+                val clipIdx = (normalizedAngle / arcSpan).toInt().coerceIn(0, numClips - 1)
+                
+                val track = list[clipIdx]
+                val volMultiplier = trackVolumes[track.id] ?: 1.0f
+                val trackOverlap = trackOverlaps[track.id] ?: 0f
+                val effectiveArcSpan = arcSpan + trackOverlap
+                
+                val startAngle = clipIdx * arcSpan - Math.PI / 2
+                var angleDiff = angle - startAngle
+                while (angleDiff < 0) angleDiff += 2 * Math.PI.toFloat()
+                
+                val numSpikes = if (isOuter) (42 * (effectiveArcSpan / arcSpan)).toInt() else (36 * (effectiveArcSpan / arcSpan)).toInt()
+                val i = ((angleDiff / effectiveArcSpan) * numSpikes).toInt().coerceIn(0, numSpikes - 1)
+                
+                val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
+                val spatialEnergy = if (isPlaying) {
+                     if (isOuter) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f).toFloat() / 2f
+                     else (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f).toFloat() / 2f
+                } else 0.1f
+                
+                val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
+                val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
+                return (pattern * volMultiplier).coerceIn(4f, 120f)
+            }
+
 
             // 2. Deck A Audio Clips (Outer Zone - Waveforms Protruding OUTWARD)
             if (loadedTracksA.isNotEmpty()) {
@@ -937,25 +965,14 @@ fun RadialControllerPlatter(
                 }
             }
 
-            // 4. Center Spindle
-            val innerSpindleRadius = baseRadius * 0.35f
-            drawCircle(
-                color = Color(0xFF18181B),
-                radius = innerSpindleRadius,
-                center = Offset(cx, cy)
-            )
-            drawCircle(
-                color = Color(0xFF3F3F46),
-                radius = innerSpindleRadius,
-                center = Offset(cx, cy),
-                style = Stroke(width = 1.5.dp.toPx())
-            )
-
             // 5. Stopwatch Rotating Red Playhead Line (Glowing Slash)
             val currentPlayheadAngle = platterRotationAngle - Math.PI.toFloat() / 2f
             
-            val waveformZoneWidth = 120f * 2f
-            val playheadHalfLength = waveformZoneWidth
+            val outerPeak = getPeakHeightAtAngle(currentPlayheadAngle, true)
+            val innerPeak = getPeakHeightAtAngle(currentPlayheadAngle, false)
+            
+            val combinedHeight = outerPeak + innerPeak
+            val playheadHalfLength = combinedHeight
             val playheadCenterRadius = baseRadius
             
             val startRadius = playheadCenterRadius - playheadHalfLength
