@@ -303,7 +303,17 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
+    // --- Room Dependencies ---
+    val roomVersion = "2.6.1" // Ensure you are using a recent stable version
 
+    implementation("androidx.room:room-runtime:$roomVersion")
+
+    // 2. THIS IS THE MISSING LINE THAT CAUSED YOUR ERROR:
+    // Use 'ksp' to apply the Room annotation processor for Kotlin
+    ksp("androidx.room:room-compiler:$roomVersion")
+
+    // Optional: Kotlin Extensions and Coroutines support for Room
+    implementation("androidx.room:room-ktx:$roomVersion")
   // Navigation
   implementation(libs.androidx.navigation3.ui)
   implementation(libs.androidx.navigation3.runtime)
