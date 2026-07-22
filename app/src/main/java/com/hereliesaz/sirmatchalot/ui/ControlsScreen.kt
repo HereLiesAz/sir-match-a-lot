@@ -560,24 +560,43 @@ fun RadialControllerPlatter(
                     val trackOverlap = trackOverlaps[track.id] ?: 0f
                     val effectiveArcSpan = arcSpanA + trackOverlap
 
+                    val path = androidx.compose.ui.graphics.Path()
                     val numSpikes = (42 * (effectiveArcSpan / arcSpanA)).toInt()
                     for (i in 0 until numSpikes) {
                         val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
                         val pattern = 10f + (track.id.hashCode() % (i + 5) % 18f)
                         val peakH = (pattern * volMultiplier).coerceIn(4f, 60f)
 
-                        val sx = cx + cos(angle).toFloat() * baseRadius
-                        val sy = cy + sin(angle).toFloat() * baseRadius
-                        val ex = cx + cos(angle).toFloat() * (baseRadius + peakH)
-                        val ey = cy + sin(angle).toFloat() * (baseRadius + peakH)
+                        val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
+                        val vx = cx + cos(valleyAngle).toFloat() * baseRadius
+                        val vy = cy + sin(valleyAngle).toFloat() * baseRadius
 
-                        drawLine(
-                            color = clipColor,
-                            start = Offset(sx, sy),
-                            end = Offset(ex, ey),
-                            strokeWidth = if (isTargeted) 2.5f.dp.toPx() else 1.5f.dp.toPx()
-                        )
+                        val px = cx + cos(angle).toFloat() * (baseRadius + peakH)
+                        val py = cy + sin(angle).toFloat() * (baseRadius + peakH)
+
+                        if (i == 0) {
+                            path.moveTo(vx, vy)
+                        } else {
+                            path.lineTo(vx, vy)
+                        }
+                        path.lineTo(px, py)
                     }
+
+                    // Final valley point
+                    val endValleyAngle = startAngle + effectiveArcSpan - (effectiveArcSpan / (numSpikes * 2))
+                    val evx = cx + cos(endValleyAngle).toFloat() * baseRadius
+                    val evy = cy + sin(endValleyAngle).toFloat() * baseRadius
+                    path.lineTo(evx, evy)
+
+                    drawPath(
+                        path = path,
+                        color = clipColor,
+                        style = Stroke(
+                            width = if (isTargeted) 3.dp.toPx() else 2.dp.toPx(),
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        )
+                    )
 
                     // Draw clip segment border accent
                     if (isTargeted) {
@@ -591,38 +610,56 @@ fun RadialControllerPlatter(
                 }
             }
 
-            // 3. Deck B Audio Clips (Inner Zone - Waveforms Protruding INWARD)
-            if (loadedTracksB.isNotEmpty()) {
-                val numClipsB = loadedTracksB.size
-                val arcSpanB = (2 * Math.PI) / numClipsB
+        // 3. Deck B Audio Clips (Inner Zone - Waveforms Protruding INWARD)
+        if (loadedTracksB.isNotEmpty()) {
+            val numClipsB = loadedTracksB.size
+            val arcSpanB = (2 * Math.PI) / numClipsB
 
-                loadedTracksB.forEachIndexed { clipIdx, track ->
-                    val startAngle = clipIdx * arcSpanB - Math.PI / 2 // Removed platterRotationAngle!
-                    val isTargeted = selectedTrackIds.contains(track.id)
-                    val baseColor = clipColorsB[clipIdx % clipColorsB.size]
-                    val clipColor = if (isTargeted) Color.White else baseColor
-                    val volMultiplier = trackVolumes[track.id] ?: 1.0f
-                    val trackOverlap = trackOverlaps[track.id] ?: 0f
-                    val effectiveArcSpan = arcSpanB + trackOverlap
+            loadedTracksB.forEachIndexed { clipIdx, track ->
+                val startAngle = clipIdx * arcSpanB - Math.PI / 2 // Removed platterRotationAngle!
+                val isTargeted = selectedTrackIds.contains(track.id)
+                val baseColor = clipColorsB[clipIdx % clipColorsB.size]
+                val clipColor = if (isTargeted) Color.White else baseColor
+                val volMultiplier = trackVolumes[track.id] ?: 1.0f
+                val trackOverlap = trackOverlaps[track.id] ?: 0f
+                val effectiveArcSpan = arcSpanB + trackOverlap
 
-                    val numSpikes = (36 * (effectiveArcSpan / arcSpanB)).toInt()
-                    for (i in 0 until numSpikes) {
-                        val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
-                        val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f)
-                        val peakH = (pattern * volMultiplier).coerceIn(4f, 45f)
+                val path = androidx.compose.ui.graphics.Path()
+                val numSpikes = (36 * (effectiveArcSpan / arcSpanB)).toInt()
+                for (i in 0 until numSpikes) {
+                    val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
+                    val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f)
+                    val peakH = (pattern * volMultiplier).coerceIn(4f, 45f)
 
-                        val sx = cx + cos(angle).toFloat() * baseRadius
-                        val sy = cy + sin(angle).toFloat() * baseRadius
-                        val ex = cx + cos(angle).toFloat() * (baseRadius - peakH)
-                        val ey = cy + sin(angle).toFloat() * (baseRadius - peakH)
+                    val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
+                    val vx = cx + cos(valleyAngle).toFloat() * baseRadius
+                    val vy = cy + sin(valleyAngle).toFloat() * baseRadius
 
-                        drawLine(
-                            color = clipColor,
-                            start = Offset(sx, sy),
-                            end = Offset(ex, ey),
-                            strokeWidth = if (isTargeted) 2.5f.dp.toPx() else 1.5f.dp.toPx()
-                        )
+                    val px = cx + cos(angle).toFloat() * (baseRadius - peakH)
+                    val py = cy + sin(angle).toFloat() * (baseRadius - peakH)
+
+                    if (i == 0) {
+                        path.moveTo(vx, vy)
+                    } else {
+                        path.lineTo(vx, vy)
                     }
+                    path.lineTo(px, py)
+                }
+
+                val endValleyAngle = startAngle + effectiveArcSpan - (effectiveArcSpan / (numSpikes * 2))
+                val evx = cx + cos(endValleyAngle).toFloat() * baseRadius
+                val evy = cy + sin(endValleyAngle).toFloat() * baseRadius
+                path.lineTo(evx, evy)
+
+                drawPath(
+                    path = path,
+                    color = clipColor,
+                    style = Stroke(
+                        width = if (isTargeted) 3.dp.toPx() else 2.dp.toPx(),
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                    )
+                )
                 }
             }
 

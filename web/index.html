@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Sir Match-a-Lot: The revolutionary gesture-driven DJ app for Android. Mix music on a unified concentric platter with global 8-directional gestures.">
+    <title>Sir Match-a-Lot | Revolutionary DJ App</title>
+    
+    <!-- Google Fonts: Inter & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700;900&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background Ambient Glows -->
+    <div class="ambient-glow glow-cyan"></div>
+    <div class="ambient-glow glow-magenta"></div>
+
+    <nav class="navbar">
+        <div class="logo">
+            <span class="sir">Sir</span><span class="match">Match-a-Lot</span>
+        </div>
+        <div class="nav-links">
+            <a href="#features">Features</a>
+            <a href="#gestures">Gestures</a>
+            <a href="#download" class="btn-primary">Download Now</a>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="hero-content">
+            <div class="badge">Next-Gen Android DJing</div>
+            <h1 class="hero-title">Mix Outside the <span class="text-gradient">Decks.</span></h1>
+            <p class="hero-subtitle">Break free from tiny faders. Experience a stunning concentric platter and powerful global gestures that turn your entire screen into an instrument.</p>
+            <div class="hero-cta">
+                <a href="#gestures" class="btn-primary glow-btn">Discover Gestures</a>
+                <a href="#features" class="btn-secondary">Learn More</a>
+            </div>
+        </div>
+        <div class="hero-visual">
+            <div class="concentric-platter-mock">
+                <!-- CSS animated platter representation -->
+                <div class="ring outer-ring">
+                    <div class="waveform-wave wave-a"></div>
+                </div>
+                <div class="ring inner-ring">
+                    <div class="waveform-wave wave-b"></div>
+                </div>
+                <div class="spindle"></div>
+                <div class="playhead"></div>
+            </div>
+        </div>
+    </header>
+
+    <section id="features" class="features-section">
+        <h2 class="section-title">The Unified <span class="text-gradient">Groove.</span></h2>
+        <div class="features-grid">
+            <div class="feature-card glass-panel">
+                <div class="feature-icon">🎯</div>
+                <h3>Concentric Platter</h3>
+                <p>Say goodbye to split screens. Deck A wraps the outside, Deck B wraps the inside. One timeline, one stopwatch playhead. Total visual synergy.</p>
+            </div>
+            <div class="feature-card glass-panel">
+                <div class="feature-icon">🎼</div>
+                <h3>Harmonic Engine</h3>
+                <p>Advanced key detection automatically pitches tracks to complementary Camelot keys without altering tempo. Seamless, musical mixes.</p>
+            </div>
+            <div class="feature-card glass-panel">
+                <div class="feature-icon">⚡</div>
+                <h3>Auto Beat Sync</h3>
+                <p>Instantly align BPM and phase. Focus on the art of the mix and the energy of the crowd, while we handle the math.</p>
+            </div>
+        </div>
+    </section>
+
+    <section id="gestures" class="gestures-section">
+        <div class="gestures-content">
+            <h2 class="section-title">Your Screen is the <span class="text-gradient">Canvas.</span></h2>
+            <p class="section-description">Perform global multi-touch gestures anywhere on the screen. No hunting for tiny knobs.</p>
+            
+            <div class="gesture-list">
+                <div class="gesture-item" data-gesture="pinch">
+                    <span class="emoji">🤏</span>
+                    <div class="gesture-text">
+                        <h4>Pinch</h4>
+                        <p>Dynamically alter BPM / Speed</p>
+                    </div>
+                </div>
+                <div class="gesture-item" data-gesture="drag-1-v">
+                    <span class="emoji">👆</span>
+                    <div class="gesture-text">
+                        <h4>1-Finger Vertical</h4>
+                        <p>Adjust Track Pitch</p>
+                    </div>
+                </div>
+                <div class="gesture-item" data-gesture="rotate-2">
+                    <span class="emoji">✌️</span>
+                    <div class="gesture-text">
+                        <h4>2-Finger Rotate</h4>
+                        <p>Shift Track Overlap</p>
+                    </div>
+                </div>
+                <div class="gesture-item" data-gesture="rotate-3">
+                    <span class="emoji">🖐️</span>
+                    <div class="gesture-text">
+                        <h4>3-Finger Rotate</h4>
+                        <p>Scrub / Spin the Platter</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="gesture-visual glass-panel">
+            <div class="gesture-demo" id="gestureDemo">
+                <div class="touch-point tp-1"></div>
+                <div class="touch-point tp-2"></div>
+                <div class="touch-point tp-3"></div>
+                <div class="demo-label">Hover a gesture</div>
+            </div>
+        </div>
+    </section>
+
+    <footer id="download" class="footer">
+        <div class="footer-content glass-panel">
+            <h2>Ready to drop the beat?</h2>
+            <p>Download Sir Match-a-Lot on your Android device today.</p>
+            <a href="#" class="btn-primary glow-btn large-btn">Download APK</a>
+        </div>
+        <div class="footer-bottom">
+            <p>&copy; 2026 Sir Match-a-Lot. Built with ❤️ for DJs.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
