@@ -64,23 +64,27 @@ fun ControlsScreen(
     }
 
     val updateGestureActive: (String, Boolean) -> Unit = { gestureName: String, isActive: Boolean ->
-        val existingSpot = spots.firstOrNull { it.text == gestureName }
-        if (isActive) {
-            if (existingSpot != null) {
-                existingSpot.isGestureActive = true
-                existingSpot.alpha = 1.0f
-                existingSpot.fadeStartTime = 0L
-            } else {
-                val freeSpot = spots.firstOrNull { it.alpha == 0f }
-                if (freeSpot != null) {
-                    freeSpot.text = gestureName
-                    freeSpot.isGestureActive = true
-                    freeSpot.alpha = 1.0f
-                    freeSpot.fadeStartTime = 0L
-                }
-            }
+        if (gestureName == "ALL" && !isActive) {
+            spots.forEach { it.isGestureActive = false }
         } else {
-            existingSpot?.let { it.isGestureActive = false }
+            val existingSpot = spots.firstOrNull { it.text == gestureName }
+            if (isActive) {
+                if (existingSpot != null) {
+                    existingSpot.isGestureActive = true
+                    existingSpot.alpha = 1.0f
+                    existingSpot.fadeStartTime = 0L
+                } else {
+                    val freeSpot = spots.firstOrNull { it.alpha == 0f }
+                    if (freeSpot != null) {
+                        freeSpot.text = gestureName
+                        freeSpot.isGestureActive = true
+                        freeSpot.alpha = 1.0f
+                        freeSpot.fadeStartTime = 0L
+                    }
+                }
+            } else {
+                existingSpot?.let { it.isGestureActive = false }
+            }
         }
     }
 
@@ -295,6 +299,7 @@ fun ControlsScreen(
                                 }
                             }
 
+                            updateGestureActive("ALL", false)
                             prevPos1 = Offset.Zero
                             prevSpan2 = 0f
                             prevSpan3 = 0f
@@ -398,6 +403,19 @@ fun RadialControllerPlatter(
             targetValue = (2 * Math.PI).toFloat(),
             animationSpec = infiniteRepeatable(
                 animation = tween((platterDurationSeconds * 1000).toInt(), easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            )
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
+
+    val visualizerPhase by if (isPlaying) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1000f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(10000, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart
             )
         )
@@ -564,8 +582,11 @@ fun RadialControllerPlatter(
                     val numSpikes = (42 * (effectiveArcSpan / arcSpanA)).toInt()
                     for (i in 0 until numSpikes) {
                         val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
-                        val pattern = 10f + (track.id.hashCode() % (i + 5) % 18f)
-                        val peakH = (pattern * volMultiplier).coerceIn(4f, 60f)
+                        
+                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f) / 2f else 0.1f
+                        val pulse = 0.7f + 0.6f * spatialEnergy
+                        val pattern = 10f + (track.id.hashCode() % (i + 5) % 18f) * pulse
+                        val peakH = (pattern * volMultiplier).coerceIn(4f, 80f)
 
                         val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                         val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -588,13 +609,32 @@ fun RadialControllerPlatter(
                     val evy = cy + sin(endValleyAngle).toFloat() * baseRadius
                     path.lineTo(evx, evy)
 
+                    val strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                    val strokeJoin = androidx.compose.ui.graphics.StrokeJoin.Round
+                    val glowIntensity = if(isPlaying) 1.5f else 1f
+
+                    // Outer Faint Glow
+                    drawPath(
+                        path = path,
+                        color = baseColor.copy(alpha = (0.15f * glowIntensity).coerceAtMost(1f)),
+                        style = Stroke(width = 18.dp.toPx(), cap = strokeCap, join = strokeJoin)
+                    )
+                    
+                    // Inner Bright Glow
+                    drawPath(
+                        path = path,
+                        color = baseColor.copy(alpha = (0.35f * glowIntensity).coerceAtMost(1f)),
+                        style = Stroke(width = 8.dp.toPx(), cap = strokeCap, join = strokeJoin)
+                    )
+
+                    // Core Line
                     drawPath(
                         path = path,
                         color = clipColor,
                         style = Stroke(
-                            width = if (isTargeted) 3.dp.toPx() else 2.dp.toPx(),
-                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                            width = if (isTargeted) 3.5.dp.toPx() else 2.dp.toPx(),
+                            cap = strokeCap,
+                            join = strokeJoin
                         )
                     )
 
@@ -628,8 +668,11 @@ fun RadialControllerPlatter(
                 val numSpikes = (36 * (effectiveArcSpan / arcSpanB)).toInt()
                 for (i in 0 until numSpikes) {
                     val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
-                    val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f)
-                    val peakH = (pattern * volMultiplier).coerceIn(4f, 45f)
+                    
+                    val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f) / 2f else 0.1f
+                    val pulse = 0.7f + 0.6f * spatialEnergy
+                    val pattern = 8f + (track.id.hashCode() % (i + 3) % 14f) * pulse
+                    val peakH = (pattern * volMultiplier).coerceIn(4f, 60f)
 
                     val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                     val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -651,13 +694,29 @@ fun RadialControllerPlatter(
                 val evy = cy + sin(endValleyAngle).toFloat() * baseRadius
                 path.lineTo(evx, evy)
 
+                val strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                val strokeJoin = androidx.compose.ui.graphics.StrokeJoin.Round
+                val glowIntensity = if(isPlaying) 1.5f else 1f
+
+                drawPath(
+                    path = path,
+                    color = baseColor.copy(alpha = (0.15f * glowIntensity).coerceAtMost(1f)),
+                    style = Stroke(width = 18.dp.toPx(), cap = strokeCap, join = strokeJoin)
+                )
+                
+                drawPath(
+                    path = path,
+                    color = baseColor.copy(alpha = (0.35f * glowIntensity).coerceAtMost(1f)),
+                    style = Stroke(width = 8.dp.toPx(), cap = strokeCap, join = strokeJoin)
+                )
+
                 drawPath(
                     path = path,
                     color = clipColor,
                     style = Stroke(
-                        width = if (isTargeted) 3.dp.toPx() else 2.dp.toPx(),
-                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        width = if (isTargeted) 3.5.dp.toPx() else 2.dp.toPx(),
+                        cap = strokeCap,
+                        join = strokeJoin
                     )
                 )
                 }
@@ -883,16 +942,19 @@ fun RadialControllerPlatter(
                         modifier = Modifier
                             .offset(x = posXDp, y = posYDp)
                             .alpha(spot.alpha)
-                            .background(Color.Black.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
-                            .border(1.dp, Color.Cyan.copy(alpha = 0.5f * spot.alpha), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = spot.text,
                             color = Color.Cyan,
-                            fontSize = 8.5.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            style = androidx.compose.ui.text.TextStyle(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = Color.Black,
+                                    blurRadius = 8f
+                                )
+                            )
                         )
                     }
                 }
