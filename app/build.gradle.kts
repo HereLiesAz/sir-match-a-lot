@@ -26,9 +26,9 @@ if (versionPropsFile.exists()) {
     versionProps.load(FileInputStream(versionPropsFile))
 }
 
-val major = versionProps.getProperty("major")?.toIntOrNull() ?: 1
-val minor = versionProps.getProperty("minor")?.toIntOrNull() ?: 0
-val patch = versionProps.getProperty("patch")?.toIntOrNull() ?: 0
+val major = versionProps.getProperty("major")?.toIntOrNull() ?: 0
+val minor = versionProps.getProperty("minor")?.toIntOrNull() ?: 1
+val patch = versionProps.getProperty("patch")?.toIntOrNull() ?: 20
 
 // versionCode source. CI passes `-PversionBuild=$(git rev-list --count HEAD)` so every Play upload
 // gets a strictly-increasing code (commit count only ever grows). When the override is absent (local
