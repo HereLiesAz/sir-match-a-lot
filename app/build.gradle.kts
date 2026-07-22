@@ -322,6 +322,9 @@ ksp("androidx.room:room-compiler:$roomVersion")
 implementation("androidx.room:room-ktx:$roomVersion")
   // Navigation
   implementation(libs.androidx.navigation3.ui)
-implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:11.1.0")
+  implementation(libs.google.ai.client)
+  implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.okhttp.core)
+  implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:11.1.0")
 
 }
