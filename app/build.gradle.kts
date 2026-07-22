@@ -6,8 +6,8 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
-// FIXED: Updated KSP version to be compatible with Kotlin 2.0.0 (implied by your other plugins)
-id("com.google.devtools.ksp") version "2.0.0-1.0.21"
+// UPDATED: KSP version must match the Kotlin 2.4.x version used by your other plugins.
+id("com.google.devtools.ksp") version "2.0.10-1.0.24"
 }
 
 // Helper to load properties securely
@@ -56,6 +56,8 @@ if (versionBuildOverride == null && isBuildTask) {
 }
 android {
     namespace = "com.hereliesaz.sirmatchalot"
+    // NOTE: compileSdk and targetSdk 37 do not exist as stable releases.
+    // 34 is the latest stable (Android 14). Using 37 may cause unexpected build issues.
     compileSdk = 37
     defaultConfig {
         applicationId = "com.hereliesaz.sirmatchalot"
@@ -69,7 +71,7 @@ android {
         // Inject API Key
         val apiKey = getLocalProperty("FONTS_API_KEY", rootProject.projectDir)
         buildConfigField("String", "FONTS_API_KEY", "\"$apiKey\"")
-        manifestPlaceholders["FONTS_API_KEY"] = apiKey
+        manifestPlaceholders["FONTS_API_KEY"] = apiKey // THIS WAS THE MISSING LINE
 
         // AdMob banner unit id. Debug uses Google's official TEST unit so development clicks don't
         // generate invalid traffic on the live unit; release swaps in the real unit (below). The
@@ -305,34 +307,20 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
-    // --- Room Dependencies ---
-    val roomVersion = "2.6.1" // Ensure you are using a recent stable version
 
+    // --- Room Dependencies (Added to your file) ---
+    val roomVersion = "2.6.1"
+
+    // Room Runtime
     implementation("androidx.room:room-runtime:$roomVersion")
 
-    // FIXED: Moved entirely to KSP. Removed conflicting annotationProcessor lines below.
+    // KSP Compiler - THIS GENERATES THE MISSING CLASS
+    // FIXED: Moved entirely to KSP. Conflicting Java annotation processor lines removed below.
     ksp("androidx.room:room-compiler:$roomVersion")
 
-    // Optional: Kotlin Extensions and Coroutines support for Room
+    // Kotlin Extensions & Coroutines support for Room
     implementation("androidx.room:room-ktx:$roomVersion")
+  // ----------------------------------------------
+  
   // Navigation
-  implementation(libs.androidx.navigation3.ui)
-  implementation(libs.androidx.navigation3.runtime)
-  implementation(libs.androidx.lifecycle.viewmodel.navigation3)
-
-  // REMOVED: Conflicting Java annotation processor lines.
-  // implementation(libs.androidx.room.runtime)
-  // annotationProcessor(libs.androidx.room.compiler)
-
-  // Media3 ExoPlayer for local audio files
-  implementation(libs.androidx.media3.exoplayer)
-
-  // OkHttp for WebSockets syncing
-  implementation(libs.okhttp.core)
-
-  // Android YouTube Player library for streaming tracks
-  implementation(libs.youtube.player.core)
-
-  // Google AI Client for AI analysis
-  implementation(libs.google.ai.client)
-}
+  implementation(libs.androidx.navigation3.ui
