@@ -125,6 +125,7 @@ fun ControlsScreen(
     val controllersB by viewModel.controllersB.collectAsState()
     val trackVolumes by viewModel.trackVolumes.collectAsState()
     val trackOverlaps by viewModel.trackOverlaps.collectAsState()
+    val dummyPeaksState = viewModel.trackPeaks.collectAsState() // Forces recomposition
     val selectedTrackIds by viewModel.selectedTrackIds.collectAsState(initial = emptySet())
     val isPlaying by viewModel.isPlaying.collectAsState()
     val infiniteTransition = rememberInfiniteTransition()
@@ -151,6 +152,8 @@ fun ControlsScreen(
     var platterRotation by remember { mutableStateOf(0f) }
     var playheadAngle by remember { mutableStateOf(0f) }
     var isGrabbingPlayhead by remember { mutableStateOf(false) }
+    var backwardScrubAccumulator by remember { mutableStateOf(0f) }
+    var satanSpeakCount by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) {
         tts.value = android.speech.tts.TextToSpeech(context) { status ->
@@ -175,8 +178,10 @@ fun ControlsScreen(
     Box(modifier = modifier.fillMaxSize().background(Color(0xFF050505))) {
         // EDM Rave Background Visualizer
         val intensity = if (isPlaying) {
-            val beatPulse = (kotlin.math.sin(phase * 40f) + 1f) / 2f
-            0.4f + 0.6f * beatPulse
+            // Slowed down from 40f to 12f to stop the spastic strobe light effect.
+            // Raised to the power of 2 to make the pulse smoother and more natural.
+            val beatPulse = (kotlin.math.sin(phase * 12f) + 1f) / 2f
+            (beatPulse * beatPulse * 0.4).toFloat()
         } else {
             0f
         }
@@ -245,7 +250,9 @@ fun ControlsScreen(
 
                     while (true) {
                         val event = awaitPointerEvent()
-                        val pointers = event.changes.filter { it.pressed }
+                        val bottomExclusionZone = 160.dp.toPx()
+                        val validChanges = event.changes.filter { it.position.y < size.height - bottomExclusionZone }
+                        val pointers = validChanges.filter { it.pressed }
 
                         // Platter center approximation
                         val cx = size.width / 2f
@@ -334,6 +341,20 @@ fun ControlsScreen(
                                             viewModel.scrubPlayhead("A", scrubAmount)
                                             viewModel.scrubPlayhead("B", scrubAmount)
                                             updateGestureActive("SCRUB PLAYHEAD", true)
+                                            
+                                            // Easter Egg: Scrubbing backwards too far
+                                            if (angleDiff < -0.01f) {
+                                                backwardScrubAccumulator += abs(angleDiff)
+                                                if (backwardScrubAccumulator > 12f) { // roughly 2 full reverse rotations
+                                                    backwardScrubAccumulator = 0f
+                                                    val currentRate = 0.5f + (satanSpeakCount * 0.25f)
+                                                    tts.value?.setSpeechRate(currentRate.coerceAtMost(2.5f))
+                                                    tts.value?.speak("I am Satan, Lord of Darkness.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                    satanSpeakCount++
+                                                }
+                                            } else if (angleDiff > 0.05f) {
+                                                backwardScrubAccumulator = 0f
+                                            }
                                         } else {
                                             // 1-Finger manipulate clip
                                             // Map Y-axis (or X-axis) to adjustOverlap
@@ -696,9 +717,6 @@ fun RadialControllerPlatter(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF121214))
-            .border(1.dp, Color(0xFF27272A), RoundedCornerShape(16.dp))
             .pointerInput(selectedTrackIds, loadedTracksA, loadedTracksB) {
                 detectTapGestures(
                     onDoubleTap = { offset ->
@@ -789,18 +807,16 @@ fun RadialControllerPlatter(
                 var angleDiff = angle - startAngle
                 while (angleDiff < 0) angleDiff += 2 * Math.PI.toFloat()
                 
-                val numSpikes = if (isOuter) (42 * (effectiveArcSpan / arcSpan)).toInt() else (36 * (effectiveArcSpan / arcSpan)).toInt()
-                val i = ((angleDiff / effectiveArcSpan) * numSpikes).toInt().coerceIn(0, numSpikes - 1)
+                val peaks: FloatArray? = viewModel.trackPeaks.value[track.id]
+                val pSize = peaks?.size ?: 0
+                val rawPeak = if (peaks != null && pSize > 0) {
+                    val idx = ((angleDiff / effectiveArcSpan) * pSize).toInt().coerceIn(0, pSize - 1)
+                    peaks[idx]
+                } else {
+                    0.05f
+                }
                 
-                val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
-                val spatialEnergy = if (isPlaying) {
-                     if (isOuter) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f).toFloat() / 2f
-                     else (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f).toFloat() / 2f
-                } else 0.1f
-                
-                val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
-                val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
-                return (pattern * volMultiplier).coerceIn(4f, 120f)
+                return (rawPeak * 250f * volMultiplier).coerceAtLeast(4f)
             }
 
 
@@ -819,15 +835,20 @@ fun RadialControllerPlatter(
                     val effectiveArcSpan = arcSpanA + trackOverlap
 
                     val path = androidx.compose.ui.graphics.Path()
-                    val numSpikes = (42 * (effectiveArcSpan / arcSpanA)).toInt()
+                    val peaks: FloatArray? = viewModel.trackPeaks.value[track.id]
+                    val pSize = peaks?.size ?: 0
+                    val numSpikes = (if (pSize > 0) pSize else 100).coerceAtMost(500)
                     for (i in 0 until numSpikes) {
                         val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
                         
-                        val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
-                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f + i * 0.4f) + 1f).toFloat() / 2f else 0.1f
-                        val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
-                        val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
-                        val peakH = (pattern * volMultiplier).coerceIn(4f, 120f)
+                        val rawPeak = if (peaks != null && pSize > 0) {
+                            val idx = ((i.toFloat() / numSpikes) * pSize).toInt().coerceIn(0, pSize - 1)
+                            peaks[idx]
+                        } else {
+                            0.05f
+                        }
+                        
+                        val peakH = (rawPeak * 250f * volMultiplier).coerceAtLeast(4f)
 
                         val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                         val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -906,15 +927,20 @@ fun RadialControllerPlatter(
                 val effectiveArcSpan = arcSpanB + trackOverlap
 
                 val path = androidx.compose.ui.graphics.Path()
-                val numSpikes = (36 * (effectiveArcSpan / arcSpanB)).toInt()
+                val peaks: FloatArray? = viewModel.trackPeaks.value[track.id]
+                val pSize = peaks?.size ?: 0
+                val numSpikes = (if (pSize > 0) pSize else 100).coerceAtMost(500)
                 for (i in 0 until numSpikes) {
                     val angle = startAngle + (i.toFloat() / numSpikes) * effectiveArcSpan
                     
-                        val globalIntensity = if (isPlaying) (kotlin.math.sin(visualizerPhase * 50f) + 1f).toFloat() / 2f else 0f
-                        val spatialEnergy = if (isPlaying) (kotlin.math.sin(visualizerPhase * 30f - i * 0.4f) + 1f).toFloat() / 2f else 0.1f
-                        val dynamicMultiplier = 0.6f + 0.8f * globalIntensity * spatialEnergy
-                        val pattern = 15f + (track.id.hashCode() % (i + 5) % 24f) * dynamicMultiplier
-                        val peakH = (pattern * volMultiplier).coerceIn(4f, 120f)
+                    val rawPeak = if (peaks != null && pSize > 0) {
+                        val idx = ((i.toFloat() / numSpikes) * pSize).toInt().coerceIn(0, pSize - 1)
+                        peaks[idx]
+                    } else {
+                        0.05f
+                    }
+                    
+                    val peakH = (rawPeak * 250f * volMultiplier).coerceAtLeast(4f)
 
                     val valleyAngle = angle - (effectiveArcSpan / (numSpikes * 2))
                     val vx = cx + cos(valleyAngle).toFloat() * baseRadius
@@ -1150,20 +1176,34 @@ fun RadialControllerPlatter(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(12.dp)
-                .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
-                .padding(8.dp),
+                .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             if (selectedTrackIds.isNotEmpty()) {
                 val selectedTracks = (loadedTracksA + loadedTracksB).filter { selectedTrackIds.contains(it.id) }
                 val titleStr = selectedTracks.joinToString(" + ") { it.title }
                 val avgVol = selectedTracks.map { trackVolumes[it.id] ?: 1.0f }.average()
-                Text("TARGETED: $titleStr", color = Color.Cyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                Text("Volume: ${(avgVol * 100).toInt()}% (Drag Vertically to Scale Waveform)", color = Color.Yellow, fontSize = 8.5.sp, fontFamily = FontFamily.Monospace)
-            } else {
-                Text("SINGLE CIRCLE PLATTER", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                Text("Outer: Deck A | Inner: Deck B | Red Line: Playhead", color = Color.Gray, fontSize = 8.sp)
+                
+                val shadow = androidx.compose.ui.graphics.Shadow(
+                    color = Color.Black,
+                    offset = Offset(2f, 2f),
+                    blurRadius = 4f
+                )
+                
+                Text(
+                    text = "TARGETED: $titleStr", 
+                    color = Color.Cyan, 
+                    fontSize = 11.sp, 
+                    fontWeight = FontWeight.Bold,
+                    style = androidx.compose.ui.text.TextStyle(shadow = shadow)
+                )
+                Text(
+                    text = "Volume: ${(avgVol * 100).toInt()}%", 
+                    color = Color.Yellow, 
+                    fontSize = 10.sp, 
+                    fontFamily = FontFamily.Monospace,
+                    style = androidx.compose.ui.text.TextStyle(shadow = shadow)
+                )
             }
         }
 

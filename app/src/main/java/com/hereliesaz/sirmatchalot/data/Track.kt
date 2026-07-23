@@ -21,5 +21,9 @@ data class Track(
     val cuePoint1: Float? = null,
     val cuePoint2: Float? = null,
     val cuePoint3: Float? = null,
-    val cuePoint4: Float? = null
+    val cuePoint4: Float? = null,
+    val durationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val peaksPath: String? = null
 )

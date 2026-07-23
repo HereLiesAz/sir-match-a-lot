@@ -109,6 +109,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _trackOverlaps = MutableStateFlow<Map<String, Float>>(emptyMap())
     val trackOverlaps: StateFlow<Map<String, Float>> = _trackOverlaps
 
+    private val _trackPeaks = MutableStateFlow<Map<String, FloatArray>>(emptyMap())
+    val trackPeaks: StateFlow<Map<String, FloatArray>> = _trackPeaks
+
     // UI Mixer controls
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -157,166 +160,33 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    private fun writeWavHeader(
-        out: java.io.OutputStream,
-        totalAudioLen: Long,
-        totalDataLen: Long,
-        longSampleRate: Long,
-        channels: Int,
-        byteRate: Long
-    ) {
-        val header = ByteArray(44)
-        header[0] = 'R'.code.toByte() // RIFF/WAVE header
-        header[1] = 'I'.code.toByte()
-        header[2] = 'F'.code.toByte()
-        header[3] = 'F'.code.toByte()
-        header[4] = (totalDataLen and 0xff).toByte()
-        header[5] = ((totalDataLen shr 8) and 0xff).toByte()
-        header[6] = ((totalDataLen shr 16) and 0xff).toByte()
-        header[7] = ((totalDataLen shr 24) and 0xff).toByte()
-        header[8] = 'W'.code.toByte()
-        header[9] = 'A'.code.toByte()
-        header[10] = 'V'.code.toByte()
-        header[11] = 'E'.code.toByte()
-        header[12] = 'f'.code.toByte() // 'fmt ' chunk
-        header[13] = 'm'.code.toByte()
-        header[14] = 't'.code.toByte()
-        header[15] = ' '.code.toByte()
-        header[16] = 16 // 4 bytes: size of 'fmt ' chunk
-        header[17] = 0
-        header[18] = 0
-        header[19] = 0
-        header[20] = 1 // format = 1 (PCM)
-        header[21] = 0
-        header[22] = channels.toByte()
-        header[23] = 0
-        header[24] = (longSampleRate and 0xff).toByte()
-        header[25] = ((longSampleRate shr 8) and 0xff).toByte()
-        header[26] = ((longSampleRate shr 16) and 0xff).toByte()
-        header[27] = ((longSampleRate shr 24) and 0xff).toByte()
-        header[28] = (byteRate and 0xff).toByte()
-        header[29] = ((byteRate shr 8) and 0xff).toByte()
-        header[30] = ((byteRate shr 16) and 0xff).toByte()
-        header[31] = ((byteRate shr 24) and 0xff).toByte()
-        header[32] = (channels * 2).toByte() // block align
-        header[33] = 0
-        header[34] = 16 // bits per sample
-        header[35] = 0
-        header[36] = 'd'.code.toByte() // 'data' chunk
-        header[37] = 'a'.code.toByte()
-        header[38] = 't'.code.toByte()
-        header[39] = 'a'.code.toByte()
-        header[40] = (totalAudioLen and 0xff).toByte()
-        header[41] = ((totalAudioLen shr 8) and 0xff).toByte()
-        header[42] = ((totalAudioLen shr 16) and 0xff).toByte()
-        header[43] = ((totalAudioLen shr 24) and 0xff).toByte()
-        out.write(header, 0, 44)
-    }
 
-    private fun generateMockWavs(context: android.content.Context) {
-        val sampleRate = 44100
-        val duration = 2.0f // 2 seconds loops (corresponds to 120 BPM 4-beat bar)
-        val numSamples = (duration * sampleRate).toInt()
-        
-        val loopFiles = listOf(
-            Pair("kick_loop.wav", 1),
-            Pair("snare_loop.wav", 2),
-            Pair("hat_loop.wav", 3),
-            Pair("vox_loop.wav", 4)
-        )
-        
-        loopFiles.forEach { (filename, padId) ->
-            val file = java.io.File(context.cacheDir, filename)
-            if (file.exists()) return@forEach
-            
-            try {
-                val fos = java.io.FileOutputStream(file)
-                val totalAudioLen = numSamples * 2L
-                val totalDataLen = totalAudioLen + 36
-                
-                writeWavHeader(fos, totalAudioLen, totalDataLen, sampleRate.toLong(), 1, sampleRate * 2L)
-                
-                val buffer = ShortArray(numSamples)
-                for (i in 0 until numSamples) {
-                    val t = i.toFloat() / sampleRate
-                    buffer[i] = when (padId) {
-                        1 -> { // 808 Kick: 4 beats
-                            val beatTime = t % 0.5f
-                            if (beatTime < 0.25f) {
-                                val freq = 120f * (1.0f - beatTime / 0.25f) + 35f
-                                val phase = 2.0 * Math.PI * freq * beatTime
-                                (kotlin.math.sin(phase) * 24000f * (1.0f - beatTime / 0.25f)).toInt().toShort()
-                            } else 0
-                        }
-                        2 -> { // Retro Snare: beat 2 and 4
-                            val beat = (t / 0.5f).toInt()
-                            val beatTime = t % 0.5f
-                            if ((beat == 1 || beat == 3) && beatTime < 0.25f) {
-                                val noise = (Math.random() * 2.0 - 1.0) * 12000f
-                                val tone = kotlin.math.sin(2.0 * Math.PI * 180.0 * beatTime) * 6000f * (1.0f - beatTime / 0.25f)
-                                ((noise + tone) * (1.0f - beatTime / 0.25f)).toInt().toShort()
-                            } else 0
-                        }
-                        3 -> { // Open Hat: offbeat
-                            val beatTime = (t + 0.25f) % 0.5f
-                            if (beatTime < 0.12f) {
-                                val noise = (Math.random() * 2.0 - 1.0) * 18000f
-                                (noise * (1.0f - beatTime / 0.12f) * (1.0f - beatTime / 0.12f)).toInt().toShort()
-                            } else 0
-                        }
-                        else -> { // Formant Vox
-                            val lfo = kotlin.math.sin(2.0 * Math.PI * 2.0 * t).toFloat() * 100f
-                            val phase = 2.0 * Math.PI * (220.0 + lfo) * t
-                            (kotlin.math.sin(phase) * 12000f).toInt().toShort()
-                        }
-                    }
-                }
-                
-                val byteBuffer = java.nio.ByteBuffer.allocate(buffer.size * 2)
-                byteBuffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                buffer.forEach { byteBuffer.putShort(it) }
-                fos.write(byteBuffer.array())
-                fos.close()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
 
     init {
-        generateMockWavs(application)
         viewModelScope.launch(Dispatchers.IO) {
             trackDao.getAllTracksFlow().collect { list ->
                 if (list.isEmpty()) {
-                    loadMockCrates()
+                    fetchAndImportAzphaltStore()
                 } else {
                     _tracks.value = list
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val exists = trackDao.getTrackById("loop1") != null
-            if (!exists) {
-                val loops = listOf(
-                    Track("loop1", "808 KICK (Loop)", "Sampler Engine", 120, "C major", "8B", "", "synth-loop", 8, "808 Kick loop.", null, java.io.File(application.cacheDir, "kick_loop.wav").absolutePath, false),
-                    Track("loop2", "RETRO SNARE (Loop)", "Sampler Engine", 120, "C major", "8B", "", "synth-loop", 8, "Retro Snare loop.", null, java.io.File(application.cacheDir, "snare_loop.wav").absolutePath, false),
-                    Track("loop3", "OPEN HAT (Loop)", "Sampler Engine", 120, "C major", "8B", "", "synth-loop", 8, "Open Hat loop.", null, java.io.File(application.cacheDir, "hat_loop.wav").absolutePath, false),
-                    Track("loop4", "FORMANT VOX (Loop)", "Sampler Engine", 120, "A minor", "8A", "", "synth-loop", 8, "Formant Vox loop.", null, java.io.File(application.cacheDir, "vox_loop.wav").absolutePath, false)
-                )
-                trackDao.insertTracks(loops)
-            }
-        }
     }
 
-    private suspend fun loadMockCrates() {
-        val mockTracks = listOf(
-            Track("th1", "Around the World", "Daft Punk", 121, "A minor", "8A", "Am - C - Em - G", "hypnotic, funk-house, looping bassline", 8, "Blend intro drums. Neighbors: 8A, 8B, 9A.", null, null, false),
-            Track("th2", "One More Time", "Daft Punk", 123, "G major", "9B", "G - D - Em - C", "celebratory, vocal filter sweep", 9, "Mix relative keys. Neighbors: 9B, 8B, 10B.", null, null, false),
-            Track("th3", "Billie Jean", "Michael Jackson", 117, "F# minor", "11A", "F#m - G#m - A - G#m", "groovy, tight analog bass", 7, "Match speeds and blend. Neighbors: 11A, 10A, 12A.", null, null, false),
-            Track("tc1", "Blue Monday", "New Order", 130, "D minor", "7A", "Dm - C - F - G", "dark mechanical retro synth", 8, "Use 16-bar intro. Neighbors: 7A, 6A, 8A.", null, null, false),
-            Track("tc2", "Sandstorm", "Darude", 136, "F minor", "4A", "Fm - Ab - Eb - Db", "pumping leads, classic rave trance", 10, "Cut transitions on breaks. Neighbors: 4A, 3A, 5A.", null, null, false)
-        )
-        trackDao.insertTracks(mockTracks)
+    private suspend fun fetchAndImportAzphaltStore() {
+        try {
+            val packages = com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.fetchAudioPackages()
+            if (packages.isNotEmpty()) {
+                // Download the first audio package as default library
+                val downloadedTracks = com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.downloadAndExtractPackage(getApplication(), packages.first())
+                if (downloadedTracks.isNotEmpty()) {
+                    trackDao.insertTracks(downloadedTracks)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     fun selectTrack(trackId: String?) {
@@ -349,6 +219,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (list.any { it.id == track.id }) return
         list.add(track)
         _loadedTracksA.value = list
+        loadPeaksForTrack(track)
 
         val controller = DeckController(getApplication(), "Deck A - ${track.title}")
         controller.loadTrack(track)
@@ -378,6 +249,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (list.any { it.id == track.id }) return
         list.add(track)
         _loadedTracksB.value = list
+        loadPeaksForTrack(track)
 
         val controller = DeckController(getApplication(), "Deck B - ${track.title}")
         controller.loadTrack(track)
@@ -400,6 +272,27 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         updateAllVolumes()
 
         syncClient.triggerLoadTrack("B", track.id, _roomCode.value)
+    }
+
+    private fun loadPeaksForTrack(track: Track) {
+        if (track.peaksPath == null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val file = java.io.File(track.peaksPath)
+                if (!file.exists()) return@launch
+                
+                val bytes = file.readBytes()
+                val floatArray = FloatArray(bytes.size / 4)
+                val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                buffer.asFloatBuffer().get(floatArray)
+                
+                val current = _trackPeaks.value.toMutableMap()
+                current[track.id] = floatArray
+                _trackPeaks.value = current
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun removeTrackFromDecks(trackId: String) {
