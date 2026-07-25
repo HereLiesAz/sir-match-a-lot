@@ -22,7 +22,7 @@ import com.hereliesaz.sirmatchalot.ui.LibraryScreen
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterActions
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterScreen
-import com.hereliesaz.sirmatchalot.ui.PerformanceScreen
+import com.hereliesaz.sirmatchalot.ui.SamplerScreen
 
 enum class DjTab {
     LIBRARY, CONTROLS, PERFORMANCE
@@ -202,7 +202,7 @@ fun MainScreen(
                         actions = rememberPlatterActions(viewModel),
                     )
                 }
-                DjTab.PERFORMANCE -> PerformanceScreen(viewModel = viewModel)
+                DjTab.PERFORMANCE -> SamplerScreen(viewModel = viewModel)
             }
         }
     }
