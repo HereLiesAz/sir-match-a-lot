@@ -262,6 +262,30 @@ class AudioEngine(
         started = false
     }
 
+    /**
+     * Applies a computed beat alignment to a deck.
+     *
+     * Tempo is a rate multiplier and phase is a playhead nudge, both applied
+     * once rather than chased. The previous implementation polled every 250 ms
+     * from the UI and called `seekTo` whenever drift exceeded 40 ms, which could
+     * not converge because the correction was coarser than the error.
+     *
+     * @param phaseOffsetSeconds positive shifts the deck later.
+     */
+    fun applyAlignment(deckName: String, tempoRatio: Double, phaseOffsetSeconds: Double) {
+        val deck = if (deckName == "A") deckA else deckB
+        deck.rate = tempoRatio
+        val cycle = deck.cycleFrames
+        if (cycle <= 0) return
+        val shift = phaseOffsetSeconds * output.sampleRate
+        var position = deck.playhead + shift
+        // Keep the playhead on the circle rather than letting a correction walk
+        // it off either end.
+        position %= cycle
+        if (position < 0) position += cycle
+        deck.playhead = position
+    }
+
     /** Begins a scratch on both decks. */
     fun beginScratch() = scratch.begin(deckA.rate)
 
