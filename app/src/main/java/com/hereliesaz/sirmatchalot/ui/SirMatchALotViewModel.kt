@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.ln
 import org.json.JSONObject
 
 class SirMatchALotViewModel(application: Application) : AndroidViewModel(application), SyncClient.SyncListener {
@@ -423,31 +425,116 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
-     * Beat-syncs both decks to whatever is on Deck A, using measured tempo and
-     * phase. Tracks without a measured tempo are left alone.
+     * Whether tempo changes keep the original pitch.
+     *
+     * On a turntable, speeding a record up raises its pitch, and the scratch
+     * gestures depend on exactly that. But when *beat-matching*, dragging the key
+     * along with the tempo is what stops two tracks in compatible keys from
+     * staying compatible — which defeats the point of harmonic mixing. With
+     * keylock on, a sync corrects the rate's pitch drag by pre-rendering the
+     * opposite shift into the clip.
+     */
+    private val _keylock = MutableStateFlow(true)
+    val keylock: StateFlow<Boolean> = _keylock
+
+    fun setKeylock(enabled: Boolean) { _keylock.value = enabled }
+
+    /**
+     * Beat-syncs and key-matches Deck B to Deck A.
+     *
+     * A deck is one circular timeline read by one playhead, so it has one tempo
+     * and one phase — the alignment is computed against the first track on each
+     * deck that has a measured tempo. The previous version looped over every
+     * track on Deck B and called `applyAlignment("B", ...)` inside the loop, so
+     * every iteration but the last was immediately overwritten and the reported
+     * count of tracks "synced" described work that had not survived.
+     *
+     * Pitch correction is rendered rather than merely computed, which is what
+     * "Harmonize" has always claimed to do. Two contributions are combined into
+     * one pass over the audio:
+     *
+     * - **the harmonic interval**, from `BeatAlignment.semitoneShift`, moving
+     *   Deck B's key to Deck A's;
+     * - **cancelling the rate's own pitch drag**, `-12*log2(tempoRatio)`, when
+     *   keylock is on.
+     *
+     * A ratio of 1.0 and a shift of 0 render nothing, so a sync between tracks
+     * already in step costs no audio processing at all.
      */
     fun syncToDeckA() {
-        val reference = _loadedTracksA.value.firstOrNull()
-        if (reference?.bpm == null) {
+        val reference = _loadedTracksA.value.firstOrNull { it.bpm != null }
+        if (reference == null) {
             _feedbackMsg.value = "Deck A has no measured tempo to sync to"
             return
         }
-        var synced = 0
-        var skipped = 0
-        for (track in _loadedTracksB.value) {
-            val alignment = BeatSync.align(track, reference)
-            if (alignment == null) {
-                skipped++
-                continue
-            }
-            audioEngine.applyAlignment("B", alignment.tempoRatio, alignment.phaseOffsetSeconds)
-            synced++
+        val target = _loadedTracksB.value.firstOrNull { it.bpm != null }
+        if (target == null) {
+            _feedbackMsg.value = "Deck B has nothing with a measured tempo to sync"
+            return
         }
+        val alignment = BeatSync.align(target, reference)
+        if (alignment == null) {
+            _feedbackMsg.value = "${target.title} will not beat-match ${reference.title}"
+            return
+        }
+
         // Deck A is the reference, so it returns to its own tempo.
         audioEngine.applyAlignment("A", 1.0, 0.0)
+        audioEngine.applyAlignment("B", alignment.tempoRatio, alignment.phaseOffsetSeconds)
+
+        val driftCorrection =
+            if (_keylock.value) -12.0 * ln(alignment.tempoRatio) / ln(2.0) else 0.0
+        val totalShift = alignment.semitoneShift + driftCorrection
+
         _feedbackMsg.value = buildString {
-            append("Synced $synced to ${String.format("%.1f", reference.bpm)} BPM")
-            if (skipped > 0) append(", $skipped skipped for want of a measured tempo")
+            append("Synced ${target.title} to ${String.format("%.1f", reference.bpm)} BPM")
+            if (alignment.isHalfOrDoubleTime) append(" (half/double time)")
+            if (abs(totalShift) >= 0.01) append(", shifting ${String.format("%+.2f", totalShift)} semitones...")
+        }
+
+        if (abs(totalShift) < 0.01) return
+        renderPitchShift(PlatterGeometry.Deck.B, totalShift, alignment.semitoneShift)
+    }
+
+    /**
+     * Re-renders every clip on [deck] pitch-shifted by [semitones].
+     *
+     * Always shifts from the pristine decoded buffer, never from whatever is
+     * currently loaded, so repeated syncs do not compound the interval or the
+     * artefacts.
+     */
+    private fun renderPitchShift(
+        deck: PlatterGeometry.Deck,
+        semitones: Double,
+        harmonicInterval: Int,
+    ) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+            val shifted = engineDeck.clips.map { clip ->
+                val pristine = decoded[clip.id] ?: clip.buffer
+                Clip(
+                    id = clip.id,
+                    buffer = pristine.pitchShifted(semitones),
+                    startFrame = clip.startFrame,
+                    gain = clip.gain,
+                    loop = clip.loop,
+                )
+            }
+            if (shifted.isEmpty()) return@launch
+            // Replaced wholesale; Deck.clips is volatile and keeps the playhead
+            // inside the new cycle itself.
+            engineDeck.clips = shifted
+            republishPlatter()
+            _feedbackMsg.value = buildString {
+                append("Shifted ${String.format("%+.2f", semitones)} semitones")
+                if (harmonicInterval != 0) {
+                    append(" (${String.format("%+d", harmonicInterval)} to match key")
+                    if (_keylock.value) append(", rest is keylock")
+                    append(")")
+                } else if (_keylock.value) {
+                    append(" to hold pitch against the tempo change")
+                }
+            }
         }
     }
 

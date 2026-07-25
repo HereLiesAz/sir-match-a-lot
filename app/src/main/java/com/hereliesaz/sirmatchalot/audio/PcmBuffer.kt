@@ -1,5 +1,7 @@
 package com.hereliesaz.sirmatchalot.audio
 
+import kotlin.math.abs
+
 /**
  * Fully decoded audio, held in memory as planar 16-bit PCM.
  *
@@ -93,6 +95,48 @@ class PcmBuffer(
             }
         }
         return PcmBuffer(converted, targetRate)
+    }
+
+    /**
+     * This buffer pitch-shifted by [semitones], keeping its length — and so its
+     * tempo — unchanged.
+     *
+     * Rendered offline rather than in the render loop. Harmonic mixing sets a
+     * shift once, when a track is matched to what is already playing, so paying
+     * for it once per match buys a far better algorithm than a per-sample budget
+     * would allow. It also means the shift cannot be a source of dropouts.
+     *
+     * Always derive this from the pristine decoded buffer rather than from an
+     * already-shifted one: shifting twice compounds both the interval and the
+     * artefacts.
+     *
+     * @return this buffer when [semitones] is zero.
+     */
+    fun pitchShifted(
+        semitones: Double,
+        shifter: com.hereliesaz.sirmatchalot.dsp.PitchShifter =
+            com.hereliesaz.sirmatchalot.dsp.PitchShifter(),
+    ): PcmBuffer {
+        if (abs(semitones) < 1e-6) return this
+
+        // As in resampledTo: convert the stored channels, not the accessor, so a
+        // mono buffer stays mono and therefore stays centred.
+        val shifted = Array(channelCount) { c ->
+            val source = FloatArray(frameCount) { i -> channels[c][i] * SHORT_SCALE }
+            val out = shifter.shift(source, semitones)
+            ShortArray(out.size) { i ->
+                (out[i].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
+            }
+        }
+        // The shifter's output length can differ by a frame or two from rounding;
+        // trim to the shortest so the channels stay the same length.
+        val length = shifted.minOf { it.size }
+        return PcmBuffer(
+            channels = Array(channelCount) { c ->
+                if (shifted[c].size == length) shifted[c] else shifted[c].copyOf(length)
+            },
+            sampleRate = sampleRate,
+        )
     }
 
     /**

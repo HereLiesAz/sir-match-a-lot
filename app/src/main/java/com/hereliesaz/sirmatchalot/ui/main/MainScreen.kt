@@ -44,6 +44,7 @@ fun MainScreen(
     var inputIp by remember { mutableStateOf("192.168.1.100") }
     var inputCode by remember { mutableStateOf("ROOM") }
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val keylock by viewModel.keylock.collectAsState()
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -116,6 +117,37 @@ fun MainScreen(
                         )
                     )
                     Text("DECK B", color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold, fontSize = 9.sp, modifier = Modifier.width(45.dp))
+                }
+
+                // Beat-sync and key-match Deck B to Deck A. Until now this was
+                // reachable only from a remote sync event, so the app's harmonic
+                // mixing had no local control at all.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { viewModel.syncToDeckA() }) {
+                        Text(
+                            "SYNC B → A",
+                            color = Color(0xFF22D3EE),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 9.sp,
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.setKeylock(!keylock) }) {
+                        Text(
+                            if (keylock) "KEYLOCK ON" else "KEYLOCK OFF",
+                            // Off is the turntable behaviour the scratch gestures
+                            // rely on, so neither state is an error state.
+                            color = if (keylock) Color(0xFF22D3EE) else Color(0xFF71717A),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                        )
+                    }
                 }
 
                 NavigationBar(
