@@ -61,22 +61,54 @@ denormal range at audio rates, so no flush-to-zero hack is required.
 
 These are real gaps. None of them is hidden behind a claim that it is fine.
 
-### 1. Interpolation quality at large rate ratios — the biggest gap
+### 1. Interpolation quality — sample-rate conversion **fixed**, extreme pitch ratios outstanding
 
-`Resampler` uses 4-point Catmull-Rom cubic interpolation. At rate ≈ 1.0 —
-transport, scratching, small pitch trims — this is inaudible. At ratios far from
-1.0 it is not: cubic interpolation has a slow stopband rolloff, so downward rate
-changes alias and upward ones image. A ±6% beat-match trim is fine. A 0.5x or 2x
-pitch shift is audibly grainy.
+This was recorded as the biggest gap, and the worst part of it turned out to be
+worse than described. The note above said Catmull-Rom is "inaudible at rate ≈
+1.0", which is true — but the engine was never *at* rate 1.0. `Deck.rateScale`
+divides the clip's rate by the output rate, so a 44.1 kHz file on a 48 kHz device
+played at rate 0.919 **permanently**, through the 4-point spline, for every track
+and every sample. This is the common case on Android, not an edge case.
 
-**Fix:** a polyphase band-limited interpolator — windowed sinc, on the order of
-32–64 taps with a Kaiser window, precomputed into a phase table — for the
-transport and pitch paths, with an anti-imaging lowpass when the ratio exceeds 1.
-Keep cheap cubic interpolation only for extreme scratch, where the artefact is
-part of the effect and latency matters more than stopband depth.
+Measured, at 0.5 amplitude, comparing the spline against the windowed-sinc
+converter now in `dsp/SincResampler` (THD+N after least-squares removal of the
+test tone; the measurement floor is -154 dB):
 
-This also governs the load-time sample-rate conversion described above, so it is
-the single highest-value quality item outstanding.
+| Signal | Catmull-Rom | Windowed sinc |
+| :--- | ---: | ---: |
+| 1 kHz, 44.1→48 kHz | -89.5 dB | -130.1 dB |
+| 10 kHz, 44.1→48 kHz | **-26.4 dB** | -128.8 dB |
+| 16 kHz, 44.1→48 kHz | **-11.7 dB** | -121.5 dB |
+| 23 kHz alias, 48→44.1 kHz | **-5.3 dB** | -115.1 dB |
+
+At 16 kHz the spline's error was 11.7 dB below the signal. That is not a subtle
+loss of air at the top end; it is gross distortion, and it was in the path of
+every track.
+
+**Fixed by** converting once at load time — `PcmBuffer.resampledTo`, called from
+`loadOntoDeck` — with a Kaiser-windowed-sinc polyphase filter. Because
+`from/to` reduces to a small rational (44.1↔48 kHz needs 160 phases), the phase
+table holds *every* phase the conversion can ask for, computed exactly, with no
+inter-phase interpolation. The cutoff is pulled back by half the transition width
+so the stopband, not the middle of the skirt, begins where folding begins.
+Passband is flat to 20 kHz within 0.08 dB.
+
+Kernel length was chosen by measurement, not by the "32–64 taps" guess above,
+which was wrong: 64 taps gives only ~20 dB of alias rejection at this cutoff.
+128 taps is the knee — 108 dB rejection, 0.08 dB at 20 kHz, 279 ms per 60 s of
+mono audio.
+
+The payoff compounds: with the clip already at the output rate, the render loop
+runs at rate exactly 1.0, where the interpolating read lands on integer positions
+and returns stored samples untouched. A test asserts this, so a regression that
+quietly reintroduces per-sample conversion fails the build.
+
+**Still outstanding:** large *deliberate* pitch ratios. A 0.5x or 2x shift still
+goes through the spline in the render loop, where a fixed filter bank cannot be
+used because the rate varies continuously — that is the same property that makes
+scratching work. Cheap interpolation remains correct for extreme scratch, where
+the artefact is part of the effect. The gap is now confined to intentional large
+pitch shifts rather than affecting all playback.
 
 ### 2. Source storage is 16-bit
 

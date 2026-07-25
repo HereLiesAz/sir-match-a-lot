@@ -30,14 +30,14 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | B2 | Sample-accurate scratching | done (`dsp/Resampler` + `audio/ScratchModel`) |
 | B3 | Deceleration through zero into reverse playback, on a non-linear curve | done (`audio/ScratchModel`, continuity tested) |
 | B4 | Tempo change independent of pitch ("auto stretch") | done (`dsp/TimeStretcher`, WSOLA); quality gap 3 in AUDIO_QUALITY.md |
-| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); quality gap 1 |
+| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); large deliberate ratios still read through the spline — the remainder of gap 1 |
 | B6 | Per-deck EQ and bass boost in the music's signal path | done (`audio/Deck`, routed and tested) |
 | B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power); the UI crossfader now drives it, instead of setting two linear per-player gains that dipped ~3 dB at centre |
 | B8 | Beat sync that converges, driven from the audio thread not the UI | done — `BeatSync` computes the correction and `AudioEngine.applyAlignment` applies it once to the deck rate and playhead, rather than chasing drift with repeated seeks |
 | B9 | Live output level published for the visuals | done (`audio/OutputLevel`, per deck and master) |
 | B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | done (`audio/Clip` on a circular timeline) |
 | B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
-| B12 | Engine runs at the device's native rate; one high-quality SRC at load | partial — native rate done, SRC quality is gap 1 |
+| B12 | Engine runs at the device's native rate; one high-quality SRC at load | **done** — `dsp/SincResampler` (Kaiser windowed-sinc polyphase, exact phase table) converts each track once in `PcmBuffer.resampledTo`, so the render loop runs at rate 1.0. Flat to 20 kHz within 0.08 dB, 108 dB alias rejection; measurements in AUDIO_QUALITY.md |
 | B13 | Master limiter transparent at listening levels | done (-1 dBFS threshold, tested) |
 | B14 | Hi-res (24-bit / float) source support | planned — gap 2 in AUDIO_QUALITY.md |
 

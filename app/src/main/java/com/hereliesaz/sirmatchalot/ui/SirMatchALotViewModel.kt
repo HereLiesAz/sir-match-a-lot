@@ -93,10 +93,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 return@launch
             }
             val pcm = decoded.getOrPut(track.id) {
-                AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
+                val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
                     _feedbackMsg.value = "Could not decode ${track.title}"
                     return@launch
                 }
+                // Convert to the engine's rate here, once, with a filter good
+                // enough to be inaudible. The alternative is the render loop's
+                // 4-point spline doing it on every sample forever, at rate
+                // 0.919 for a 44.1 kHz file on a 48 kHz device.
+                if (raw.sampleRate != audioEngine.output.sampleRate) {
+                    _feedbackMsg.value =
+                        "Converting ${track.title} to ${audioEngine.output.sampleRate} Hz..."
+                }
+                raw.resampledTo(audioEngine.output.sampleRate)
             }
             peaksCache.getOrPut(track.id) {
                 track.peaksPath
