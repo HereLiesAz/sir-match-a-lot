@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Track::class], version = 3, exportSchema = false)
+@Database(entities = [Track::class], version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
 
@@ -32,39 +32,33 @@ abstract class AppDatabase : RoomDatabase() {
          */
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                // Copied verbatim from Room's exported schema
+                // (app/schemas/…AppDatabase/3.json, `createSql`) with only the
+                // table name changed. Room verifies an identity hash derived
+                // from the real table structure when it opens the database, so
+                // any divergence here — even a primary key written as a column
+                // constraint rather than a table constraint — risks crashing
+                // upgrading users at launch. Taking Room's own SQL removes the
+                // guesswork.
                 db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS tracks_new (
-                        id TEXT NOT NULL PRIMARY KEY,
-                        title TEXT NOT NULL,
-                        artist TEXT NOT NULL,
-                        sourceUri TEXT,
-                        bpm REAL,
-                        tempoConfidence REAL NOT NULL DEFAULT 0,
-                        firstBeatSeconds REAL,
-                        downbeatOffset INTEGER NOT NULL DEFAULT 0,
-                        camelotKey TEXT,
-                        keyName TEXT,
-                        keyConfidence REAL NOT NULL DEFAULT 0,
-                        energyLevel INTEGER,
-                        durationMs INTEGER NOT NULL DEFAULT 0,
-                        sampleRate INTEGER NOT NULL DEFAULT 0,
-                        trimStartMs INTEGER NOT NULL DEFAULT 0,
-                        trimEndMs INTEGER NOT NULL DEFAULT 0,
-                        peaksPath TEXT,
-                        energyPath TEXT,
-                        analysisVersion INTEGER NOT NULL DEFAULT 0,
-                        isUserAdded INTEGER NOT NULL DEFAULT 0,
-                        cuePointsCsv TEXT
-                    )
-                    """.trimIndent(),
+                    "CREATE TABLE IF NOT EXISTS `tracks_new` (" +
+                        "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, " +
+                        "`sourceUri` TEXT, `bpm` REAL, `tempoConfidence` REAL NOT NULL DEFAULT 0, " +
+                        "`firstBeatSeconds` REAL, `downbeatOffset` INTEGER NOT NULL DEFAULT 0, " +
+                        "`camelotKey` TEXT, `keyName` TEXT, `keyConfidence` REAL NOT NULL DEFAULT 0, " +
+                        "`energyLevel` INTEGER, `durationMs` INTEGER NOT NULL DEFAULT 0, " +
+                        "`sampleRate` INTEGER NOT NULL DEFAULT 0, `trimStartMs` INTEGER NOT NULL DEFAULT 0, " +
+                        "`trimEndMs` INTEGER NOT NULL DEFAULT 0, `peaksPath` TEXT, `energyPath` TEXT, " +
+                        "`analysisVersion` INTEGER NOT NULL DEFAULT 0, " +
+                        "`isUserAdded` INTEGER NOT NULL DEFAULT 0, `cuePointsCsv` TEXT, " +
+                        "PRIMARY KEY(`id`))",
                 )
 
                 // analysisVersion stays 0 so every carried-over row is treated as
                 // unanalysed and gets measured properly on next import scan.
                 db.execSQL(
                     """
-                    INSERT INTO tracks_new (
+                    INSERT INTO `tracks_new` (
                         id, title, artist, sourceUri,
                         durationMs, trimStartMs, trimEndMs,
                         peaksPath, analysisVersion, isUserAdded, cuePointsCsv
@@ -86,8 +80,8 @@ abstract class AppDatabase : RoomDatabase() {
                     """.trimIndent(),
                 )
 
-                db.execSQL("DROP TABLE tracks")
-                db.execSQL("ALTER TABLE tracks_new RENAME TO tracks")
+                db.execSQL("DROP TABLE `tracks`")
+                db.execSQL("ALTER TABLE `tracks_new` RENAME TO `tracks`")
             }
         }
 

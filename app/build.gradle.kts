@@ -122,6 +122,14 @@ android {
     }
 }
 
+// Room emits its expected schema per version into app/schemas. That JSON is the
+// authority a hand-written migration has to match: Room verifies an identity
+// hash when it opens the database, so a migration producing a subtly different
+// table crashes upgrading users at launch rather than failing the build.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
