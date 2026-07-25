@@ -158,10 +158,11 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Playback and networking. The mixing engine in `audio/` renders through
-    // AudioTrack directly; media3 is used for container/codec support when
-    // decoding a file to PCM, not as the playback path.
-    implementation(libs.androidx.media3.exoplayer)
+    // Networking. There is deliberately no player library here: the engine in
+    // `audio/` renders through AudioTrack, and `AudioDecoder` reads files with
+    // the platform's own MediaExtractor/MediaCodec. media3 was dropped along
+    // with the last ExoPlayer, because keeping a playback library nothing plays
+    // through invites a second, competing audio path back in.
     implementation(libs.okhttp.core)
 
     // Unit tests

@@ -392,4 +392,66 @@ class DeckTest {
         // amplitude 0.5; allow headroom for |rate| up to 1.
         assertTrue("discontinuity of $maxStep at the turnaround", maxStep < 0.03f)
     }
+
+    // --- Transport: nudging and seeking on the circular timeline ---
+
+    @Test
+    fun `nudging forward moves the playhead by the requested time`() {
+        val deck = deckWith(rampClip(frames = sampleRate))
+        deck.playhead = 0.0
+        deck.nudgeSeconds(0.25)
+        assertEquals(sampleRate * 0.25, deck.playhead, 1e-6)
+    }
+
+    @Test
+    fun `nudging backwards past the start wraps to the end`() {
+        // A nudge on a looping deck must behave like a nudge on a record:
+        // pushing back past the start arrives at the end, not at a stop.
+        val deck = deckWith(rampClip(frames = sampleRate))
+        deck.playhead = 100.0
+        deck.nudgeSeconds(-0.25)
+        assertEquals(sampleRate - sampleRate * 0.25 + 100.0, deck.playhead, 1e-6)
+        assertTrue(deck.playhead in 0.0..deck.cycleFrames.toDouble())
+    }
+
+    @Test
+    fun `nudging past the end wraps rather than running off the timeline`() {
+        val deck = deckWith(rampClip(frames = sampleRate))
+        deck.playhead = sampleRate - 10.0
+        deck.nudgeSeconds(1.0)
+        assertEquals(sampleRate - 10.0, deck.playhead, 1e-6)
+    }
+
+    @Test
+    fun `a nudge many revolutions long still lands on the circle`() {
+        val deck = deckWith(rampClip(frames = sampleRate))
+        deck.playhead = 0.0
+        deck.nudgeSeconds(-12.5)
+        assertTrue("landed at ${deck.playhead}", deck.playhead >= 0.0)
+        assertTrue("landed at ${deck.playhead}", deck.playhead < deck.cycleFrames)
+        assertEquals(sampleRate * 0.5, deck.playhead, 1e-6)
+    }
+
+    @Test
+    fun `seeking places the playhead at an absolute time`() {
+        val deck = deckWith(rampClip(frames = sampleRate))
+        deck.playhead = 999.0
+        deck.seekToSeconds(0.5)
+        assertEquals(sampleRate * 0.5, deck.playhead, 1e-6)
+    }
+
+    @Test
+    fun `transport does nothing on an empty deck rather than dividing by zero`() {
+        val deck = Deck("empty", sampleRate)
+        deck.nudgeSeconds(1.0)
+        deck.seekToSeconds(1.0)
+        assertEquals(0.0, deck.playhead, 0.0)
+        assertEquals(0.0, deck.cycleSeconds, 0.0)
+    }
+
+    @Test
+    fun `cycle length in seconds follows the material`() {
+        val deck = deckWith(rampClip(frames = sampleRate / 2))
+        assertEquals(0.5, deck.cycleSeconds, 1e-9)
+    }
 }
