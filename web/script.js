@@ -5,81 +5,105 @@ document.addEventListener('DOMContentLoaded', () => {
     const tp3 = document.querySelector('.tp-3');
     const label = document.querySelector('.demo-label');
 
+    const points = [tp1, tp2, tp3];
+
     const resetPoints = () => {
-        tp1.style.opacity = '0';
-        tp2.style.opacity = '0';
-        tp3.style.opacity = '0';
-        tp1.style.transform = 'translate(-50%, -50%)';
-        tp2.style.transform = 'translate(-50%, -50%)';
-        tp3.style.transform = 'translate(-50%, -50%)';
+        points.forEach((p) => {
+            p.style.opacity = '0';
+            p.style.transform = 'translate(-50%, -50%)';
+        });
+    };
+
+    /**
+     * Each entry describes one gesture as a caption plus a start and end pose.
+     * Poses are [top, left] percentages, one per finger, so the number of
+     * fingers shown always matches the gesture being described.
+     *
+     * Keys match the data-gesture attributes in index.html. These were
+     * previously out of step with the app: the page still animated the
+     * superseded mapping, in which pinch changed BPM and 2-finger rotate
+     * shifted track overlap.
+     */
+    const GESTURES = {
+        'drag-1': {
+            caption: '1 Finger — manipulate the clips',
+            from: [['55%', '35%']],
+            to: [['45%', '65%']],
+        },
+        'drag-2-h': {
+            caption: '2-Finger Horizontal — crossfader',
+            from: [['40%', '30%'], ['60%', '30%']],
+            to: [['40%', '70%'], ['60%', '70%']],
+        },
+        'drag-2-v': {
+            caption: '2-Finger Vertical — smart scratch, into reverse',
+            from: [['30%', '40%'], ['30%', '60%']],
+            to: [['70%', '40%'], ['70%', '60%']],
+        },
+        'rotate-2': {
+            caption: '2-Finger Rotate — master volume',
+            from: [['50%', '30%'], ['50%', '70%']],
+            to: [['30%', '50%'], ['70%', '50%']],
+        },
+        'pinch-2': {
+            caption: '2-Finger Pinch — bass boost',
+            from: [['30%', '30%'], ['70%', '70%']],
+            to: [['45%', '45%'], ['55%', '55%']],
+        },
+        three: {
+            caption: '3 Fingers — move, zoom and rotate the platter',
+            from: [['30%', '50%'], ['62%', '32%'], ['62%', '68%']],
+            to: [['50%', '68%'], ['32%', '38%'], ['70%', '38%']],
+        },
+    };
+
+    const pose = (frames) => {
+        points.forEach((point, index) => {
+            const frame = frames[index];
+            if (!frame) {
+                point.style.opacity = '0';
+                return;
+            }
+            point.style.opacity = '1';
+            point.style.top = frame[0];
+            point.style.left = frame[1];
+        });
+    };
+
+    let pending = [];
+
+    const clearPending = () => {
+        pending.forEach(clearTimeout);
+        pending = [];
     };
 
     const animateGesture = (type) => {
+        clearPending();
         resetPoints();
-        setTimeout(() => {
-            if (type === 'pinch') {
-                label.textContent = "Pinch in/out (BPM)";
-                tp1.style.opacity = '1';
-                tp2.style.opacity = '1';
-                tp1.style.top = '30%'; tp1.style.left = '30%';
-                tp2.style.top = '70%'; tp2.style.left = '70%';
-                
-                setTimeout(() => {
-                    tp1.style.top = '40%'; tp1.style.left = '40%';
-                    tp2.style.top = '60%'; tp2.style.left = '60%';
-                }, 500);
-            } 
-            else if (type === 'drag-1-v') {
-                label.textContent = "Vertical Drag (Pitch)";
-                tp1.style.opacity = '1';
-                tp1.style.top = '70%';
-                
-                setTimeout(() => {
-                    tp1.style.top = '30%';
-                }, 500);
-            }
-            else if (type === 'rotate-2') {
-                label.textContent = "2-Finger Rotate (Overlap)";
-                tp1.style.opacity = '1';
-                tp2.style.opacity = '1';
-                tp1.style.top = '50%'; tp1.style.left = '30%';
-                tp2.style.top = '50%'; tp2.style.left = '70%';
-                
-                setTimeout(() => {
-                    tp1.style.top = '30%'; tp1.style.left = '50%';
-                    tp2.style.top = '70%'; tp2.style.left = '50%';
-                }, 500);
-            }
-            else if (type === 'rotate-3') {
-                label.textContent = "3-Finger Rotate (Scrub)";
-                tp1.style.opacity = '1';
-                tp2.style.opacity = '1';
-                tp3.style.opacity = '1';
-                
-                tp1.style.top = '30%'; tp1.style.left = '50%';
-                tp2.style.top = '60%'; tp2.style.left = '30%';
-                tp3.style.top = '60%'; tp3.style.left = '70%';
-                
-                setTimeout(() => {
-                    tp1.style.top = '50%'; tp1.style.left = '70%';
-                    tp2.style.top = '30%'; tp2.style.left = '40%';
-                    tp3.style.top = '70%'; tp3.style.left = '40%';
-                }, 500);
-            }
-        }, 100);
+
+        const gesture = GESTURES[type];
+        if (!gesture) return;
+
+        label.textContent = gesture.caption;
+        pending.push(setTimeout(() => pose(gesture.from), 100));
+        pending.push(setTimeout(() => pose(gesture.to), 600));
+        // Return to the start so hovering shows the motion repeatedly.
+        pending.push(setTimeout(() => pose(gesture.from), 1400));
+        pending.push(setTimeout(() => pose(gesture.to), 1900));
     };
 
-    gestureItems.forEach(item => {
+    gestureItems.forEach((item) => {
         item.addEventListener('mouseenter', () => {
-            gestureItems.forEach(i => i.classList.remove('active'));
+            gestureItems.forEach((other) => other.classList.remove('active'));
             item.classList.add('active');
             animateGesture(item.dataset.gesture);
         });
-        
+
         item.addEventListener('mouseleave', () => {
             item.classList.remove('active');
+            clearPending();
             resetPoints();
-            label.textContent = "Hover a gesture";
+            label.textContent = 'Hover a gesture';
         });
     });
 });

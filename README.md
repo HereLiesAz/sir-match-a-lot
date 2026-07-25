@@ -1,44 +1,118 @@
 # Sir Match-a-Lot 🎶
 
-Welcome to **Sir Match-a-Lot**, a revolutionary Android DJing app that breaks free from traditional skeuomorphic dual-deck layouts. Instead of tiny faders and overwhelming buttons, Sir Match-a-Lot features a stunning, singular **Concentric Platter Interface** and powerful multi-finger **Global Gestures**, giving you a highly tactile and deeply connected mixing experience.
+An Android DJ app built around a single circular platter and global multi-touch
+gestures, instead of two skeuomorphic decks and a wall of tiny controls.
 
-## ✨ The Concentric Platter
-The heart of Sir Match-a-Lot is the unified circular platter that puts the music front and center.
-- **Deck A (Outer Ring):** Audio waveforms dynamically protrude outward from the base circle.
-- **Deck B (Inner Ring):** Audio waveforms dynamically protrude inward from the base circle.
-- **Stopwatch Playhead:** A singular red playhead acts like a stopwatch hand, circling the platter and reading both decks simultaneously. 
+## ✨ The platter
 
-Because the entire interface is built around this central circle, the duration of one complete rotation is determined dynamically by the longest audio track currently loaded. You no longer mix two separate timelines; you mix one unified groove.
+One circle. It is the feature of the app, not a widget inside it.
 
-## 🎛️ Global 8-Directional Gestures
-With Sir Match-a-Lot, your entire screen is your canvas. You don't need to hunt for tiny knobs. Performing global multi-finger gestures anywhere on the screen controls the music intuitively:
+- **Deck A** waveforms protrude **outward** from the ring; **Deck B** waveforms
+  protrude **inward**. Two rings, never one per track.
+- **Angle is time.** One full revolution is one deck cycle, derived from the
+  material loaded on it. The playhead's position on the circle *is* the playback
+  position — a single pair of functions converts between them everywhere.
+- **No circle is drawn.** Not at the centre, not as a base ring, not as a
+  bounding outline. The ring exists only where the waveform implies it.
+- **The playhead** is a glowing red slash centred on the ring, its length twice
+  the combined waveform height at its own angle — so it bounces over the hills
+  and valleys as it sweeps, and collapses to a glowing dot when nothing is loaded.
+- Waveforms are dense radial rays whose length and glow follow the **live metered
+  output**, so the ring careens with the music. Colour identifies the song;
+  measured energy modulates its brightness.
 
-| Gesture | Action | Description |
-| :--- | :--- | :--- |
-| 🤏 **Pinch** | **BPM / Speed** | Pinch in or out to dynamically slow down or speed up the track's BPM. |
-| 👆 **1-Finger Drag (Vertical)** | **Pitch** | Adjust the pitch of the music. |
-| 👆 **1-Finger Drag (Horizontal)** | **EQ (Bass/Treble)** | Sweep left and right to adjust the Bass and Treble. |
-| ✌️ **2-Finger Rotate** | **Overlap** | Rotate two fingers to seamlessly shift the incoming track's overlap position relative to the currently playing track. |
-| ✌️ **2-Finger Drag (Vertical)** | **Crossfader** | Slide two fingers up or down to crossfade between Deck A and Deck B. |
-| ✌️ **2-Finger Drag (Horizontal)** | **Seek / Scratch** | Swipe two fingers left or right to quickly rewind or fast-forward the playhead. |
-| 🖐️ **3-Finger Rotate** | **Platter Spin** | Spin three fingers to literally "spin the record" and manually scrub the playhead. |
-| 🖐️ **3-Finger Pinch** | **Master Volume** | Pinch in or out with three fingers to control the master output volume. |
+## 🎛️ Global gestures
 
-> [!TIP]
-> **Track Selection:** Gestures apply to the currently selected track(s). To select a track, simply tap on its waveform on the platter. If no track is selected, spatial fallbacks apply: gestures starting near the outer edge target Deck A, and gestures near the center target Deck B.
+Gestures apply **anywhere on the screen** — not only inside the circle — and two
+can run at once. A gesture ends the moment its own defining conditions stop being
+met, rather than when a finger lifts, so you can run one straight into another.
 
-## 🎵 Harmonic Mixing & Auto Sync
-- **Auto Beat Sync:** Instantly syncs the BPM and phase of your tracks so your beats are perfectly aligned.
-- **Harmonize:** Utilizes our advanced Harmonic Engine to automatically detect the key of your tracks and pitch-shift them to complementary keys (using the Camelot Wheel system) without altering the tempo.
+| Gesture | Action |
+| :--- | :--- |
+| 👆 **1 finger** | Manipulate the audio clips themselves |
+| ✌️ **2-finger horizontal** | Crossfade Deck A ↔ Deck B |
+| ✌️ **2-finger vertical** | Smart scratch — slows through zero into reverse, pitch following like a real turntable |
+| 🎛️ **2-finger rotate** | Master volume, with the feel of a knob |
+| 🤏 **2-finger pinch/spread** | Bass boost |
+| 🖐️ **3 fingers** | Move, zoom and rotate the whole platter, to work precisely on part of a track |
+| **Tap** | Select the waveform under your finger on that deck |
+| **Double tap** | Select both decks' waveforms at that spot |
+| **Long press** | Remove the selected track(s) |
 
-## 🚀 Getting Started
-1. Load tracks from your Library into the horizontal track list at the bottom of the screen.
-2. Tap a track to load it onto the first available deck.
-3. Tap the **Play** button (or the center spindle) to start the platter.
-4. Perform global gestures to mix, match, and morph your tracks!
+While a gesture runs, its name appears at a clock position around the platter and
+floats upward, dissolving the instant the gesture ends.
+
+## 🎵 Measured, not guessed
+
+Every musical value the app shows or acts on is measured from the audio signal:
+
+- **Tempo and beat phase** from a spectral-flux onset envelope, with harmonic
+  reinforcement and a log-normal octave prior.
+- **Key** from a chromagram correlated against the Krumhansl-Kessler profiles,
+  mapped onto the Camelot wheel.
+- **Energy** from loudness and spectral centroid over time.
+- **Waveform peaks** as a min/max envelope, with silence trimmed from both ends.
+
+A track whose tempo or key could not be determined shows a dash and is skipped by
+beat-sync, rather than being given a plausible-looking substitute. Confidence
+figures are shown alongside, because they are relative measures rather than
+calibrated probabilities.
+
+## 🚀 Getting started
+
+1. Import audio from the Library tab; it is decoded and analysed on import.
+2. Tap a track in the strip along the bottom to load it onto a deck. Deck A fills
+   first, then Deck B.
+3. Mix with the gestures above — anywhere on the screen.
 
 ## 🛠️ Architecture
-Built natively for Android using **Jetpack Compose** and **Kotlin Coroutines**. The audio engine relies on high-performance custom renderers to draw the dynamic audio spectrum as continuous oscillating paths.
+
+Kotlin and Jetpack Compose throughout.
+
+| Package | Responsibility |
+| :--- | :--- |
+| `dsp/` | FFT, STFT, signed-rate resampling, WSOLA time-stretch, biquad filters, tempo/key/energy/peak detection. No Android dependencies, so it is covered by JVM unit tests. |
+| `audio/` | The real-time graph: decoded PCM, clips on a circular timeline, one signed-rate playhead per deck, EQ, equal-power crossfade, safety limiter, metering, and the `AudioTrack` output stage. |
+| `analysis/` | Runs the DSP pipeline over a decoded track. One decode feeds playback, analysis, and drawing. |
+| `domain/` | The Camelot wheel and mix compatibility scoring. |
+| `gesture/` | Concurrent multi-axis gesture recognition and label placement. |
+| `ui/platter/` | Platter geometry, palette, and rendering. |
+
+Audio is mixed by the app itself rather than by a platform player, which is what
+makes reverse playback, sample-accurate scratching, crossfading and EQ possible at
+all. The output stage sits behind an interface so it can be replaced without
+touching the DSP or the UI.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
+[`docs/AUDIO_QUALITY.md`](docs/AUDIO_QUALITY.md) for the signal path and its known
+limitations, and [`docs/PLATTER_VISUAL.md`](docs/PLATTER_VISUAL.md) for the
+rendering specification.
+
+## 🔨 Building
+
+```bash
+./gradlew assembleDebug          # debug APK
+./gradlew testDebugUnitTest      # unit tests
+./gradlew bundleRelease          # release bundle (unsigned without a keystore)
+```
+
+Release signing is supplied by CI. Without a keystore the release variant builds
+unsigned rather than failing.
+
+## 📋 Status
+
+This is a rebuild in progress. [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)
+tracks every requirement individually with its current state. In summary:
+
+**Working.** Measured tempo, key, energy and peak analysis. The mixing engine,
+with reverse playback, scratching, crossfade, EQ and metering. The platter
+renderer and the gesture engine.
+
+**Not yet built.** The sampler is still a placeholder synthesiser with no
+recording or sample extraction. Also outstanding: the automatic loop maker,
+Shuffle Crate and Automatchic Mix; playlist import and background analysis;
+multi-device linking (there is a sync client, but no server for it to talk to);
+the shareable session link; and the public API.
 
 ## 📄 License
 

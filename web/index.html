@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Sir Match-a-Lot: The revolutionary gesture-driven DJ app for Android. Mix music on a unified concentric platter with global 8-directional gestures.">
+    <meta name="description" content="Sir Match-a-Lot: a gesture-driven DJ app for Android. Mix on one circular platter, with tempo and key measured from the audio itself.">
     <title>Sir Match-a-Lot | Revolutionary DJ App</title>
     
     <!-- Google Fonts: Inter & Outfit -->
@@ -33,7 +33,7 @@
         <div class="hero-content">
             <div class="badge">Next-Gen Android DJing</div>
             <h1 class="hero-title">Mix Outside the <span class="text-gradient">Decks.</span></h1>
-            <p class="hero-subtitle">Break free from tiny faders. Experience a stunning concentric platter and powerful global gestures that turn your entire screen into an instrument.</p>
+            <p class="hero-subtitle">Break free from tiny faders. One circular platter and global gestures that turn your entire screen into an instrument.</p>
             <div class="hero-cta">
                 <a href="#gestures" class="btn-primary glow-btn">Discover Gestures</a>
                 <a href="#features" class="btn-secondary">Learn More</a>
@@ -59,18 +59,18 @@
         <div class="features-grid">
             <div class="feature-card glass-panel">
                 <div class="feature-icon">🎯</div>
-                <h3>Concentric Platter</h3>
-                <p>Say goodbye to split screens. Deck A wraps the outside, Deck B wraps the inside. One timeline, one stopwatch playhead. Total visual synergy.</p>
+                <h3>One Platter</h3>
+                <p>No split screens. Deck A protrudes outward from the ring, Deck B inward. Angle is time, so one revolution is one deck cycle and the playhead&rsquo;s position on the circle <em>is</em> the playback position.</p>
             </div>
             <div class="feature-card glass-panel">
                 <div class="feature-icon">🎼</div>
                 <h3>Harmonic Engine</h3>
-                <p>Advanced key detection automatically pitches tracks to complementary Camelot keys without altering tempo. Seamless, musical mixes.</p>
+                <p>Key is measured from the audio with a chromagram correlated against the Krumhansl-Kessler profiles, then placed on the Camelot wheel &mdash; so compatibility scores describe the actual recording.</p>
             </div>
             <div class="feature-card glass-panel">
                 <div class="feature-icon">⚡</div>
                 <h3>Auto Beat Sync</h3>
-                <p>Instantly align BPM and phase. Focus on the art of the mix and the energy of the crowd, while we handle the math.</p>
+                <p>Tempo and beat phase are measured from a spectral-flux onset envelope. A track whose tempo cannot be determined is skipped rather than warped by a guess.</p>
             </div>
         </div>
     </section>
@@ -78,35 +78,49 @@
     <section id="gestures" class="gestures-section">
         <div class="gestures-content">
             <h2 class="section-title">Your Screen is the <span class="text-gradient">Canvas.</span></h2>
-            <p class="section-description">Perform global multi-touch gestures anywhere on the screen. No hunting for tiny knobs.</p>
+            <p class="section-description">Gestures are global &mdash; they apply anywhere on the screen, and two can run at once. A gesture ends the moment its own conditions stop being met, so you can run one straight into another.</p>
             
             <div class="gesture-list">
-                <div class="gesture-item" data-gesture="pinch">
-                    <span class="emoji">🤏</span>
+                <div class="gesture-item" data-gesture="drag-2-h">
+                    <span class="emoji">✌️</span>
                     <div class="gesture-text">
-                        <h4>Pinch</h4>
-                        <p>Dynamically alter BPM / Speed</p>
+                        <h4>2-Finger Horizontal</h4>
+                        <p>Crossfade between Deck A and Deck B</p>
                     </div>
                 </div>
-                <div class="gesture-item" data-gesture="drag-1-v">
-                    <span class="emoji">👆</span>
+                <div class="gesture-item" data-gesture="drag-2-v">
+                    <span class="emoji">✌️</span>
                     <div class="gesture-text">
-                        <h4>1-Finger Vertical</h4>
-                        <p>Adjust Track Pitch</p>
+                        <h4>2-Finger Vertical</h4>
+                        <p>Smart scratch &mdash; slows through zero into reverse, pitch following like a real turntable</p>
                     </div>
                 </div>
                 <div class="gesture-item" data-gesture="rotate-2">
-                    <span class="emoji">✌️</span>
+                    <span class="emoji">🎛️</span>
                     <div class="gesture-text">
                         <h4>2-Finger Rotate</h4>
-                        <p>Shift Track Overlap</p>
+                        <p>Master volume, with the feel of a knob</p>
                     </div>
                 </div>
-                <div class="gesture-item" data-gesture="rotate-3">
+                <div class="gesture-item" data-gesture="pinch-2">
+                    <span class="emoji">🤏</span>
+                    <div class="gesture-text">
+                        <h4>2-Finger Pinch</h4>
+                        <p>Bass boost</p>
+                    </div>
+                </div>
+                <div class="gesture-item" data-gesture="three">
                     <span class="emoji">🖐️</span>
                     <div class="gesture-text">
-                        <h4>3-Finger Rotate</h4>
-                        <p>Scrub / Spin the Platter</p>
+                        <h4>3 Fingers</h4>
+                        <p>Move, zoom and rotate the whole platter, to work precisely on part of a track</p>
+                    </div>
+                </div>
+                <div class="gesture-item" data-gesture="drag-1">
+                    <span class="emoji">👆</span>
+                    <div class="gesture-text">
+                        <h4>1 Finger</h4>
+                        <p>Manipulate the audio clips themselves. Tap selects, double tap selects both decks, long press removes.</p>
                     </div>
                 </div>
             </div>
@@ -124,7 +138,7 @@
     <footer id="download" class="footer">
         <div class="footer-content glass-panel">
             <h2>Ready to drop the beat?</h2>
-            <p>Download Sir Match-a-Lot on your Android device today.</p>
+            <p>Sir Match-a-Lot is an in-progress rebuild, developed in the open under the GPL. Build it from source, or read the design notes to see where it stands.</p>
             <a href="#" class="btn-primary glow-btn large-btn">Download APK</a>
         </div>
         <div class="footer-bottom">

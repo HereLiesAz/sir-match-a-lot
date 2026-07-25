@@ -18,8 +18,8 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A5 | Real peak envelope for drawing | done (`dsp/PeakEnvelope`) |
 | A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
 | A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
-| A8 | Loop candidates found automatically from the playlist's songs | planned (phase 3, `dsp/LoopFinder`) |
-| A9 | Points of interest tagged (drop, break, vocal entry) | planned (phase 3) |
+| A8 | Loop candidates found automatically from the playlist's songs | planned (phase 5, `dsp/LoopFinder`) |
+| A9 | Points of interest tagged (drop, break, vocal entry) | planned (phase 5) |
 | A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
 ## B. Audio engine
@@ -45,20 +45,20 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| C1 | One circle, invisible except for the waveforms on it | planned (phase 4) |
-| C2 | Deck A protrudes outward, Deck B inward. Two rings, never concentric-per-track | planned (phase 4) |
-| C3 | Angle is time: one rotation = the deck cycle, derived from track duration | planned (phase 4) |
-| C4 | No circle drawn at the centre, and no bounding circles | planned (phase 4) |
-| C5 | Playhead: a glowing red slash centred on the ring, length = 2x the combined waveform height at that angle, so it bounces | planned (phase 4) |
-| C6 | Playhead collapses to a glowing dot when there is no waveform | planned (phase 4) |
-| C7 | Waveforms glow, brightening and growing with live output | planned (phase 4) |
-| C8 | Deck B's waveform reaches inward toward the far side | planned (phase 4) |
-| C9 | Energy graph around the circle, repeating as needed, colour-coded | planned (phase 4) |
-| C10 | Cue markers visible on the ring | planned (phase 4) |
-| C11 | The platter is the feature — not inside a card, not on a grey panel | planned (phase 4) |
-| C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | planned (phase 4) |
-| C13 | Song list entries are draggable onto the platter | planned (phase 4) |
-| C14 | No A/B buttons and no drag handle on song rows | planned (phase 4) |
+| C1 | One circle, invisible except for the waveforms on it | done (`ui/platter/PlatterCanvas`) |
+| C2 | Deck A protrudes outward, Deck B inward. Two rings, never concentric-per-track | done |
+| C3 | Angle is time: one rotation = the deck cycle, derived from track duration | done (`PlatterGeometry`) |
+| C4 | No circle drawn at the centre, and no bounding circles | done — nothing is drawn but rays, playhead and labels |
+| C5 | Playhead: a glowing red slash centred on the ring, length = 2x the combined waveform height at that angle, so it bounces | done (tested) |
+| C6 | Playhead collapses to a glowing dot when there is no waveform | done (tested) |
+| C7 | Waveforms glow, brightening and growing with live output | done — driven by `Mixer.level`, not an oscillator |
+| C8 | Deck B's waveform reaches inward toward the far side | done |
+| C9 | Energy graph around the circle, repeating as needed, colour-coded | partial — colour path plumbed via `PlatterClip.energy`, but the analyser does not yet persist the curve, so it renders at neutral brightness |
+| C10 | Cue markers visible on the ring | planned (phase 5) |
+| C11 | The platter is the feature — not inside a card, not on a grey panel | done |
+| C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |
+| C13 | Song list entries are draggable onto the platter | partial — tapping a row loads it; drag-to-place not implemented |
+| C14 | No A/B buttons and no drag handle on song rows | done |
 | C15 | Background is an out-of-focus rave light show, genuinely driven by the audio, not a strobe | planned (phase 6) |
 
 ## D. Gestures
@@ -70,30 +70,30 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| D1 | All single-finger gestures manipulate the audio clips themselves | planned (phase 4) |
-| D2 | 2-finger horizontal = crossfader A to B | planned (phase 4) |
-| D3 | 2-finger vertical = smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | planned (phase 4) |
-| D4 | 2-finger rotate = volume | planned (phase 4) |
-| D5 | 2-finger pinch/spread = bass boost | planned (phase 4) |
-| D6 | 3-finger drag/pinch/rotate = place, resize, rotate the whole platter, to zoom in for precise work | planned (phase 4) |
-| D7 | Gestures are global — anywhere on screen, not only inside the circle, and they keep applying when the finger leaves it | planned (phase 4) |
-| D8 | Two axes at once: two gestures may run simultaneously | planned (phase 4) |
-| D9 | A gesture ends when its defining conditions stop being met, not on finger-up | planned (phase 4) |
-| D10 | Single tap selects the waveform under the finger on that deck | planned (phase 4) |
-| D11 | Double tap selects both decks' waveforms at that spot | planned (phase 4) |
-| D12 | Long press removes the selected track(s) | planned (phase 4) |
-| D13 | Easter egg: scratching too far backward triggers a very low, growling "I am Satan, Lord of Darkness", slow at first then accelerating | planned (phase 4); one accumulator, not two |
+| D1 | All single-finger gestures manipulate the audio clips themselves | partial — recognised as `CLIP_DRAG`, but the clip operations it should drive are phase 5 |
+| D2 | 2-finger horizontal = crossfader A to B | done |
+| D3 | 2-finger vertical = smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | done (`ScratchModel`, continuity tested) |
+| D4 | 2-finger rotate = volume | done |
+| D5 | 2-finger pinch/spread = bass boost | done — and it now reaches the music |
+| D6 | 3-finger drag/pinch/rotate = place, resize, rotate the whole platter, to zoom in for precise work | done |
+| D7 | Gestures are global — anywhere on screen, not only inside the circle, and they keep applying when the finger leaves it | done (tested at 2000 px from origin) |
+| D8 | Two axes at once: two gestures may run simultaneously | done (tested) |
+| D9 | A gesture ends when its defining conditions stop being met, not on finger-up | done (tested with fingers still down) |
+| D10 | Single tap selects the waveform under the finger on that deck | done |
+| D11 | Double tap selects both decks' waveforms at that spot | done |
+| D12 | Long press removes the selected track(s) | done |
+| D13 | Easter egg: scratching too far backward triggers a very low, growling "I am Satan, Lord of Darkness", slow at first then accelerating | partial — `ScratchModel` fires the trigger exactly once per gesture from one accumulator, tested; the growling voice itself is not yet synthesised |
 
 ## E. Gesture labels
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| E1 | Label appears while the gesture runs, dissolves the instant it ends | planned (phase 4) |
-| E2 | Text only — no rounded box, no background | planned (phase 4) |
-| E3 | Clock-slot priority: 12:00, then 1:30, 10:30, 3:00, 9:00, 4:30, 7:30, and 6:00 last | planned (phase 4) |
-| E4 | A slot is reusable only once its previous label has finished dissolving | planned (phase 4) |
-| E5 | A gesture repeated mid-dissolve reclaims its own slot | planned (phase 4) |
-| E6 | Labels float upward from the moment they appear until gone or offscreen | planned (phase 4) |
+| E1 | Label appears while the gesture runs, dissolves the instant it ends | done |
+| E2 | Text only — no rounded box, no background | done |
+| E3 | Clock-slot priority: 12:00, then 1:30, 10:30, 3:00, 9:00, 4:30, 7:30, and 6:00 last | done (tested) |
+| E4 | A slot is reusable only once its previous label has finished dissolving | done (tested) |
+| E5 | A gesture repeated mid-dissolve reclaims its own slot | done (tested) |
+| E6 | Labels float upward from the moment they appear until gone or offscreen | done |
 
 ## F. Library, import, and mixing intelligence
 
@@ -128,13 +128,13 @@ Prompt 75 replaced it with D1–D6 below.
 | H2 | One-click auto-connect on the same Wi-Fi — requires a device to host, which does not exist yet | planned (phase 6) |
 | H3 | Export the loaded session (two tracks, cue points, loop settings) as a shareable link with query parameters | planned (phase 6) |
 | H4 | Expose the app's complete API | planned (phase 6) |
-| H5 | Comprehensive documentation and a web page, describing the app that actually exists | planned (phase 7) — README and `web/` currently document the superseded gesture map |
+| H5 | Comprehensive documentation and a web page, describing the app that actually exists | done for the gesture map and platter behaviour — README and `web/` rewritten against §C/§D with an explicit status section; revisit as phases 5-6 land |
 
 ## Contradictions resolved
 
 1. **Gesture map.** Prompt 23's map versus prompt 75's. Prompt 75 wins; §D is the
-   only valid mapping. The README and web page still carry prompt 23's and are
-   wrong until phase 7.
+   only valid mapping. The README and web page carried prompt 23's until they were
+   rewritten; both now document §D.
 2. **Concentric rings.** Prompt 31 hints at stacking loops as rings; prompt 33
    rules it out explicitly — "there are only two decks". Two rings, and multiple
    clips subdivide a ring by angle.
