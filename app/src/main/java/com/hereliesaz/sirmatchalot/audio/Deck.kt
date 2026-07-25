@@ -222,6 +222,38 @@ class Deck(
         return peak
     }
 
+    /** Length of one revolution in seconds. Zero when the deck is empty. */
+    val cycleSeconds: Double
+        get() = cycleFrames.toDouble() / outputSampleRate
+
+    /**
+     * Moves the playhead by [seconds], wrapping around the circular timeline in
+     * whichever direction it travels.
+     *
+     * Wrapping rather than clamping is what makes a nudge on a looping deck
+     * behave like a nudge on a record: pushing back past the start arrives at the
+     * end, not at a stop. Does nothing on an empty deck.
+     */
+    fun nudgeSeconds(seconds: Double) {
+        val cycle = cycleFrames
+        if (cycle <= 0) return
+        var position = (playhead + seconds * outputSampleRate) % cycle
+        if (position < 0) position += cycle
+        playhead = position
+    }
+
+    /**
+     * Places the playhead [seconds] from the start of the timeline, wrapping if
+     * that is past the end. Does nothing on an empty deck.
+     */
+    fun seekToSeconds(seconds: Double) {
+        val cycle = cycleFrames
+        if (cycle <= 0) return
+        var position = (seconds * outputSampleRate) % cycle
+        if (position < 0) position += cycle
+        playhead = position
+    }
+
     /** Position on the timeline as a fraction of one revolution, for the platter. */
     fun cyclePosition(): Float {
         val cycle = cycleFrames

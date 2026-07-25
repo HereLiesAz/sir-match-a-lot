@@ -114,8 +114,18 @@ class Mixer(
     var level: OutputLevel = OutputLevel.SILENT
         private set
 
+    /**
+     * The XY pad's filter, on the master bus.
+     *
+     * Applied to the summed mix *before* the limiter, so a resonant sweep is
+     * caught by the limiter like any other loud signal rather than clipping past
+     * it.
+     */
+    val filter = MasterFilter(sampleRate)
+
     private val bufferA = FloatArray(maxFrames * Deck.CHANNELS)
     private val bufferB = FloatArray(maxFrames * Deck.CHANNELS)
+    private val busBuffer = FloatArray(maxFrames * Deck.CHANNELS)
 
     /** Smoothed gains, so a fast crossfade sweep does not step and zipper. */
     private var smoothedGainA = 0f
@@ -146,9 +156,10 @@ class Mixer(
             initialised = true
         }
 
-        var peak = 0f
-        var sumOfSquares = 0.0
-
+        // Sum and gain into the bus, then filter, then limit. The order matters:
+        // the limiter has to be last so it sees the resonant peaks the filter
+        // creates, and the filter has to come after the crossfade so it acts on
+        // the mix a listener hears rather than on one deck.
         for (frame in 0 until frames) {
             // One-pole smoothing per frame; ~5 ms to settle at 44.1 kHz.
             smoothedGainA += (targetA - smoothedGainA) * SMOOTHING
@@ -158,15 +169,23 @@ class Mixer(
             val base = frame * Deck.CHANNELS
             for (channel in 0 until Deck.CHANNELS) {
                 val index = base + channel
-                val mixed =
+                busBuffer[index] =
                     (bufferA[index] * smoothedGainA + bufferB[index] * smoothedGainB) * smoothedMaster
-                val limited = Limiter.softClip(mixed)
-                out[index] = limited
-
-                val magnitude = abs(limited)
-                if (magnitude > peak) peak = magnitude
-                sumOfSquares += limited.toDouble() * limited
             }
+        }
+
+        filter.process(busBuffer, frames)
+
+        var peak = 0f
+        var sumOfSquares = 0.0
+
+        for (i in 0 until samples) {
+            val limited = Limiter.softClip(busBuffer[i])
+            out[i] = limited
+
+            val magnitude = abs(limited)
+            if (magnitude > peak) peak = magnitude
+            sumOfSquares += limited.toDouble() * limited
         }
 
         level = OutputLevel(

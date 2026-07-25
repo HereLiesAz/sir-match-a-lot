@@ -18,7 +18,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A5 | Real peak envelope for drawing | done (`dsp/PeakEnvelope`) |
 | A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
 | A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
-| A8 | Loop candidates found automatically from the playlist's songs | done (`dsp/StructureFinder.findLoops`, bar-aligned self-similarity); surfacing them in the sampler is phase 5b |
+| A8 | Loop candidates found automatically from the playlist's songs | done (`dsp/StructureFinder.findLoops`, bar-aligned self-similarity); surfaced in the sampler by "Fill from track" |
 | A9 | Points of interest tagged (drop, break, vocal entry) | partial — drops, breakdowns, builds and peaks are detected and snapped to bar lines (`StructureFinder.findPointsOfInterest`); vocal detection would need a separate model |
 | A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
@@ -26,18 +26,18 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| B1 | Own mixer; one output stream, not one player per clip | done (`audio/Mixer`, `audio/AudioEngine`) |
+| B1 | Own mixer; one output stream, not one player per clip | done (`audio/Mixer`, `audio/AudioEngine`); the ExoPlayer-per-clip path is deleted, so `AudioEngine` is now the only way audio reaches the output |
 | B2 | Sample-accurate scratching | done (`dsp/Resampler` + `audio/ScratchModel`) |
 | B3 | Deceleration through zero into reverse playback, on a non-linear curve | done (`audio/ScratchModel`, continuity tested) |
 | B4 | Tempo change independent of pitch ("auto stretch") | done (`dsp/TimeStretcher`, WSOLA); quality gap 3 in AUDIO_QUALITY.md |
-| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); quality gap 1 |
+| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); large deliberate ratios still read through the spline — the remainder of gap 1 |
 | B6 | Per-deck EQ and bass boost in the music's signal path | done (`audio/Deck`, routed and tested) |
-| B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power) |
+| B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power); the UI crossfader now drives it, instead of setting two linear per-player gains that dipped ~3 dB at centre |
 | B8 | Beat sync that converges, driven from the audio thread not the UI | done — `BeatSync` computes the correction and `AudioEngine.applyAlignment` applies it once to the deck rate and playhead, rather than chasing drift with repeated seeks |
 | B9 | Live output level published for the visuals | done (`audio/OutputLevel`, per deck and master) |
 | B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | done (`audio/Clip` on a circular timeline) |
 | B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
-| B12 | Engine runs at the device's native rate; one high-quality SRC at load | partial — native rate done, SRC quality is gap 1 |
+| B12 | Engine runs at the device's native rate; one high-quality SRC at load | **done** — `dsp/SincResampler` (Kaiser windowed-sinc polyphase, exact phase table) converts each track once in `PcmBuffer.resampledTo`, so the render loop runs at rate 1.0. Flat to 20 kHz within 0.08 dB, 108 dB alias rejection; measurements in AUDIO_QUALITY.md |
 | B13 | Master limiter transparent at listening levels | done (-1 dBFS threshold, tested) |
 | B14 | Hi-res (24-bit / float) source support | planned — gap 2 in AUDIO_QUALITY.md |
 
@@ -53,7 +53,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C6 | Playhead collapses to a glowing dot when there is no waveform | done (tested) |
 | C7 | Waveforms glow, brightening and growing with live output | done — driven by `Mixer.level`, not an oscillator |
 | C8 | Deck B's waveform reaches inward toward the far side | done |
-| C9 | Energy graph around the circle, repeating as needed, colour-coded | partial — colour path plumbed via `PlatterClip.energy`, but the analyser does not yet persist the curve, so it renders at neutral brightness |
+| C9 | Energy graph around the circle, repeating as needed, colour-coded | done — the analyser now persists the curve to `Track.energyPath` (`EnergyCurve.toByteArray`, window length included so a curve read back can still answer `at`), and `republishPlatter` feeds it to `PlatterClip.energy`. A track analysed before the path was written recomputes the curve at load rather than falling back to neutral forever |
 | C10 | Cue markers visible on the ring | planned (phase 5) |
 | C11 | The platter is the feature — not inside a card, not on a grey panel | done |
 | C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |
@@ -106,7 +106,7 @@ Prompt 75 replaced it with D1–D6 below.
 | F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
 | F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | partial — running order, transitions and per-step alignments are planned (`MixPlanner.automatchicMix`); executing the plan automatically is still to do |
-| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | partial — beat sync applies through the engine; auto-pitch/harmonize compute a semitone shift that the engine does not yet render |
+| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | **done** — `syncToDeckA` applies rate and phase through the engine and *renders* the pitch shift into the clip via `PcmBuffer.pitchShifted`, combining the harmonic interval with a keylock correction of `-12*log2(tempoRatio)` so a tempo match does not drag the key with it. Keylock is toggleable, because off is the turntable behaviour the scratch gestures depend on |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
 
@@ -114,9 +114,9 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| G1 | Kaoss-pad / Kitara style expressive pad | partial — the XY pad still drives the detached sine synth; routing it into the mix is outstanding |
-| G2 | Record to a pad and replay it | done (`audio/Sampler`, captures the master bus into a preallocated buffer and replays it) |
-| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates; never overwrites an occupied pad) |
+| G1 | Kaoss-pad / Kitara style expressive pad | done (`audio/MasterFilter` on the master bus, `ui/SamplerScreen`'s FilterPad). X is a bipolar DJ filter (centre bypass, left sweeps a lowpass down, right a highpass up, log-mapped); Y is resonance to Q 8 with `1/sqrt(Q)` compensation so a sweep does not slam the limiter. Placed before the limiter and after the crossfade, so it acts on the mix and its resonant peaks are still caught |
+| G2 | Record to a pad and replay it | done (`audio/Sampler` + `ui/SamplerScreen`: arm record, hold a pad to capture, hold to replay) |
+| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates, driven by the sampler's "Fill from track"; never overwrites an occupied pad) |
 | G4 | Automatic loop maker sampling loops from the active playlist | partial — loops are found and can fill pads; running it across a whole playlist automatically is outstanding |
 | G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned — `Clip` already supports it; the UI to place a pad on a deck is outstanding |
 

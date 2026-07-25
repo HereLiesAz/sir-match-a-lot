@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
@@ -61,6 +64,7 @@ fun SamplerScreen(
     // keep the grid in step without making every pad a snapshot state holder.
     var revision by remember { mutableIntStateOf(0) }
     var recordProgress by remember { mutableStateOf(0f) }
+    val filterPosition by viewModel.filterPosition.collectAsState()
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -166,6 +170,84 @@ fun SamplerScreen(
             color = Color(0xFF52525B),
             fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
+        )
+
+        FilterPad(
+            position = filterPosition,
+            onMove = { x, y -> viewModel.moveFilter(x, y) },
+            onRelease = { viewModel.releaseFilter() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+    }
+}
+
+/**
+ * The XY performance pad.
+ *
+ * Horizontal is a bipolar filter — centre is bypass, left sweeps a lowpass down,
+ * right sweeps a highpass up — and vertical is resonance. The centre line is
+ * drawn because "off" needs to be findable by hand at speed.
+ *
+ * The pad this replaces triggered a synthesised tone that was never in the
+ * music's signal path. This one filters the master bus.
+ */
+@Composable
+private fun FilterPad(
+    position: Pair<Float, Float>?,
+    onMove: (Float, Float) -> Unit,
+    onRelease: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF0B0B12))
+            .border(1.dp, if (position != null) Color(0xFF22D3EE) else Color(0xFF27272A), RoundedCornerShape(14.dp))
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitPointerEvent()
+                        val change = down.changes.firstOrNull() ?: continue
+                        if (change.pressed) {
+                            val x = (change.position.x / size.width * 2f - 1f).coerceIn(-1f, 1f)
+                            // Screen y grows downward; resonance grows upward.
+                            val y = (1f - change.position.y / size.height).coerceIn(0f, 1f)
+                            onMove(x, y)
+                        } else {
+                            onRelease()
+                        }
+                    }
+                }
+            },
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val centre = size.width / 2f
+            drawLine(
+                color = Color(0xFF27272A),
+                start = Offset(centre, 0f),
+                end = Offset(centre, size.height),
+                strokeWidth = 1f,
+            )
+            position?.let { (x, y) ->
+                val px = (x + 1f) / 2f * size.width
+                val py = (1f - y) * size.height
+                drawLine(
+                    color = Color(0x3322D3EE),
+                    start = Offset(px, 0f),
+                    end = Offset(px, size.height),
+                    strokeWidth = 1f,
+                )
+                drawCircle(color = Color(0xFF22D3EE), radius = 14f, center = Offset(px, py))
+            }
+        }
+        Text(
+            text = if (position == null) "FILTER — LOW ← | → HIGH, UP = RESONANCE" else "FILTER",
+            color = Color(0xFF3F3F46),
+            fontSize = 8.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
         )
     }
 }

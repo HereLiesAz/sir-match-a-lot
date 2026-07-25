@@ -12,7 +12,6 @@ import com.hereliesaz.sirmatchalot.audio.Clip
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
-import com.hereliesaz.sirmatchalot.audio.DeckController
 import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSync
@@ -29,6 +28,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.ln
 import org.json.JSONObject
 
 class SirMatchALotViewModel(application: Application) : AndroidViewModel(application), SyncClient.SyncListener {
@@ -53,6 +54,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /** Decoded audio per track id, so a clip is decoded once and reused. */
     private val decoded = mutableMapOf<String, com.hereliesaz.sirmatchalot.audio.PcmBuffer>()
     private val peaksCache = mutableMapOf<String, PeakEnvelope>()
+    private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
     init {
         audioEngine.onReverseThreshold = { _feedbackMsg.value = "I am Satan, Lord of Darkness." }
@@ -74,19 +76,56 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
-     * Loads [track] onto a deck, decoding it if necessary, and republishes the
-     * platter layout.
+     * Loads [track] onto a deck, decoding it if necessary, beat-syncs it to
+     * whatever is already playing, and republishes the platter layout.
+     *
+     * This is the only route onto a deck. There used to be a second one — a
+     * `DeckController` wrapping an ExoPlayer per clip — which meant a track
+     * could be "on Deck A" in two incompatible senses at once: as a clip on the
+     * engine's timeline, and as an independent player with its own clock that
+     * the mixer, crossfader, EQ and scratch could not touch.
      */
     fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck) {
+        val onDeck = if (deck == PlatterGeometry.Deck.A) _loadedTracksA else _loadedTracksB
+        if (onDeck.value.any { it.id == track.id }) return
+
         viewModelScope.launch(Dispatchers.IO) {
-            val source = track.sourceUri ?: return@launch
+            val source = track.sourceUri
+            if (source == null) {
+                _feedbackMsg.value = "${track.title} has no audio file"
+                return@launch
+            }
             val pcm = decoded.getOrPut(track.id) {
-                AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: return@launch
+                val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
+                    _feedbackMsg.value = "Could not decode ${track.title}"
+                    return@launch
+                }
+                // Convert to the engine's rate here, once, with a filter good
+                // enough to be inaudible. The alternative is the render loop's
+                // 4-point spline doing it on every sample forever, at rate
+                // 0.919 for a 44.1 kHz file on a 48 kHz device.
+                if (raw.sampleRate != audioEngine.output.sampleRate) {
+                    _feedbackMsg.value =
+                        "Converting ${track.title} to ${audioEngine.output.sampleRate} Hz..."
+                }
+                raw.resampledTo(audioEngine.output.sampleRate)
             }
             peaksCache.getOrPut(track.id) {
                 track.peaksPath
                     ?.let { path -> runCatching { PeakEnvelope.fromByteArray(java.io.File(path).readBytes()) }.getOrNull() }
                     ?: PeakEnvelope.compute(pcm.toMonoFloat())
+            }
+            // Recomputing the curve is cheap next to the decode that just
+            // happened, so a track analysed before energyPath was written still
+            // gets coloured rather than falling back to neutral forever.
+            energyCache.getOrPut(track.id) {
+                track.energyPath
+                    ?.let { path ->
+                        runCatching {
+                            com.hereliesaz.sirmatchalot.dsp.EnergyCurve.fromByteArray(java.io.File(path).readBytes())
+                        }.getOrNull()
+                    }
+                    ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(pcm.toMonoFloat(), pcm.sampleRate)
             }
 
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
@@ -98,9 +137,48 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 startFrame = startFrame,
                 loop = existing.isEmpty(),
             )
-            engineDeck.playing = true
+            // The first track dropped starts the mix; later ones join whatever
+            // the transport is already doing.
+            if (!_isPlaying.value && audioEngine.deckA.clips.size + audioEngine.deckB.clips.size == 1) {
+                _isPlaying.value = true
+                audioEngine.deckA.playing = true
+                audioEngine.deckB.playing = true
+            }
+            engineDeck.playing = _isPlaying.value
+            onDeck.value = onDeck.value + track
             republishPlatter()
+            alignOnDrop(track, deck)
+            syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
         }
+    }
+
+    /**
+     * Beat-matches a freshly dropped track against whatever is on the other deck.
+     *
+     * A track with no measured tempo is left at its own speed and said so, rather
+     * than being warped by a ratio derived from a tempo nobody measured.
+     */
+    private fun alignOnDrop(track: Track, deck: PlatterGeometry.Deck) {
+        val other = if (deck == PlatterGeometry.Deck.A) _loadedTracksB.value else _loadedTracksA.value
+        val reference = other.firstOrNull { it.bpm != null }
+        if (track.bpm == null) {
+            _feedbackMsg.value = "${track.title} has not been analysed yet"
+            return
+        }
+        if (reference == null) return
+
+        val alignment = BeatSync.align(track, reference)
+        if (alignment == null) {
+            _feedbackMsg.value = "${track.title} will not beat-match ${reference.title}"
+            return
+        }
+        audioEngine.applyAlignment(
+            if (deck == PlatterGeometry.Deck.A) "A" else "B",
+            alignment.tempoRatio,
+            alignment.phaseOffsetSeconds,
+        )
+        _feedbackMsg.value =
+            "Matched ${track.title} to ${String.format("%.1f", reference.bpm)} BPM"
     }
 
     /** Rebuilds the platter layout from the engine's clips. */
@@ -113,6 +191,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     title = _tracks.value.firstOrNull { it.id == clip.id }?.title ?: clip.id,
                     durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
                     peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
+                    energy = energyCache[clip.id],
                 )
             }
         }
@@ -171,6 +250,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (selected.isEmpty()) return
         audioEngine.deckA.clips = audioEngine.deckA.clips.filterNot { it.id in selected }
         audioEngine.deckB.clips = audioEngine.deckB.clips.filterNot { it.id in selected }
+        _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id in selected }
+        _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id in selected }
+        _selectedTrackIds.value = emptySet()
+        republishPlatter()
+    }
+
+    /** Empties both decks — the clips and the record of what is on them. */
+    fun clearDecks() {
+        audioEngine.deckA.clips = emptyList()
+        audioEngine.deckB.clips = emptyList()
+        _loadedTracksA.value = emptyList()
+        _loadedTracksB.value = emptyList()
         _selectedTrackIds.value = emptySet()
         republishPlatter()
     }
@@ -191,6 +282,30 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         audioEngine.mixer.masterGain =
             (audioEngine.mixer.masterGain + deltaRadians * 0.25f).coerceIn(0f, 1f)
     }
+
+    /**
+     * Positions the XY performance filter on the master bus.
+     *
+     * @param x -1 to 1; centre is bypass, left sweeps a lowpass down, right
+     *   sweeps a highpass up.
+     * @param y 0 to 1, resonance.
+     */
+    fun moveFilter(x: Float, y: Float) {
+        audioEngine.mixer.filter.enabled = true
+        audioEngine.mixer.filter.x = x.coerceIn(-1f, 1f)
+        audioEngine.mixer.filter.y = y.coerceIn(0f, 1f)
+        _filterPosition.value = x to y
+    }
+
+    /** Lifts the pad, letting the filter glide back to neutral. */
+    fun releaseFilter() {
+        audioEngine.mixer.filter.release()
+        _filterPosition.value = null
+    }
+
+    /** Current pad position, or null when nothing is holding it. */
+    private val _filterPosition = MutableStateFlow<Pair<Float, Float>?>(null)
+    val filterPosition: StateFlow<Pair<Float, Float>?> = _filterPosition
 
     fun nudgeBassBoost(delta: Float) {
         val next = (audioEngine.deckA.bassBoostDb + delta * 0.06).coerceIn(-18.0, 18.0)
@@ -247,13 +362,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _loadedTracksB = MutableStateFlow<List<Track>>(emptyList())
     val loadedTracksB: StateFlow<List<Track>> = _loadedTracksB
 
-    // Dynamic player controllers
-    private val _controllersA = MutableStateFlow<List<DeckController>>(emptyList())
-    val controllersA: StateFlow<List<DeckController>> = _controllersA
-
-    private val _controllersB = MutableStateFlow<List<DeckController>>(emptyList())
-    val controllersB: StateFlow<List<DeckController>> = _controllersB
-
     // Gesture targeting state: targets specific trackIds (empty = apply to all)
     private val _selectedTrackIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedTrackIds: StateFlow<Set<String>> = _selectedTrackIds
@@ -304,8 +412,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             _feedbackMsg.value = "Need two analysed tracks that actually mix"
             return
         }
-        audioEngine.deckA.clips = emptyList()
-        audioEngine.deckB.clips = emptyList()
+        clearDecks()
         loadOntoDeck(pick.deckA, PlatterGeometry.Deck.A)
         loadOntoDeck(pick.deckB, PlatterGeometry.Deck.B)
         _feedbackMsg.value =
@@ -332,50 +439,126 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
-     * Beat-syncs both decks to whatever is on Deck A, using measured tempo and
-     * phase. Tracks without a measured tempo are left alone.
+     * Whether tempo changes keep the original pitch.
+     *
+     * On a turntable, speeding a record up raises its pitch, and the scratch
+     * gestures depend on exactly that. But when *beat-matching*, dragging the key
+     * along with the tempo is what stops two tracks in compatible keys from
+     * staying compatible — which defeats the point of harmonic mixing. With
+     * keylock on, a sync corrects the rate's pitch drag by pre-rendering the
+     * opposite shift into the clip.
+     */
+    private val _keylock = MutableStateFlow(true)
+    val keylock: StateFlow<Boolean> = _keylock
+
+    fun setKeylock(enabled: Boolean) { _keylock.value = enabled }
+
+    /**
+     * Beat-syncs and key-matches Deck B to Deck A.
+     *
+     * A deck is one circular timeline read by one playhead, so it has one tempo
+     * and one phase — the alignment is computed against the first track on each
+     * deck that has a measured tempo. The previous version looped over every
+     * track on Deck B and called `applyAlignment("B", ...)` inside the loop, so
+     * every iteration but the last was immediately overwritten and the reported
+     * count of tracks "synced" described work that had not survived.
+     *
+     * Pitch correction is rendered rather than merely computed, which is what
+     * "Harmonize" has always claimed to do. Two contributions are combined into
+     * one pass over the audio:
+     *
+     * - **the harmonic interval**, from `BeatAlignment.semitoneShift`, moving
+     *   Deck B's key to Deck A's;
+     * - **cancelling the rate's own pitch drag**, `-12*log2(tempoRatio)`, when
+     *   keylock is on.
+     *
+     * A ratio of 1.0 and a shift of 0 render nothing, so a sync between tracks
+     * already in step costs no audio processing at all.
      */
     fun syncToDeckA() {
-        val reference = _loadedTracksA.value.firstOrNull()
-        if (reference?.bpm == null) {
+        val reference = _loadedTracksA.value.firstOrNull { it.bpm != null }
+        if (reference == null) {
             _feedbackMsg.value = "Deck A has no measured tempo to sync to"
             return
         }
-        var synced = 0
-        var skipped = 0
-        for (track in _loadedTracksB.value) {
-            val alignment = BeatSync.align(track, reference)
-            if (alignment == null) {
-                skipped++
-                continue
-            }
-            audioEngine.applyAlignment("B", alignment.tempoRatio, alignment.phaseOffsetSeconds)
-            synced++
+        val target = _loadedTracksB.value.firstOrNull { it.bpm != null }
+        if (target == null) {
+            _feedbackMsg.value = "Deck B has nothing with a measured tempo to sync"
+            return
         }
+        val alignment = BeatSync.align(target, reference)
+        if (alignment == null) {
+            _feedbackMsg.value = "${target.title} will not beat-match ${reference.title}"
+            return
+        }
+
         // Deck A is the reference, so it returns to its own tempo.
         audioEngine.applyAlignment("A", 1.0, 0.0)
+        audioEngine.applyAlignment("B", alignment.tempoRatio, alignment.phaseOffsetSeconds)
+
+        val driftCorrection =
+            if (_keylock.value) -12.0 * ln(alignment.tempoRatio) / ln(2.0) else 0.0
+        val totalShift = alignment.semitoneShift + driftCorrection
+
         _feedbackMsg.value = buildString {
-            append("Synced $synced to ${String.format("%.1f", reference.bpm)} BPM")
-            if (skipped > 0) append(", $skipped skipped for want of a measured tempo")
+            append("Synced ${target.title} to ${String.format("%.1f", reference.bpm)} BPM")
+            if (alignment.isHalfOrDoubleTime) append(" (half/double time)")
+            if (abs(totalShift) >= 0.01) append(", shifting ${String.format("%+.2f", totalShift)} semitones...")
         }
+
+        if (abs(totalShift) < 0.01) return
+        renderPitchShift(PlatterGeometry.Deck.B, totalShift, alignment.semitoneShift)
     }
 
-    // Per-track volume multipliers (1.0 = normal, scaled up/down by vertical gesture)
-    private val _trackVolumes = MutableStateFlow<Map<String, Float>>(emptyMap())
-    val trackVolumes: StateFlow<Map<String, Float>> = _trackVolumes
-
-    // Per-track angular overlap amount (in radians)
-    private val _trackOverlaps = MutableStateFlow<Map<String, Float>>(emptyMap())
-    val trackOverlaps: StateFlow<Map<String, Float>> = _trackOverlaps
-
-    private val _trackPeaks = MutableStateFlow<Map<String, FloatArray>>(emptyMap())
-    val trackPeaks: StateFlow<Map<String, FloatArray>> = _trackPeaks
+    /**
+     * Re-renders every clip on [deck] pitch-shifted by [semitones].
+     *
+     * Always shifts from the pristine decoded buffer, never from whatever is
+     * currently loaded, so repeated syncs do not compound the interval or the
+     * artefacts.
+     */
+    private fun renderPitchShift(
+        deck: PlatterGeometry.Deck,
+        semitones: Double,
+        harmonicInterval: Int,
+    ) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+            val shifted = engineDeck.clips.map { clip ->
+                val pristine = decoded[clip.id] ?: clip.buffer
+                Clip(
+                    id = clip.id,
+                    buffer = pristine.pitchShifted(semitones),
+                    startFrame = clip.startFrame,
+                    gain = clip.gain,
+                    loop = clip.loop,
+                )
+            }
+            if (shifted.isEmpty()) return@launch
+            // Replaced wholesale; Deck.clips is volatile and keeps the playhead
+            // inside the new cycle itself.
+            engineDeck.clips = shifted
+            republishPlatter()
+            _feedbackMsg.value = buildString {
+                append("Shifted ${String.format("%+.2f", semitones)} semitones")
+                if (harmonicInterval != 0) {
+                    append(" (${String.format("%+d", harmonicInterval)} to match key")
+                    if (_keylock.value) append(", rest is keylock")
+                    append(")")
+                } else if (_keylock.value) {
+                    append(" to hold pitch against the tempo change")
+                }
+            }
+        }
+    }
 
     // UI Mixer controls
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
 
-    private val _audioVolume = MutableStateFlow(0.4f)
+    // Seeded from the mixer rather than from a separate literal, so the slider
+    // starts where the audio actually is.
+    private val _audioVolume = MutableStateFlow(audioEngine.mixer.masterGain)
     val audioVolume: StateFlow<Float> = _audioVolume
 
     private val _crossfader = MutableStateFlow(0)
@@ -409,14 +592,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun triggerCue(deck: String, index: Int) {
-        val time = if (deck == "A") _cuesA.value[index - 1] else _cuesB.value[index - 1]
-        time?.let { t ->
-            if (deck == "A") {
-                _controllersA.value.forEach { it.seekTo(t) }
-            } else {
-                _controllersB.value.forEach { it.seekTo(t) }
-            }
-        }
+        val time = (if (deck == "A") _cuesA.value else _cuesB.value)[index - 1] ?: return
+        deckNamed(deck).seekToSeconds(time.toDouble())
     }
 
 
@@ -458,334 +635,83 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
 
 
-    // Dynamic Platter loading functions with AutoSync BPM & Harmonize on drop
-    fun addTrackToDeckA(track: Track) {
-        val list = _loadedTracksA.value.toMutableList()
-        if (list.any { it.id == track.id }) return
-        list.add(track)
-        _loadedTracksA.value = list
-        loadPeaksForTrack(track)
+    /** Library entry point for Deck A. */
+    fun addTrackToDeckA(track: Track) = loadOntoDeck(track, PlatterGeometry.Deck.A)
 
-        val controller = DeckController(getApplication(), "Deck A - ${track.title}")
-        controller.loadTrack(track)
-        val controllers = _controllersA.value.toMutableList()
-        controllers.add(controller)
-        _controllersA.value = controllers
+    /** Library entry point for Deck B. */
+    fun addTrackToDeckB(track: Track) = loadOntoDeck(track, PlatterGeometry.Deck.B)
 
-        // AutoSync BPM & Harmonize against reference track (Deck B or Deck A first)
-        val refTrack = _loadedTracksB.value.firstOrNull() ?: _loadedTracksA.value.firstOrNull()
-        val trackBpm = track.bpm
-        val refBpm = refTrack?.bpm
-        if (refTrack != null && refTrack.id != track.id && trackBpm != null && refBpm != null && trackBpm > 0) {
-            val rate = (refBpm / trackBpm).toFloat().coerceIn(0.5f, 2.0f)
-            controller.setPlaybackRate(rate)
-            _feedbackMsg.value = "Synced ${track.title} to ${String.format("%.1f", refBpm)} BPM"
-        } else if (trackBpm == null) {
-            _feedbackMsg.value = "${track.title} has not been analysed yet"
-        }
-
-        if (_isPlaying.value) controller.play()
-        updateAllVolumes()
-
-        syncClient.triggerLoadTrack("A", track.id, _roomCode.value)
-    }
-
-    fun addTrackToDeckB(track: Track) {
-        val list = _loadedTracksB.value.toMutableList()
-        if (list.any { it.id == track.id }) return
-        list.add(track)
-        _loadedTracksB.value = list
-        loadPeaksForTrack(track)
-
-        val controller = DeckController(getApplication(), "Deck B - ${track.title}")
-        controller.loadTrack(track)
-        val controllers = _controllersB.value.toMutableList()
-        controllers.add(controller)
-        _controllersB.value = controllers
-
-        // AutoSync BPM & Harmonize against reference track (Deck A or Deck B first)
-        val refTrack = _loadedTracksA.value.firstOrNull() ?: _loadedTracksB.value.firstOrNull()
-        val trackBpm = track.bpm
-        val refBpm = refTrack?.bpm
-        if (refTrack != null && refTrack.id != track.id && trackBpm != null && refBpm != null && trackBpm > 0) {
-            val rate = (refBpm / trackBpm).toFloat().coerceIn(0.5f, 2.0f)
-            controller.setPlaybackRate(rate)
-            _feedbackMsg.value = "Synced ${track.title} to ${String.format("%.1f", refBpm)} BPM"
-        } else if (trackBpm == null) {
-            _feedbackMsg.value = "${track.title} has not been analysed yet"
-        }
-
-        if (_isPlaying.value) controller.play()
-        updateAllVolumes()
-
-        syncClient.triggerLoadTrack("B", track.id, _roomCode.value)
-    }
-
-    private fun loadPeaksForTrack(track: Track) {
-        if (track.peaksPath == null) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val file = java.io.File(track.peaksPath)
-                if (!file.exists()) return@launch
-                
-                val bytes = file.readBytes()
-                val floatArray = FloatArray(bytes.size / 4)
-                val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                buffer.asFloatBuffer().get(floatArray)
-                
-                val current = _trackPeaks.value.toMutableMap()
-                current[track.id] = floatArray
-                _trackPeaks.value = current
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
+    /** Takes [trackId] off whichever deck holds it. */
     fun removeTrackFromDecks(trackId: String) {
-        val listA = _loadedTracksA.value.toMutableList()
-        val idxA = listA.indexOfFirst { it.id == trackId }
-        if (idxA != -1) {
-            listA.removeAt(idxA)
-            _loadedTracksA.value = listA
-
-            val controllers = _controllersA.value.toMutableList()
-            val controller = controllers.removeAt(idxA)
-            controller.release()
-            _controllersA.value = controllers
-        }
-
-        val listB = _loadedTracksB.value.toMutableList()
-        val idxB = listB.indexOfFirst { it.id == trackId }
-        if (idxB != -1) {
-            listB.removeAt(idxB)
-            _loadedTracksB.value = listB
-
-            val controllers = _controllersB.value.toMutableList()
-            val controller = controllers.removeAt(idxB)
-            controller.release()
-            _controllersB.value = controllers
-        }
-
-        if (_selectedTrackIds.value.contains(trackId)) {
-            _selectedTrackIds.value = _selectedTrackIds.value - trackId
-        }
+        _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == trackId }
+        _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id == trackId }
+        audioEngine.deckA.clips = audioEngine.deckA.clips.filterNot { it.id == trackId }
+        audioEngine.deckB.clips = audioEngine.deckB.clips.filterNot { it.id == trackId }
+        _selectedTrackIds.value = _selectedTrackIds.value - trackId
+        republishPlatter()
     }
 
     fun togglePlayback() {
         val nextPlaying = !_isPlaying.value
         _isPlaying.value = nextPlaying
-        _controllersA.value.forEach { if (nextPlaying) it.play() else it.pause() }
-        _controllersB.value.forEach { if (nextPlaying) it.play() else it.pause() }
+        audioEngine.deckA.playing = nextPlaying
+        audioEngine.deckB.playing = nextPlaying
+    }
+
+    /**
+     * Positions the crossfader, on the UI's -100..100 scale.
+     *
+     * The mixer takes 0..1 and applies an **equal-power** law, so a sweep holds
+     * its perceived loudness across the middle. The previous arrangement set two
+     * linear gains on two independent players, which dips about 3 dB at centre —
+     * audible as a lurch on every transition.
+     */
+    fun setCrossfaderValue(value: Int) {
+        applyCrossfade(value)
+        syncClient.updateCrossfader(_crossfader.value, _roomCode.value)
+    }
+
+    /**
+     * Positions the crossfader without telling the server.
+     *
+     * Separate from [setCrossfaderValue] so applying a position that *came from*
+     * the server does not echo straight back to it.
+     */
+    private fun applyCrossfade(value: Int) {
+        val clamped = value.coerceIn(-100, 100)
+        _crossfader.value = clamped
+        audioEngine.mixer.crossfade = (clamped + 100) / 200f
     }
 
     fun setVolume(vol: Float) {
-        _audioVolume.value = vol
-        updateAllVolumes()
-    }
-
-    fun setCrossfaderValue(value: Int) {
-        _crossfader.value = value
-        updateAllVolumes()
-        syncClient.updateCrossfader(value, _roomCode.value)
-    }
-
-    private fun updateAllVolumes() {
-        val vol = _audioVolume.value
-        val cf = _crossfader.value
-        val crossA = if (cf < 0) 1f else (100f - cf) / 100f
-        val crossB = if (cf > 0) 1f else (100f + cf) / 100f
-
-        val map = _trackVolumes.value
-        _loadedTracksA.value.forEachIndexed { idx, track ->
-            val trackMult = map[track.id] ?: 1.0f
-            _controllersA.value.getOrNull(idx)?.setVolume((vol * crossA * trackMult).coerceIn(0f, 1f))
-        }
-        _loadedTracksB.value.forEachIndexed { idx, track ->
-            val trackMult = map[track.id] ?: 1.0f
-            _controllersB.value.getOrNull(idx)?.setVolume((vol * crossB * trackMult).coerceIn(0f, 1f))
-        }
-    }
-
-    fun adjustTrackVolume(deck: String, delta: Float) {
-        val currentMap = _trackVolumes.value.toMutableMap()
-        val targetedIds = _selectedTrackIds.value
-        if (targetedIds.isNotEmpty()) {
-            targetedIds.forEach { id ->
-                val prev = currentMap[id] ?: 1.0f
-                currentMap[id] = (prev + delta).coerceIn(0.15f, 3.5f)
-            }
-        } else {
-            val targets = if (deck == "A") _loadedTracksA.value else _loadedTracksB.value
-            targets.forEach { tr ->
-                val prev = currentMap[tr.id] ?: 1.0f
-                currentMap[tr.id] = (prev + delta).coerceIn(0.15f, 3.5f)
-            }
-        }
-        _trackVolumes.value = currentMap
-        updateAllVolumes()
-    }
-
-    fun adjustPitch(deck: String, percent: Float) {
-        adjustPitchOnly(deck, percent / 100f)
-    }
-
-    fun adjustBpmSpeed(deck: String, delta: Float) {
-        val targetedIds = _selectedTrackIds.value
-        if (targetedIds.isNotEmpty()) {
-            targetedIds.forEach { selId ->
-                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
-                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
-                val targetCtrl = cA ?: cB
-                targetCtrl?.let { ctrl ->
-                    val newRate = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
-                    ctrl.setPlaybackRate(newRate)
-                }
-            }
-        } else {
-            val list = if (deck == "A") _controllersA.value else _controllersB.value
-            list.forEach { ctrl ->
-                val newRate = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
-                ctrl.setPlaybackRate(newRate)
-            }
-        }
-    }
-
-    fun adjustPitchOnly(deck: String, delta: Float) {
-        val targetedIds = _selectedTrackIds.value
-        if (targetedIds.isNotEmpty()) {
-            targetedIds.forEach { selId ->
-                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
-                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
-                val targetCtrl = cA ?: cB
-                targetCtrl?.let { ctrl ->
-                    val newPitch = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
-                    ctrl.setPitchOnly(newPitch)
-                }
-            }
-        } else {
-            val list = if (deck == "A") _controllersA.value else _controllersB.value
-            list.forEach { ctrl ->
-                val newPitch = (1f + (ctrl.pitch / 100f) + delta).coerceIn(0.5f, 2.0f)
-                ctrl.setPitchOnly(newPitch)
-            }
-        }
-    }
-
-
-    fun adjustOverlap(delta: Float, deckZone: String, playheadAngle: Float, platterRotationAngle: Float) {
-        val targetedIds = _selectedTrackIds.value
-        val currentMap = _trackOverlaps.value.toMutableMap()
-
-        val list = if (deckZone == "A") _loadedTracksA.value else _loadedTracksB.value
-        if (list.isEmpty()) return
-
-        val numClips = list.size
-        val arcSpan = (2 * Math.PI) / numClips
-
-        // Normalize playheadAngle into 0..2PI relative to platter
-        var normalizedPlayhead = (playheadAngle - platterRotationAngle + Math.PI / 2) % (2 * Math.PI)
-        if (normalizedPlayhead < 0) normalizedPlayhead += 2 * Math.PI
-
-        val currentPlayingIdx = (normalizedPlayhead / arcSpan).toInt().coerceIn(0, numClips - 1)
-
-        val targetTrackId = if (targetedIds.isNotEmpty()) {
-            val selIdx = list.indexOfFirst { targetedIds.contains(it.id) }
-            if (selIdx != -1) {
-                // If it is playing, we adjust its own overlap (end of song)
-                // If it is NOT playing, we adjust the previous song's overlap (beginning of song)
-                if (selIdx == currentPlayingIdx) {
-                    list[selIdx].id
-                } else {
-                    val prevIdx = if (selIdx - 1 < 0) numClips - 1 else selIdx - 1
-                    list[prevIdx].id
-                }
-            } else null
-        } else {
-            // No selection: adjust currently playing track's overlap
-            list[currentPlayingIdx].id
-        }
-
-        if (targetTrackId != null) {
-            val prev = currentMap[targetTrackId] ?: 0f
-            // Adjust overlap (allow up to half the arc span)
-            currentMap[targetTrackId] = (prev + delta).coerceIn(0f, (arcSpan / 2).toFloat())
-            _trackOverlaps.value = currentMap
-        }
+        val clamped = vol.coerceIn(0f, 1f)
+        _audioVolume.value = clamped
+        audioEngine.mixer.masterGain = clamped
     }
 
     fun adjustCrossfaderDelta(delta: Float) {
-        val newCross = (_crossfader.value + delta).toInt().coerceIn(-100, 100)
-        _crossfader.value = newCross
-        updateAllVolumes()
+        setCrossfaderValue(_crossfader.value + delta.toInt())
     }
 
+    /**
+     * Moves a deck's playhead by [deltaSeconds].
+     *
+     * There is one playhead per deck, not one per clip, because the deck is a
+     * single circular timeline — which is what lets a scratch stay continuous
+     * through zero rate instead of being a series of seeks.
+     */
     fun seekTrack(deck: String, deltaSeconds: Float) {
-        val targetedIds = _selectedTrackIds.value
-        if (targetedIds.isNotEmpty()) {
-            targetedIds.forEach { selId ->
-                val cA = _controllersA.value.firstOrNull { it.loadedTrack?.id == selId }
-                val cB = _controllersB.value.firstOrNull { it.loadedTrack?.id == selId }
-                val targetCtrl = cA ?: cB
-                targetCtrl?.let { ctrl ->
-                    val newTime = (ctrl.currentTime.value + deltaSeconds).coerceAtLeast(0f)
-                    ctrl.seekTo(newTime)
-                }
-            }
-        } else {
-            val list = if (deck == "A") _controllersA.value else _controllersB.value
-            list.forEach { ctrl ->
-                val newTime = (ctrl.currentTime.value + deltaSeconds).coerceAtLeast(0f)
-                ctrl.seekTo(newTime)
-            }
-        }
+        deckNamed(deck).nudgeSeconds(deltaSeconds.toDouble())
     }
 
+    /** Scrubs a deck by a platter rotation, where a full turn is the whole timeline. */
     fun scrubPlayhead(deck: String, deltaAngleRad: Float) {
-        val targetedIds = _selectedTrackIds.value
-        val deltaSeconds = (deltaAngleRad / (2 * Math.PI).toFloat()) * 10f
-        if (targetedIds.isNotEmpty()) {
-            targetedIds.forEach { targetedId ->
-                val idxA = _loadedTracksA.value.indexOfFirst { it.id == targetedId }
-                if (idxA != -1) {
-                    val controller = _controllersA.value.getOrNull(idxA)
-                    controller?.let {
-                        val newTime = (it.currentTime.value + deltaSeconds).coerceAtLeast(0f)
-                        it.seekTo(newTime)
-                    }
-                }
-                val idxB = _loadedTracksB.value.indexOfFirst { it.id == targetedId }
-                if (idxB != -1) {
-                    val controller = _controllersB.value.getOrNull(idxB)
-                    controller?.let {
-                        val newTime = (it.currentTime.value + deltaSeconds).coerceAtLeast(0f)
-                        it.seekTo(newTime)
-                    }
-                }
-            }
-        } else {
-            val controllers = if (deck == "A") _controllersA.value else _controllersB.value
-            controllers.forEach { controller ->
-                val newTime = (controller.currentTime.value + deltaSeconds).coerceAtLeast(0f)
-                controller.seekTo(newTime)
-            }
-        }
+        val engineDeck = deckNamed(deck)
+        engineDeck.nudgeSeconds(deltaAngleRad / (2 * Math.PI) * engineDeck.cycleSeconds)
     }
 
-    fun autoSync() {
-        val baseBpm = _loadedTracksA.value.firstNotNullOfOrNull { it.bpm }
-        if (baseBpm == null) {
-            _feedbackMsg.value = "Nothing to sync to — no loaded track has a measured tempo"
-            return
-        }
-        // Tracks without a measured tempo are left alone rather than warped by a
-        // guessed ratio.
-        (_controllersA.value + _controllersB.value).forEach { controller ->
-            val bpm = controller.loadedTrack?.bpm ?: return@forEach
-            if (bpm > 0) controller.setPlaybackRate((baseBpm / bpm).toFloat().coerceIn(0.5f, 2.0f))
-        }
-        _feedbackMsg.value = "Synced to ${String.format("%.1f", baseBpm)} BPM"
-    }
+    private fun deckNamed(deck: String) =
+        if (deck == "A") audioEngine.deckA else audioEngine.deckB
 
     fun startAutoDiscovery() {
         _feedbackMsg.value = "Broadcasting LAN search..."
@@ -841,6 +767,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             peaksFile.parentFile?.mkdirs()
             peaksFile.writeBytes(analysis.peaks.toByteArray())
 
+            // The energy curve was measured and then discarded, which is why the
+            // platter's clips all drew at neutral brightness however different
+            // the music was. Track.energyPath has existed for it since the schema
+            // was written; nothing ever filled it in.
+            val energyFile = java.io.File(getApplication<Application>().filesDir, "energy/${track.id}.energy")
+            energyFile.parentFile?.mkdirs()
+            energyFile.writeBytes(analysis.energyCurve.toByteArray())
+
             val sampleRate = decoded.pcm.sampleRate.toDouble()
             trackDao.updateTrack(
                 track.copy(
@@ -857,6 +791,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     trimStartMs = (decoded.trimmedStartFrames / sampleRate * 1000).toLong(),
                     trimEndMs = ((decoded.trimmedStartFrames + decoded.pcm.frameCount) / sampleRate * 1000).toLong(),
                     peaksPath = peaksFile.absolutePath,
+                    energyPath = energyFile.absolutePath,
                     analysisVersion = Track.CURRENT_ANALYSIS_VERSION,
                 ),
             )
@@ -907,23 +842,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.Main) {
             if (json.has("isPlaying")) {
                 val syncPlaying = json.getBoolean("isPlaying")
-                if (syncPlaying != _isPlaying.value) {
-                    _isPlaying.value = syncPlaying
-                    _controllersA.value.forEach { if (syncPlaying) it.play() else it.pause() }
-                    _controllersB.value.forEach { if (syncPlaying) it.play() else it.pause() }
-                }
+                if (syncPlaying != _isPlaying.value) togglePlayback()
             }
             if (json.has("crossfader")) {
-                _crossfader.value = json.getInt("crossfader")
-                updateAllVolumes()
+                applyCrossfade(json.getInt("crossfader"))
             }
         }
     }
 
     override fun onKaossMoveEvent(x: Float, y: Float, padId: Int) {
-        // The XY pad drove a standalone synthesiser that was never in the
-        // music's signal path. Until it is re-implemented as a real effect, a
-        // remote move has nothing to apply.
+        // Applies to the master bus, so a remote move is heard on this device's
+        // own output — which is what a linked pad is for.
+        moveFilter(x, y)
     }
 
     override fun onSamplerTriggerEvent(padId: Int) {
@@ -932,7 +862,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     override fun onAutoSyncEvent() {
-        autoSync()
+        syncToDeckA()
     }
 
     override fun onLoadTrackEvent(deck: String, trackId: String) {
@@ -947,23 +877,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     override fun onSeekEvent(deck: String, time: Float) {
-        if (deck == "A") {
-            _controllersA.value.forEach { it.seekTo(time) }
-        } else {
-            _controllersB.value.forEach { it.seekTo(time) }
-        }
+        deckNamed(deck).seekToSeconds(time.toDouble())
     }
 
     override fun onNudgeEvent(deck: String, direction: String) {
-        val controllers = if (deck == "A") _controllersA.value else _controllersB.value
-        val offset = if (direction == "forward") 0.05f else -0.05f
-        controllers.forEach { it.seekTo(it.currentTime.value + offset) }
+        seekTrack(deck, if (direction == "forward") 0.05f else -0.05f)
     }
 
     override fun onCleared() {
         super.onCleared()
-        _controllersA.value.forEach { it.release() }
-        _controllersB.value.forEach { it.release() }
         audioEngine.release()
         syncClient.disconnect()
     }
