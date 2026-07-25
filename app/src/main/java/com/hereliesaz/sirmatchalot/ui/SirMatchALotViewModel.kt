@@ -57,8 +57,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _platterState = MutableStateFlow(PlatterState())
     val platterState: StateFlow<PlatterState> = _platterState
 
-    /** Decoded audio per track id, so a clip is decoded once and reused. */
-    private val decoded = mutableMapOf<String, com.hereliesaz.sirmatchalot.audio.PcmBuffer>()
+    /**
+     * Decoded audio per track id, so a clip is decoded once and reused.
+     *
+     * Bounded. The plain map this replaces was never emptied, so every track
+     * ever loaded stayed in memory as full PCM — about 58 MB per five-minute
+     * stereo track — until the ViewModel died.
+     */
+    private val decoded = com.hereliesaz.sirmatchalot.audio.DecodedCache()
     private val peaksCache = mutableMapOf<String, PeakEnvelope>()
     private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
@@ -106,7 +112,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 _feedbackMsg.value = "${track.title} has no audio file"
                 return@launch
             }
-            val pcm = decoded.getOrPut(track.id) {
+            val pcm = decoded[track.id] ?: run {
                 val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
                     _feedbackMsg.value = "Could not decode ${track.title}"
                     return@launch
@@ -119,7 +125,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     _feedbackMsg.value =
                         "Converting ${track.title} to ${audioEngine.output.sampleRate} Hz..."
                 }
-                raw.resampledTo(audioEngine.output.sampleRate)
+                val converted = raw.resampledTo(audioEngine.output.sampleRate)
+                decoded.put(track.id, converted, pinnedTrackIds())
+                if (decoded.overBudget) {
+                    _feedbackMsg.value =
+                        "Low on memory — unload a track before loading more"
+                }
+                converted
             }
             peaksCache.getOrPut(track.id) {
                 track.peaksPath
@@ -266,6 +278,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id in selected }
         _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id in selected }
         _selectedTrackIds.value = emptySet()
+        decoded.trim(pinnedTrackIds())
+        selected.forEach { peaksCache.remove(it); energyCache.remove(it) }
         republishPlatter()
     }
 
@@ -276,6 +290,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _loadedTracksA.value = emptyList()
         _loadedTracksB.value = emptyList()
         _selectedTrackIds.value = emptySet()
+        decoded.trim(pinned = emptySet())
         republishPlatter()
     }
 
@@ -772,6 +787,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /** Library entry point for Deck B. */
     fun addTrackToDeckB(track: Track) = loadOntoDeck(track, PlatterGeometry.Deck.B)
 
+    /**
+     * Ids whose decoded audio the render thread may still be reading.
+     *
+     * Evicting one of these would not stop playback — the clip holds its own
+     * reference — but it would mean the next load decodes a second copy, so the
+     * cache would cost memory instead of saving it.
+     */
+    private fun pinnedTrackIds(): Set<String> =
+        (audioEngine.deckA.clips + audioEngine.deckB.clips).map { it.id }.toSet()
+
     /** Takes [trackId] off whichever deck holds it. */
     fun removeTrackFromDecks(trackId: String) {
         _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == trackId }
@@ -779,6 +804,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         audioEngine.deckA.clips = audioEngine.deckA.clips.filterNot { it.id == trackId }
         audioEngine.deckB.clips = audioEngine.deckB.clips.filterNot { it.id == trackId }
         _selectedTrackIds.value = _selectedTrackIds.value - trackId
+        // Release the audio as the track leaves, so a long mix does not
+        // accumulate every track it has already played.
+        decoded.trim(pinnedTrackIds())
+        peaksCache.remove(trackId)
+        energyCache.remove(trackId)
         republishPlatter()
     }
 
@@ -1191,6 +1221,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     override fun onCleared() {
         super.onCleared()
         audioEngine.release()
+        decoded.clear()
         syncClient.disconnect()
     }
 }
