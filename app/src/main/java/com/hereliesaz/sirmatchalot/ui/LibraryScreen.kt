@@ -42,6 +42,9 @@ fun LibraryScreen(
     val feedbackMsg by viewModel.feedbackMsg.collectAsState()
     val librarySort by viewModel.librarySort.collectAsState()
     val searchQuery by viewModel.libraryFilter.collectAsState()
+    val isAutoMixing by viewModel.isAutoMixing.collectAsState()
+    val nowPlaying by viewModel.nowPlaying.collectAsState()
+    val transitionProgress by viewModel.transitionProgress.collectAsState()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -128,6 +131,47 @@ fun LibraryScreen(
                 modifier = Modifier.weight(1f)
             ) {
                 Text("AUTOMATCHIC MIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+        }
+
+        // Planning and performing are separate actions: the plan is worth seeing
+        // before it is committed to, and it was previously the only half that
+        // existed.
+        Spacer(Modifier.height(6.dp))
+        Button(
+            onClick = {
+                if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (isAutoMixing) "STOP THE MIX" else "PLAY THE MIX",
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+            )
+        }
+
+        nowPlaying?.let { current ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "NOW ${current.index + 1}/${current.total} — ${current.step.track.title}" +
+                    (current.step.transition?.let { " · ${it.overallScore}% in" } ?: ""),
+                color = Color(0xFF6EE7B7),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            if (transitionProgress > 0f) {
+                LinearProgressIndicator(
+                    progress = { transitionProgress },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    color = Color(0xFF059669),
+                    trackColor = Color(0xFF27272A),
+                )
             }
         }
 

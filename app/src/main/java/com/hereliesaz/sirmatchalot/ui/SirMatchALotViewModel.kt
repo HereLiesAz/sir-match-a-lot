@@ -16,6 +16,9 @@ import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
+import com.hereliesaz.sirmatchalot.domain.MixCommand
+import com.hereliesaz.sirmatchalot.domain.MixDeck
+import com.hereliesaz.sirmatchalot.domain.MixDirector
 import com.hereliesaz.sirmatchalot.domain.MixPlan
 import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
@@ -26,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -84,8 +88,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * could be "on Deck A" in two incompatible senses at once: as a clip on the
      * engine's timeline, and as an independent player with its own clock that
      * the mixer, crossfader, EQ and scratch could not touch.
+     *
+     * @param startSilent load the audio but neither start the deck nor beat-match
+     *   it. Used when a [MixDirector] is driving: it decides when the track
+     *   enters and applies the alignment its plan already computed, so a load
+     *   that started playback or aligned on its own would fight it.
      */
-    fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck) {
+    fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck, startSilent: Boolean = false) {
         val onDeck = if (deck == PlatterGeometry.Deck.A) _loadedTracksA else _loadedTracksB
         if (onDeck.value.any { it.id == track.id }) return
 
@@ -137,17 +146,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 startFrame = startFrame,
                 loop = existing.isEmpty(),
             )
-            // The first track dropped starts the mix; later ones join whatever
-            // the transport is already doing.
-            if (!_isPlaying.value && audioEngine.deckA.clips.size + audioEngine.deckB.clips.size == 1) {
-                _isPlaying.value = true
-                audioEngine.deckA.playing = true
-                audioEngine.deckB.playing = true
+            if (!startSilent) {
+                // The first track dropped starts the mix; later ones join whatever
+                // the transport is already doing.
+                if (!_isPlaying.value && audioEngine.deckA.clips.size + audioEngine.deckB.clips.size == 1) {
+                    _isPlaying.value = true
+                    audioEngine.deckA.playing = true
+                    audioEngine.deckB.playing = true
+                }
+                engineDeck.playing = _isPlaying.value
             }
-            engineDeck.playing = _isPlaying.value
             onDeck.value = onDeck.value + track
             republishPlatter()
-            alignOnDrop(track, deck)
+            if (!startSilent) alignOnDrop(track, deck)
             syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
         }
     }
@@ -435,6 +446,124 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             else ->
                 "Planned ${plan.steps.size} tracks (${plan.skipped.size} not analysed), " +
                     "${plan.averageScore}% average transition"
+        }
+    }
+
+    // --- Performing the plan ---
+
+    private val _mixDirector = MutableStateFlow<MixDirector?>(null)
+
+    /** True while the app is playing a planned mix by itself. */
+    val isAutoMixing: StateFlow<Boolean> =
+        _mixDirector.map { it != null }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private val _nowPlaying = MutableStateFlow<MixCommand.NowPlaying?>(null)
+    val nowPlaying: StateFlow<MixCommand.NowPlaying?> = _nowPlaying
+
+    /** 0..1 through the current transition, for the UI to show a fade in progress. */
+    private val _transitionProgress = MutableStateFlow(0f)
+    val transitionProgress: StateFlow<Float> = _transitionProgress
+
+    private var autoMixJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Performs the planned mix — the half of "Automatchic Mix" that did not exist.
+     *
+     * `MixPlanner` decided *what* to play and computed the corrections for each
+     * transition; the plan was then displayed and never performed. `MixDirector`
+     * decides *when*, and this applies what it asks for.
+     *
+     * The director is driven by a wall-clock delta rather than by a deck playhead,
+     * because a deck timeline is circular and wraps. The tick interval is not
+     * assumed to be exact — the elapsed time between iterations is measured and
+     * passed in, so a stalled frame does not desynchronise the set.
+     */
+    fun startAutomatchicMix() {
+        val plan = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
+        if (plan.steps.isEmpty()) {
+            _feedbackMsg.value = "No analysed tracks to mix"
+            return
+        }
+        stopAutomatchicMix()
+        clearDecks()
+
+        val director = MixDirector(plan)
+        _mixDirector.value = director
+        apply(director.start())
+
+        autoMixJob = viewModelScope.launch {
+            var last = System.nanoTime()
+            while (!director.finished) {
+                delay(50)
+                val now = System.nanoTime()
+                val delta = (now - last) / 1_000_000_000.0
+                last = now
+                apply(director.advance(delta))
+                _transitionProgress.value = director.transitionProgress.toFloat()
+            }
+            _mixDirector.value = null
+            _transitionProgress.value = 0f
+            _feedbackMsg.value = "Mix finished — ${plan.steps.size} tracks"
+        }
+    }
+
+    /** Stops performing a mix, leaving whatever is loaded where it is. */
+    fun stopAutomatchicMix() {
+        autoMixJob?.cancel()
+        autoMixJob = null
+        _mixDirector.value = null
+        _transitionProgress.value = 0f
+    }
+
+    /** Carries out what the director asked for. */
+    private fun apply(commands: List<MixCommand>) {
+        for (command in commands) when (command) {
+            is MixCommand.Preload -> loadOntoDeck(
+                command.track,
+                if (command.deck == MixDeck.A) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B,
+                startSilent = true,
+            )
+
+            is MixCommand.Start -> {
+                val name = if (command.deck == MixDeck.A) "A" else "B"
+                val engineDeck = deckNamed(name)
+                // Enter from the top of the track, not from wherever the deck's
+                // playhead happened to be left.
+                engineDeck.playhead = 0.0
+                engineDeck.playing = true
+                _isPlaying.value = true
+                command.alignment?.let {
+                    audioEngine.applyAlignment(name, it.tempoRatio, it.phaseOffsetSeconds)
+                    val drift = if (_keylock.value) -12.0 * ln(it.tempoRatio) / ln(2.0) else 0.0
+                    val total = it.semitoneShift + drift
+                    if (abs(total) >= 0.01) {
+                        renderPitchShift(
+                            if (command.deck == MixDeck.A) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B,
+                            total,
+                            it.semitoneShift,
+                        )
+                    }
+                }
+            }
+
+            is MixCommand.Crossfade -> applyCrossfade(((command.position * 200f) - 100f).toInt())
+
+            is MixCommand.Retire -> {
+                val name = if (command.deck == MixDeck.A) "A" else "B"
+                deckNamed(name).playing = false
+                removeTrackFromDecks(command.track.id)
+            }
+
+            is MixCommand.NowPlaying -> {
+                _nowPlaying.value = command
+                _feedbackMsg.value =
+                    "${command.index + 1}/${command.total}: ${command.step.track.title}"
+            }
+
+            MixCommand.Finished -> {
+                _mixDirector.value = null
+                _transitionProgress.value = 0f
+            }
         }
     }
 
