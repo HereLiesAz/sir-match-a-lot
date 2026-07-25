@@ -13,7 +13,6 @@ import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
 import com.hereliesaz.sirmatchalot.audio.DeckController
-import com.hereliesaz.sirmatchalot.audio.SynthEngine
 import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSync
@@ -37,7 +36,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val db = AppDatabase.getDatabase(application)
     private val trackDao = db.trackDao()
 
-    val synthEngine = SynthEngine(application)
 
     /**
      * The real-time mixing engine.
@@ -124,6 +122,47 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             deckA = PlatterState.layout(inputsFor(PlatterGeometry.Deck.A), selected, PlatterGeometry.Deck.A),
             deckB = PlatterState.layout(inputsFor(PlatterGeometry.Deck.B), selected, PlatterGeometry.Deck.B),
         )
+    }
+
+    /**
+     * Fills empty sampler pads with loops found in the track on Deck A.
+     *
+     * The loops come from measured self-similarity over the measured beat grid,
+     * so they are whole bars of material that genuinely repeats.
+     */
+    fun autoFillPads() {
+        val track = _loadedTracksA.value.firstOrNull()
+        if (track == null) {
+            _feedbackMsg.value = "Load a track on Deck A first"
+            return
+        }
+        val bpm = track.bpm
+        val firstBeat = track.firstBeatSeconds
+        if (bpm == null || firstBeat == null) {
+            _feedbackMsg.value = "${track.title} has no measured beat grid to find loops on"
+            return
+        }
+        val pcm = decoded[track.id]
+        if (pcm == null) {
+            _feedbackMsg.value = "${track.title} is not decoded yet"
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.Default) {
+            val grid = com.hereliesaz.sirmatchalot.dsp.BeatGrid(
+                bpm = bpm,
+                firstBeatSeconds = firstBeat,
+                downbeatOffset = track.downbeatOffset,
+            )
+            val loops = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                .findLoops(pcm.toMonoFloat(), pcm.sampleRate, grid)
+            val filled = audioEngine.sampler.autoFill(loops, pcm, track.title)
+            _feedbackMsg.value = when {
+                loops.isEmpty() -> "No repeating sections found in ${track.title}"
+                filled == 0 -> "No free pads to fill"
+                else -> "Filled $filled pads from ${track.title}"
+            }
+        }
     }
 
     /** Removes every selected clip from both decks. */
@@ -633,10 +672,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    fun adjustEqBassTreble(deck: String, delta: Float) {
-        val currentCutoff = synthEngine.filterCutoff
-        synthEngine.filterCutoff = (currentCutoff + delta).coerceIn(100f, 12000f)
-    }
 
     fun adjustOverlap(delta: Float, deckZone: String, playheadAngle: Float, platterRotationAngle: Float) {
         val targetedIds = _selectedTrackIds.value
@@ -886,12 +921,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     override fun onKaossMoveEvent(x: Float, y: Float, padId: Int) {
-        synthEngine.frequency = x * 1500f + 50f
-        synthEngine.filterCutoff = y
+        // The XY pad drove a standalone synthesiser that was never in the
+        // music's signal path. Until it is re-implemented as a real effect, a
+        // remote move has nothing to apply.
     }
 
     override fun onSamplerTriggerEvent(padId: Int) {
-        synthEngine.playSample(padId)
+        // Remote pads trigger the real sampler rather than a synthesised tone.
+        audioEngine.sampler.trigger(padId)
     }
 
     override fun onAutoSyncEvent() {
@@ -927,7 +964,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         super.onCleared()
         _controllersA.value.forEach { it.release() }
         _controllersB.value.forEach { it.release() }
-        synthEngine.release()
         audioEngine.release()
         syncClient.disconnect()
     }
