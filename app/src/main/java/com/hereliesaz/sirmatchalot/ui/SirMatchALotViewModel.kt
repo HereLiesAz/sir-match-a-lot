@@ -304,11 +304,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
         var synced = 0
         var skipped = 0
-        for (track in _loadedTracksB.value + _loadedTracksA.value.drop(1)) {
+        for (track in _loadedTracksB.value) {
             val alignment = BeatSync.align(track, reference)
-            if (alignment == null) { skipped++; continue }
+            if (alignment == null) {
+                skipped++
+                continue
+            }
+            audioEngine.applyAlignment("B", alignment.tempoRatio, alignment.phaseOffsetSeconds)
             synced++
         }
+        // Deck A is the reference, so it returns to its own tempo.
+        audioEngine.applyAlignment("A", 1.0, 0.0)
         _feedbackMsg.value = buildString {
             append("Synced $synced to ${String.format("%.1f", reference.bpm)} BPM")
             if (skipped > 0) append(", $skipped skipped for want of a measured tempo")

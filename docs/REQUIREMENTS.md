@@ -33,7 +33,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); quality gap 1 |
 | B6 | Per-deck EQ and bass boost in the music's signal path | done (`audio/Deck`, routed and tested) |
 | B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power) |
-| B8 | Beat sync that converges, driven from the audio thread not the UI | partial — `domain/BeatSync` computes tempo ratio, phase offset and semitone shift from measured grids; applying them continuously in the engine is still to do |
+| B8 | Beat sync that converges, driven from the audio thread not the UI | done — `BeatSync` computes the correction and `AudioEngine.applyAlignment` applies it once to the deck rate and playhead, rather than chasing drift with repeated seeks |
 | B9 | Live output level published for the visuals | done (`audio/OutputLevel`, per deck and master) |
 | B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | done (`audio/Clip` on a circular timeline) |
 | B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
@@ -106,7 +106,7 @@ Prompt 75 replaced it with D1–D6 below.
 | F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
 | F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | partial — running order, transitions and per-step alignments are planned (`MixPlanner.automatchicMix`); executing the plan automatically is still to do |
-| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | partial — the corrections are computed by `BeatSync`; wiring them through the engine is still to do |
+| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | partial — beat sync applies through the engine; auto-pitch/harmonize compute a semitone shift that the engine does not yet render |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
 
@@ -114,11 +114,11 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| G1 | Kaoss-pad / Kitara style expressive pad | partial — a pad exists but drives a detached sine synth |
-| G2 | Record to a pad and replay it | planned (phase 5) |
-| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | planned (phase 5) |
-| G4 | Automatic loop maker sampling loops from the active playlist | planned (phase 5) |
-| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned (phase 5) |
+| G1 | Kaoss-pad / Kitara style expressive pad | partial — the XY pad still drives the detached sine synth; routing it into the mix is outstanding |
+| G2 | Record to a pad and replay it | done (`audio/Sampler`, captures the master bus into a preallocated buffer and replays it) |
+| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates; never overwrites an occupied pad) |
+| G4 | Automatic loop maker sampling loops from the active playlist | partial — loops are found and can fill pads; running it across a whole playlist automatically is outstanding |
+| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned — `Clip` already supports it; the UI to place a pad on a deck is outstanding |
 
 ## H. Reach
 

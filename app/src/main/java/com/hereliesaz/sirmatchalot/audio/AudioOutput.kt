@@ -234,6 +234,15 @@ class AudioEngine(
     val deckB = Deck("B", output.sampleRate)
     val mixer = Mixer(deckA, deckB, output.sampleRate, maxFrames = output.framesPerBuffer)
 
+    /**
+     * Pads that record from this engine's own output and play back over it.
+     *
+     * Rendered after the mixer so a pad layers on top of the decks, and captured
+     * from the mixer's output so a recording is what the performer actually
+     * heard.
+     */
+    val sampler = Sampler(sampleRate = output.sampleRate)
+
     /** Fired once when a scratch is dragged past the reverse threshold. */
     @Volatile
     var onReverseThreshold: (() -> Unit)? = null
@@ -246,6 +255,10 @@ class AudioEngine(
         started = true
         output.start { buffer, frames ->
             mixer.render(buffer, frames)
+            // Capture the deck mix before the pads are added, so re-triggering a
+            // recorded pad while recording cannot feed back on itself.
+            sampler.captureFromMaster(buffer, frames)
+            sampler.render(buffer, frames)
             if (scratch.accountForRenderedFrames(frames)) {
                 onReverseThreshold?.invoke()
             }
@@ -260,6 +273,30 @@ class AudioEngine(
     fun release() {
         output.release()
         started = false
+    }
+
+    /**
+     * Applies a computed beat alignment to a deck.
+     *
+     * Tempo is a rate multiplier and phase is a playhead nudge, both applied
+     * once rather than chased. The previous implementation polled every 250 ms
+     * from the UI and called `seekTo` whenever drift exceeded 40 ms, which could
+     * not converge because the correction was coarser than the error.
+     *
+     * @param phaseOffsetSeconds positive shifts the deck later.
+     */
+    fun applyAlignment(deckName: String, tempoRatio: Double, phaseOffsetSeconds: Double) {
+        val deck = if (deckName == "A") deckA else deckB
+        deck.rate = tempoRatio
+        val cycle = deck.cycleFrames
+        if (cycle <= 0) return
+        val shift = phaseOffsetSeconds * output.sampleRate
+        var position = deck.playhead + shift
+        // Keep the playhead on the circle rather than letting a correction walk
+        // it off either end.
+        position %= cycle
+        if (position < 0) position += cycle
+        deck.playhead = position
     }
 
     /** Begins a scratch on both decks. */
