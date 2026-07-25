@@ -114,11 +114,11 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| G1 | Kaoss-pad / Kitara style expressive pad | partial — a pad exists but drives a detached sine synth |
-| G2 | Record to a pad and replay it | planned (phase 5) |
-| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | planned (phase 5) |
-| G4 | Automatic loop maker sampling loops from the active playlist | planned (phase 5) |
-| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned (phase 5) |
+| G1 | Kaoss-pad / Kitara style expressive pad | partial — the XY pad still drives the detached sine synth; routing it into the mix is outstanding |
+| G2 | Record to a pad and replay it | done (`audio/Sampler`, captures the master bus into a preallocated buffer and replays it) |
+| G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates; never overwrites an occupied pad) |
+| G4 | Automatic loop maker sampling loops from the active playlist | partial — loops are found and can fill pads; running it across a whole playlist automatically is outstanding |
+| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned — `Clip` already supports it; the UI to place a pad on a deck is outstanding |
 
 ## H. Reach
 
