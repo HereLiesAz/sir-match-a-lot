@@ -1,0 +1,58 @@
+name: Unit tests
+
+# The release pipeline in build-and-release.yml only assembles a bundle; it never
+# runs the test suite. The DSP analysis code exists to replace values that used to
+# be fabricated, and its unit tests are what keep it honest, so they need to gate
+# pull requests independently of packaging.
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Compiling the instrumented sources catches breakage that unit tests miss
+      # — a stale androidTest referencing a changed composable signature was
+      # failing on main before this workflow existed.
+      - name: Run unit tests and compile instrumented tests
+        run: ./gradlew testDebugUnitTest compileDebugAndroidTestKotlin
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 14

@@ -54,11 +54,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Release signing is supplied by CI, which reconstructs a keystore from
+    // secrets and exports KEYSTORE_FILE. When that env var is absent — a local
+    // build, or a fork without secrets — the config is left unregistered so the
+    // release variant builds unsigned instead of failing validateSigningRelease.
+    val releaseKeystore: String? = System.getenv("KEYSTORE_FILE")
+
     signingConfigs {
-        create("release") {
-            val keystoreFile = System.getenv("KEYSTORE_FILE")
-            if (keystoreFile != null) {
-                storeFile = file(keystoreFile)
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
@@ -76,7 +81,9 @@ android {
             // Uses the default debug signing config.
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
