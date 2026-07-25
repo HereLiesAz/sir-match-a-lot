@@ -26,17 +26,20 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| B1 | Own mixer; one output stream, not one player per clip | planned (phase 2) |
-| B2 | Sample-accurate scratching | done at the DSP level (`dsp/Resampler`); engine: phase 2 |
-| B3 | Deceleration through zero into reverse playback, on a non-linear curve | done at the DSP level; `ScratchModel`: phase 2 |
-| B4 | Tempo change independent of pitch ("auto stretch") | done (`dsp/TimeStretcher`, WSOLA) |
-| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`) |
-| B6 | Per-deck EQ and bass boost in the music's signal path | done (`dsp/Biquad`); routing: phase 2 |
-| B7 | Crossfade with a correct gain law (no mid-fade level jump) | planned (phase 2) |
-| B8 | Beat sync that converges, driven from the audio thread not the UI | planned (phase 2) |
-| B9 | Live output level and spectrum published for the visuals | planned (phase 2) |
-| B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | planned (phase 2) |
-| B11 | A single sample alone on a deck loops around the whole circle | planned (phase 2) |
+| B1 | Own mixer; one output stream, not one player per clip | done (`audio/Mixer`, `audio/AudioEngine`) |
+| B2 | Sample-accurate scratching | done (`dsp/Resampler` + `audio/ScratchModel`) |
+| B3 | Deceleration through zero into reverse playback, on a non-linear curve | done (`audio/ScratchModel`, continuity tested) |
+| B4 | Tempo change independent of pitch ("auto stretch") | done (`dsp/TimeStretcher`, WSOLA); quality gap 3 in AUDIO_QUALITY.md |
+| B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); quality gap 1 |
+| B6 | Per-deck EQ and bass boost in the music's signal path | done (`audio/Deck`, routed and tested) |
+| B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power) |
+| B8 | Beat sync that converges, driven from the audio thread not the UI | planned (phase 5) |
+| B9 | Live output level published for the visuals | done (`audio/OutputLevel`, per deck and master) |
+| B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | done (`audio/Clip` on a circular timeline) |
+| B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
+| B12 | Engine runs at the device's native rate; one high-quality SRC at load | partial — native rate done, SRC quality is gap 1 |
+| B13 | Master limiter transparent at listening levels | done (-1 dBFS threshold, tested) |
+| B14 | Hi-res (24-bit / float) source support | planned — gap 2 in AUDIO_QUALITY.md |
 
 ## C. The platter
 

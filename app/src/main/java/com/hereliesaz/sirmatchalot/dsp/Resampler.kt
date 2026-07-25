@@ -97,6 +97,40 @@ object Resampler {
         return position
     }
 
+    /** Normalisation applied when reading 16-bit storage. */
+    const val SHORT_SCALE = 1f / 32768f
+
+    /**
+     * As [read], but against 16-bit storage, widening to normalised float.
+     *
+     * Playback buffers are held as `Short` to halve memory
+     * ([com.hereliesaz.sirmatchalot.audio.PcmBuffer]), so the render loop reads
+     * through this rather than converting whole tracks to float up front.
+     */
+    fun read(source: ShortArray, position: Double): Float {
+        val n = source.size
+        if (n == 0) return 0f
+        if (position < 0.0 || position > (n - 1).toDouble()) return 0f
+
+        val i1 = floor(position).toInt()
+        val t = (position - i1).toFloat()
+        if (t == 0f) return source[i1] * SHORT_SCALE
+
+        val p0 = source[if (i1 - 1 < 0) 0 else i1 - 1] * SHORT_SCALE
+        val p1 = source[i1] * SHORT_SCALE
+        val p2 = source[if (i1 + 1 >= n) n - 1 else i1 + 1] * SHORT_SCALE
+        val p3 = source[if (i1 + 2 >= n) n - 1 else i1 + 2] * SHORT_SCALE
+
+        val t2 = t * t
+        val t3 = t2 * t
+        return 0.5f * (
+            2f * p1 +
+                (-p0 + p2) * t +
+                (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 +
+                (-p0 + 3f * p1 - 3f * p2 + p3) * t3
+            )
+    }
+
     /** Wraps [position] into `[start, start + length)`. */
     private fun wrap(position: Double, start: Double, length: Double): Double {
         var p = (position - start) % length
