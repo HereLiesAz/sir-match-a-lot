@@ -12,7 +12,9 @@ import com.hereliesaz.sirmatchalot.audio.Clip
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
+import com.hereliesaz.sirmatchalot.data.AnalysisQueue
 import com.hereliesaz.sirmatchalot.data.AppDatabase
+import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
@@ -882,13 +884,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * A track whose tempo or key could not be determined keeps nulls for those
      * columns; it is not given a plausible-looking substitute.
      */
-    suspend fun analyseTrack(track: Track) {
-        val source = track.sourceUri ?: return
+    suspend fun analyseTrack(track: Track): Boolean {
+        val source = track.sourceUri
+        if (source.isNullOrBlank()) {
+            // Previously a bare `?: return`. A track with no audio is a normal
+            // state now that a playlist can name songs the library does not
+            // hold, so it needs saying rather than swallowing.
+            _feedbackMsg.value = "${track.title} has no audio file to analyse"
+            return false
+        }
         try {
             val decoded = AudioDecoder.decode(getApplication(), Uri.parse(source))
             if (decoded == null) {
                 _feedbackMsg.value = "Could not decode ${track.title}"
-                return
+                return false
             }
 
             val analysis = analyzer.analyse(decoded.pcm)
@@ -932,16 +941,182 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 append(", ")
                 append(analysis.camelotKey ?: "key not found")
             }
+            return true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Cancellation is the user stopping the run, not a failure of this
+            // track; let it propagate so the loop above unwinds.
+            throw e
         } catch (e: Exception) {
             _feedbackMsg.value = "Analysis failed for ${track.title}: ${e.message}"
+            return false
         }
     }
 
-    /** Re-measures every track whose stored analysis predates the current analyser. */
-    fun analysePending() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _tracks.value.filterNot { it.isAnalysed }.forEach { analyseTrack(it) }
+    /**
+     * Imports whatever [input] refers to: a playlist, a track listing, or a
+     * direct audio link.
+     *
+     * A playlist becomes **one library entry per song**, which is the whole
+     * point — the previous behaviour was to treat an imported playlist as a
+     * single track, and before that there was no link import at all
+     * ([com.hereliesaz.sirmatchalot.data.LinkParser] existed but was called from
+     * nowhere).
+     *
+     * Entries that carry a playable location are analysed straight away.
+     * Entries that only *name* a song — everything a YouTube or Spotify listing
+     * gives you — are still added, with no `sourceUri`, so the running order is
+     * preserved and each can be pointed at a file later. They are not given
+     * invented audio, and they are not silently dropped.
+     */
+    fun importFromLink(input: String) {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) {
+            _feedbackMsg.value = "Paste a playlist link, a track listing, or an audio link"
+            return
         }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _feedbackMsg.value = "Reading..."
+            val document = when {
+                // Not a URL at all: a pasted tracklist is itself the document.
+                !trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true) -> trimmed
+                else -> fetchPlaylistDocument(trimmed) ?: run {
+                    _feedbackMsg.value = "Could not read that link"
+                    return@launch
+                }
+            }
+
+            val entries = PlaylistParser.parse(document)
+            if (entries.isEmpty()) {
+                _feedbackMsg.value = "Nothing recognisable as a playlist there"
+                return@launch
+            }
+
+            val existing = _tracks.value
+            var added = 0
+            var withAudio = 0
+            for (entry in entries) {
+                val duplicate = existing.any { track ->
+                    (entry.sourceUri != null && track.sourceUri == entry.sourceUri) ||
+                        (track.title.equals(entry.title, ignoreCase = true) &&
+                            track.artist.equals(entry.artist ?: "", ignoreCase = true))
+                }
+                if (duplicate) continue
+
+                trackDao.insertTrack(
+                    Track(
+                        title = entry.title,
+                        artist = entry.artist ?: "Unknown Artist",
+                        sourceUri = entry.sourceUri,
+                        durationMs = ((entry.durationSeconds ?: 0.0) * 1000).toLong(),
+                    ),
+                )
+                added++
+                if (entry.hasAudio) withAudio++
+            }
+
+            _feedbackMsg.value = buildString {
+                append("Imported $added of ${entries.size} ${if (entries.size == 1) "song" else "songs"}")
+                val named = added - withAudio
+                if (named > 0) append(" — $named named only, with no audio file yet")
+            }
+            if (withAudio > 0) analysePending()
+        }
+    }
+
+    /**
+     * Fetches a playlist document.
+     *
+     * A YouTube playlist URL is rewritten to the Atom feed YouTube publishes for
+     * it, which lists the playlist's videos without an API key. That gives the
+     * songs; it does not give audio, and this app deliberately does not attempt
+     * to extract audio from YouTube — doing so breaches their terms and Google
+     * Play's policy on such apps.
+     */
+    private fun fetchPlaylistDocument(url: String): String? {
+        val playlistId = Regex("[?&]list=([a-zA-Z0-9_-]+)").find(url)?.groupValues?.get(1)
+        val target = if (playlistId != null) {
+            "https://www.youtube.com/feeds/videos.xml?playlist_id=$playlistId"
+        } else {
+            url
+        }
+        return runCatching {
+            val connection = java.net.URL(target).openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 15_000
+            connection.setRequestProperty("User-Agent", "SirMatchALot")
+            connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+        }.getOrNull()
+    }
+
+    /** Re-measures every track whose stored analysis predates the current analyser. */
+    /**
+     * Progress through the current analysis run, or null when idle.
+     *
+     * Analysing a full track is an FFT pass over the whole file and takes real
+     * seconds. Without something visible changing, the button was
+     * indistinguishable from a dead one for the entire run.
+     */
+    private val _analysisProgress = MutableStateFlow<AnalysisProgress?>(null)
+    val analysisProgress: StateFlow<AnalysisProgress?> = _analysisProgress
+
+    /** @param done tracks finished so far, out of [total]. */
+    data class AnalysisProgress(val done: Int, val total: Int, val current: String) {
+        val fraction: Float get() = if (total <= 0) 0f else done.toFloat() / total
+    }
+
+    private var analysisJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Measures every track that has audio and has not been measured yet.
+     *
+     * Reports something in *every* case. The previous version reported only from
+     * inside a successful per-track analysis, so an empty library, a fully
+     * analysed one, and one full of entries with no audio file were all silent —
+     * which is how "pressing analyse does nothing" came about. Three of those
+     * four outcomes were doing exactly nothing, correctly, and saying so.
+     */
+    fun analysePending(rescan: Boolean = false) {
+        if (analysisJob?.isActive == true) {
+            _feedbackMsg.value = "Already analysing — let it finish"
+            return
+        }
+        val plan = if (rescan) {
+            AnalysisQueue.planFullRescan(_tracks.value)
+        } else {
+            AnalysisQueue.plan(_tracks.value)
+        }
+        if (!plan.hasWork) {
+            _feedbackMsg.value = plan.idleMessage()
+            return
+        }
+
+        _feedbackMsg.value = plan.startMessage()
+        analysisJob = viewModelScope.launch(Dispatchers.IO) {
+            var done = 0
+            var failed = 0
+            for (track in plan.toAnalyse) {
+                _analysisProgress.value = AnalysisProgress(done, plan.toAnalyse.size, track.title)
+                if (!analyseTrack(track)) failed++
+                done++
+            }
+            _analysisProgress.value = null
+            _feedbackMsg.value = buildString {
+                append("Analysed ${done - failed} of ${plan.toAnalyse.size}")
+                if (failed > 0) append(", $failed could not be decoded")
+                if (plan.missingAudio.isNotEmpty()) {
+                    append("; ${plan.missingAudio.size} have no audio file")
+                }
+            }
+        }
+    }
+
+    /** Stops an analysis run in progress. */
+    fun cancelAnalysis() {
+        analysisJob?.cancel()
+        analysisJob = null
+        _analysisProgress.value = null
+        _feedbackMsg.value = "Analysis stopped"
     }
 
     fun deleteTrack(track: Track) {

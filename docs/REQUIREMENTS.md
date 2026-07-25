@@ -100,8 +100,8 @@ Prompt 75 replaced it with D1–D6 below.
 | # | Requirement | Status |
 | :-- | :--- | :--- |
 | F1 | Local audio files supported | done — imported and measured |
-| F2 | Any music service whose link resolves to a track or playlist | planned (phase 3) |
-| F3 | A playlist link imports every track in it, not one | planned (phase 3) |
+| F2 | Any music service whose link resolves to a track or playlist | partial — `data/PlaylistParser` reads M3U/M3U8, XSPF, Atom and RSS, plus pasted link lists and tracklists, and `importFromLink` fetches a link and expands it. Anything serving a real audio file (podcast enclosures, direct links, self-hosted, purchased downloads) imports playable. **YouTube and Spotify give song lists, not audio**, and this app deliberately does not extract audio from them — see the note below the table |
+| F3 | A playlist link imports every track in it, not one | **done** — a playlist becomes one library entry per song. Entries with no playable location are kept, named, with a null `sourceUri`, rather than dropped or given invented audio |
 | F4 | Long imports run in the background with a progress notification, pausable and resumable | planned (phase 3) |
 | F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
@@ -109,6 +109,15 @@ Prompt 75 replaced it with D1–D6 below.
 | F8 | Auto beat sync, auto pitch, auto stretch, harmonize | **done** — `syncToDeckA` applies rate and phase through the engine and *renders* the pitch shift into the clip via `PcmBuffer.pitchShifted`, combining the harmonic interval with a keylock correction of `-12*log2(tempoRatio)` so a tempo match does not drag the key with it. Keylock is toggleable, because off is the turntable behaviour the scratch gestures depend on |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
+
+**On YouTube and Spotify.** Their terms prohibit downloading audio, and Google
+Play's developer policy specifically bans apps that facilitate it — a listing
+that does so is removable, which matters because the store is the monetisation
+channel. So a YouTube playlist link is read through the Atom feed YouTube
+publishes for it (`youtube.com/feeds/videos.xml?playlist_id=…`, keyless and
+documented), which yields the playlist's **songs**. Those arrive as named
+library entries with no audio, to be pointed at files the user holds or at
+Azphalt store packs. The app names what you asked for; it does not take it.
 
 ## G. Sampler and looper
 

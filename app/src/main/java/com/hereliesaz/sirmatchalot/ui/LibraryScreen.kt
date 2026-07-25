@@ -45,6 +45,8 @@ fun LibraryScreen(
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val transitionProgress by viewModel.transitionProgress.collectAsState()
+    val analysisProgress by viewModel.analysisProgress.collectAsState()
+    var linkInput by remember { mutableStateOf("") }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -101,11 +103,84 @@ fun LibraryScreen(
             )
 
             Button(
-                onClick = { viewModel.analysePending() },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan),
+                onClick = {
+                    if (analysisProgress != null) viewModel.cancelAnalysis() else viewModel.analysePending()
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (analysisProgress != null) Color(0xFFDC2626) else Color.Cyan,
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Analyse new", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 11.sp)
+                Text(
+                    if (analysisProgress != null) "Stop" else "Analyse new",
+                    color = if (analysisProgress != null) Color.White else Color.Black,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        // Analysis is an FFT pass over each whole track and takes real seconds.
+        // Without this the button was indistinguishable from a dead one for the
+        // length of the run.
+        analysisProgress?.let { progress ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Analysing ${progress.done + 1}/${progress.total}: ${progress.current}",
+                color = Color(0xFF81E6D9),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            LinearProgressIndicator(
+                progress = { progress.fraction },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                color = Color.Cyan,
+                trackColor = Color(0xFF27272A),
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Import by link. There was previously no way to paste anything at all:
+        // LinkParser existed but was called from nowhere, so a playlist could
+        // not be imported by any route.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = linkInput,
+                onValueChange = { linkInput = it },
+                placeholder = {
+                    Text(
+                        "Playlist link, .m3u, or a pasted tracklist",
+                        color = Color.Gray,
+                        fontSize = 11.sp,
+                    )
+                },
+                singleLine = false,
+                maxLines = 3,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF18181B)),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF7C3AED),
+                    unfocusedBorderColor = Color(0xFF27272A),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                ),
+            )
+            Button(
+                onClick = {
+                    viewModel.importFromLink(linkInput)
+                    linkInput = ""
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Import", color = Color.White, fontWeight = FontWeight.Black, fontSize = 11.sp)
             }
         }
 
