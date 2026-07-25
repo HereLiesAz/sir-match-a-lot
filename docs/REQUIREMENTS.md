@@ -114,7 +114,7 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| G1 | Kaoss-pad / Kitara style expressive pad | outstanding — the detached sine synth it drove has been deleted rather than left pretending to be an effect; it needs re-building as a real filter/delay on the master bus |
+| G1 | Kaoss-pad / Kitara style expressive pad | done (`audio/MasterFilter` on the master bus, `ui/SamplerScreen`'s FilterPad). X is a bipolar DJ filter (centre bypass, left sweeps a lowpass down, right a highpass up, log-mapped); Y is resonance to Q 8 with `1/sqrt(Q)` compensation so a sweep does not slam the limiter. Placed before the limiter and after the crossfade, so it acts on the mix and its resonant peaks are still caught |
 | G2 | Record to a pad and replay it | done (`audio/Sampler` + `ui/SamplerScreen`: arm record, hold a pad to capture, hold to replay) |
 | G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates, driven by the sampler's "Fill from track"; never overwrites an occupied pad) |
 | G4 | Automatic loop maker sampling loops from the active playlist | partial — loops are found and can fill pads; running it across a whole playlist automatically is outstanding |

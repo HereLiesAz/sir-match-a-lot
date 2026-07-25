@@ -267,6 +267,30 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             (audioEngine.mixer.masterGain + deltaRadians * 0.25f).coerceIn(0f, 1f)
     }
 
+    /**
+     * Positions the XY performance filter on the master bus.
+     *
+     * @param x -1 to 1; centre is bypass, left sweeps a lowpass down, right
+     *   sweeps a highpass up.
+     * @param y 0 to 1, resonance.
+     */
+    fun moveFilter(x: Float, y: Float) {
+        audioEngine.mixer.filter.enabled = true
+        audioEngine.mixer.filter.x = x.coerceIn(-1f, 1f)
+        audioEngine.mixer.filter.y = y.coerceIn(0f, 1f)
+        _filterPosition.value = x to y
+    }
+
+    /** Lifts the pad, letting the filter glide back to neutral. */
+    fun releaseFilter() {
+        audioEngine.mixer.filter.release()
+        _filterPosition.value = null
+    }
+
+    /** Current pad position, or null when nothing is holding it. */
+    private val _filterPosition = MutableStateFlow<Pair<Float, Float>?>(null)
+    val filterPosition: StateFlow<Pair<Float, Float>?> = _filterPosition
+
     fun nudgeBassBoost(delta: Float) {
         val next = (audioEngine.deckA.bassBoostDb + delta * 0.06).coerceIn(-18.0, 18.0)
         audioEngine.deckA.bassBoostDb = next
@@ -717,9 +741,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     override fun onKaossMoveEvent(x: Float, y: Float, padId: Int) {
-        // The XY pad drove a standalone synthesiser that was never in the
-        // music's signal path. Until it is re-implemented as a real effect, a
-        // remote move has nothing to apply.
+        // Applies to the master bus, so a remote move is heard on this device's
+        // own output — which is what a linked pad is for.
+        moveFilter(x, y)
     }
 
     override fun onSamplerTriggerEvent(padId: Int) {
