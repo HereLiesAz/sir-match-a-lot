@@ -57,7 +57,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C10 | Cue markers visible on the ring | planned (phase 5) |
 | C11 | The platter is the feature — not inside a card, not on a grey panel | done |
 | C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |
-| C13 | Song list entries are draggable onto the platter | partial — tapping a row loads it; drag-to-place not implemented |
+| C13 | Song list entries are draggable onto the platter | **done** — long-press a card in the strip to lift it, drag onto the circle, and release. The ring under the finger picks the deck (outside A, inside B) and the angle picks the position: angle is time, so the fraction dropped at is the frame the clip starts on. A target marker shows both before release. Long-press rather than immediate drag, or the strip would stop scrolling |
 | C14 | No A/B buttons and no drag handle on song rows | done |
 | C15 | Background is an out-of-focus rave light show, genuinely driven by the audio, not a strobe | planned (phase 6) |
 

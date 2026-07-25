@@ -2,6 +2,8 @@ package com.hereliesaz.sirmatchalot.ui.platter
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,14 +30,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -59,6 +65,15 @@ interface PlatterActions {
     fun onSelectBothAt(fraction: Float)
     fun onRemoveSelected()
     fun onLoadTrack(track: Track)
+
+    /**
+     * A track was dragged from the strip and released on the platter.
+     *
+     * @param deck which ring it landed on — outside is A, inside is B.
+     * @param fraction where around the circle, 0 at twelve o'clock. Angle is
+     *   time, so this is the point in the deck's timeline the clip starts at.
+     */
+    fun onDropTrack(track: Track, deck: PlatterGeometry.Deck, fraction: Float)
 }
 
 /**
@@ -89,6 +104,31 @@ fun PlatterScreen(
     var rotation by remember { mutableFloatStateOf(0f) }
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Drag-and-drop from the strip onto the circle. The state lives here rather
+    // than in TrackStrip because the drop target is the platter, which is a
+    // sibling: the strip cannot hit-test something it does not contain.
+    var draggingTrack by remember { mutableStateOf<Track?>(null) }
+    var dragPosition by remember { mutableStateOf(Offset.Zero) }
+    var platterOrigin by remember { mutableStateOf(Offset.Zero) }
+    var screenOrigin by remember { mutableStateOf(Offset.Zero) }
+
+    /** Where a drop at [rootPosition] would land, or null if outside the platter. */
+    fun dropTargetAt(rootPosition: Offset): Pair<PlatterGeometry.Deck, Float>? {
+        if (canvasSize.width == 0 || canvasSize.height == 0) return null
+        val local = rootPosition - platterOrigin
+        if (local.x < 0f || local.y < 0f ||
+            local.x > canvasSize.width || local.y > canvasSize.height
+        ) {
+            return null
+        }
+        val cx = canvasSize.width / 2f + offsetX
+        val cy = canvasSize.height / 2f + offsetY
+        val baseRadius = minOf(canvasSize.width, canvasSize.height) * 0.30f * scale
+        val radius = PlatterGeometry.radiusOf(local.x, local.y, cx, cy)
+        return PlatterGeometry.deckAt(radius, baseRadius) to
+            PlatterGeometry.fractionOf(local.x, local.y, cx, cy)
+    }
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
 
@@ -108,12 +148,25 @@ fun PlatterScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().background(Color(0xFF05050A))) {
+    // A Box so the dragged card can float above the screen; the offset it is
+    // positioned by needs a container whose origin matches the coordinates the
+    // drag reports in.
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF05050A))
+            // Drag positions are reported in window coordinates so the platter
+            // can be hit-tested; the ghost is positioned relative to this Box,
+            // which sits below a top bar, so its origin has to be subtracted.
+            .onGloballyPositioned { screenOrigin = it.positionInRoot() },
+    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .onSizeChanged { canvasSize = it }
+                .onGloballyPositioned { platterOrigin = it.positionInRoot() }
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
@@ -191,9 +244,76 @@ fun PlatterScreen(
             )
 
             GestureLabelOverlay(visibleLabels, canvasSize, scale, offsetX, offsetY)
+
+            // While a track is held over the platter, show exactly where it will
+            // land: which ring, and which point on it. A drop that guesses is
+            // worse than no drop at all.
+            draggingTrack?.let {
+                val target = dropTargetAt(dragPosition)
+                if (target != null) {
+                    val (deck, fraction) = target
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val cx = size.width / 2f + offsetX
+                        val cy = size.height / 2f + offsetY
+                        val baseRadius = minOf(size.width, size.height) * 0.30f * scale
+                        val ringRadius = if (deck == PlatterGeometry.Deck.A) {
+                            baseRadius * 1.35f
+                        } else {
+                            baseRadius * 0.65f
+                        }
+                        val colour =
+                            if (deck == PlatterGeometry.Deck.A) Color(0xFF06B6D4) else Color(0xFFF59E0B)
+                        drawCircle(
+                            color = colour.copy(alpha = 0.25f),
+                            radius = ringRadius,
+                            center = Offset(cx, cy),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
+                        )
+                        val (px, py) = PlatterGeometry.pointAt(fraction, ringRadius, cx, cy)
+                        drawCircle(color = colour, radius = 16f, center = Offset(px, py))
+                    }
+                }
+            }
         }
 
-        TrackStrip(tracks = tracks, onLoad = actions::onLoadTrack)
+        TrackStrip(
+            tracks = tracks,
+            onLoad = actions::onLoadTrack,
+            onDragStart = { track, position ->
+                draggingTrack = track
+                dragPosition = position
+            },
+            onDrag = { position -> dragPosition = position },
+            onDragEnd = {
+                val track = draggingTrack
+                val target = dropTargetAt(dragPosition)
+                draggingTrack = null
+                if (track != null && target != null) {
+                    actions.onDropTrack(track, target.first, target.second)
+                }
+            },
+        )
+    }
+
+    // The dragged card itself, following the finger above everything else.
+    draggingTrack?.let { track ->
+        val density = LocalDensity.current
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (dragPosition.x - screenOrigin.x - with(density) { 70.dp.toPx() }).toInt(),
+                        (dragPosition.y - screenOrigin.y - with(density) { 20.dp.toPx() }).toInt(),
+                    )
+                }
+                .width(140.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xCC1F2937))
+                .padding(8.dp),
+        ) {
+            Text(track.title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+    }
     }
 }
 
@@ -249,7 +369,13 @@ private fun GestureLabelOverlay(
  * No A/B buttons and no drag handle — tapping a row loads it.
  */
 @Composable
-private fun TrackStrip(tracks: List<Track>, onLoad: (Track) -> Unit) {
+private fun TrackStrip(
+    tracks: List<Track>,
+    onLoad: (Track) -> Unit,
+    onDragStart: (Track, Offset) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+) {
     LazyRow(
         modifier = Modifier
             .fillMaxWidth()
@@ -258,13 +384,28 @@ private fun TrackStrip(tracks: List<Track>, onLoad: (Track) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items(tracks, key = { it.id }) { track ->
+            // Where this card sits in the window, so a drag can be reported in
+            // the same coordinates the platter is hit-tested in.
+            var cardOrigin by remember { mutableStateOf(Offset.Zero) }
             Column(
                 modifier = Modifier
                     .width(180.dp)
                     .fillMaxSize()
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color(0xFF121218))
+                    .onGloballyPositioned { cardOrigin = it.positionInRoot() }
                     .clickable { onLoad(track) }
+                    // After a long press, not immediately: an immediate drag
+                    // would take every horizontal swipe and the strip would stop
+                    // scrolling.
+                    .pointerInput(track.id) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset -> onDragStart(track, cardOrigin + offset) },
+                            onDrag = { change, _ -> onDrag(cardOrigin + change.position) },
+                            onDragEnd = onDragEnd,
+                            onDragCancel = onDragEnd,
+                        )
+                    }
                     .padding(10.dp),
                 verticalArrangement = Arrangement.Center,
             ) {

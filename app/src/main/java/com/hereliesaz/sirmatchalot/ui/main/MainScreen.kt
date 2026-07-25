@@ -365,5 +365,14 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
                     else PlatterGeometry.Deck.B
                 viewModel.loadOntoDeck(track, deck)
             }
+
+            override fun onDropTrack(
+                track: com.hereliesaz.sirmatchalot.data.Track,
+                deck: PlatterGeometry.Deck,
+                fraction: Float,
+            ) {
+                // A drop says which deck and where on it; nothing is inferred.
+                viewModel.loadOntoDeck(track, deck, atFraction = fraction)
+            }
         }
     }

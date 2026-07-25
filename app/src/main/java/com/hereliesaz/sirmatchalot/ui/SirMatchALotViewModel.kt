@@ -105,7 +105,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      *   enters and applies the alignment its plan already computed, so a load
      *   that started playback or aligned on its own would fight it.
      */
-    fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck, startSilent: Boolean = false) {
+    fun loadOntoDeck(
+        track: Track,
+        deck: PlatterGeometry.Deck,
+        startSilent: Boolean = false,
+        atFraction: Float? = null,
+    ) {
         val onDeck = if (deck == PlatterGeometry.Deck.A) _loadedTracksA else _loadedTracksB
         if (onDeck.value.any { it.id == track.id }) return
 
@@ -156,7 +161,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
             val existing = engineDeck.clips
-            val startFrame = existing.maxOfOrNull { it.endFrame } ?: 0
+            // A drop names a point on the circle, and angle is time — so the
+            // fraction dropped at *is* the frame the clip starts on. With an
+            // empty deck there is no circle yet: the first clip defines one, so
+            // it starts at zero and loops however it was dropped.
+            val cycle = engineDeck.cycleFrames
+            val startFrame = when {
+                existing.isEmpty() -> 0
+                atFraction != null && cycle > 0 ->
+                    (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle)
+                else -> existing.maxOfOrNull { it.endFrame } ?: 0
+            }
             engineDeck.clips = existing + Clip(
                 id = track.id,
                 buffer = pcm,
