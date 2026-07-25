@@ -1,0 +1,289 @@
+package com.hereliesaz.sirmatchalot.gesture
+
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
+
+/** A pointer position at one instant. */
+data class Pointer(val id: Long, val x: Float, val y: Float)
+
+/**
+ * What a recognised gesture controls.
+ *
+ * The mapping is the one from the final revision of the requirements: all
+ * single-finger gestures manipulate the audio clips, two fingers control the
+ * mix, three fingers transform the platter itself.
+ */
+enum class GestureKind(val label: String) {
+    CLIP_DRAG("CLIP"),
+    CROSSFADE("CROSSFADER"),
+    SCRATCH("SMART SCRATCH"),
+    VOLUME("VOLUME"),
+    BASS_BOOST("BASS BOOST"),
+    PLATTER_MOVE("MOVE PLATTER"),
+    PLATTER_SCALE("ZOOM PLATTER"),
+    PLATTER_ROTATE("ROTATE PLATTER"),
+}
+
+/**
+ * A gesture recognised this frame.
+ *
+ * @param delta change along this gesture's axis since the previous frame, in the
+ *   axis's own units (pixels, radians, or pixels of span).
+ * @param total change since the gesture began.
+ */
+data class RecognisedGesture(
+    val kind: GestureKind,
+    val delta: Float,
+    val total: Float,
+)
+
+/**
+ * Recognises multiple concurrent gestures from a pointer set.
+ *
+ * Three properties the previous implementation lacked, each asked for
+ * explicitly:
+ *
+ * **Concurrency.** Two gestures may be active at once. The old code dispatched
+ * on `when (pointers.size)`, so nothing across finger counts could combine.
+ *
+ * **No crosstalk.** Within the two-finger set the old code tested four
+ * independent thresholds every frame, so a single sloppy drag fired crossfade,
+ * scratch, volume and bass simultaneously. Here the axes are *arbitrated*: an
+ * axis activates only if its own movement passes an enter threshold **and** is
+ * within [DOMINANCE_RATIO] of the strongest axis. A deliberate two-axis gesture
+ * still registers as two; incidental noise on the other axes does not.
+ *
+ * **Ending on conditions, not on lift.** A gesture ends the moment its defining
+ * condition stops holding — its axis going quiet, or the finger count changing —
+ * rather than when the finger comes up, because people run one gesture straight
+ * into another. Each axis has separate enter and exit thresholds so it does not
+ * chatter at the boundary.
+ *
+ * Gestures are global: nothing here consults where on screen the touch is. The
+ * only position-dependent behaviour is selecting a waveform, which the platter
+ * handles separately.
+ *
+ * Not thread-safe; driven from the UI thread's pointer loop.
+ */
+class GestureEngine {
+
+    /** Per-axis accumulated state. */
+    private class Axis(
+        val kind: GestureKind,
+        val enterThreshold: Float,
+        val exitThreshold: Float,
+    ) {
+        var active = false
+        var total = 0f
+        var delta = 0f
+        /** Magnitude of recent movement, low-pass filtered to smooth jitter. */
+        var activity = 0f
+
+        fun reset() {
+            active = false
+            total = 0f
+            delta = 0f
+            activity = 0f
+        }
+
+        fun observe(frameDelta: Float) {
+            delta = frameDelta
+            total += frameDelta
+            activity += (abs(frameDelta) - activity) * ACTIVITY_SMOOTHING
+        }
+    }
+
+    private val oneFingerDrag = Axis(GestureKind.CLIP_DRAG, 6f, 0.15f)
+    private val twoFingerHorizontal = Axis(GestureKind.CROSSFADE, 8f, 0.2f)
+    private val twoFingerVertical = Axis(GestureKind.SCRATCH, 8f, 0.2f)
+    private val twoFingerRotate = Axis(GestureKind.VOLUME, 0.08f, 0.004f)
+    private val twoFingerSpan = Axis(GestureKind.BASS_BOOST, 14f, 0.3f)
+    private val threeFingerMove = Axis(GestureKind.PLATTER_MOVE, 8f, 0.2f)
+    private val threeFingerScale = Axis(GestureKind.PLATTER_SCALE, 14f, 0.3f)
+    private val threeFingerRotate = Axis(GestureKind.PLATTER_ROTATE, 0.08f, 0.004f)
+
+    private val twoFingerAxes = listOf(
+        twoFingerHorizontal, twoFingerVertical, twoFingerRotate, twoFingerSpan,
+    )
+    private val threeFingerAxes = listOf(
+        threeFingerMove, threeFingerScale, threeFingerRotate,
+    )
+    private val allAxes = listOf(oneFingerDrag) + twoFingerAxes + threeFingerAxes
+
+    private var previousCount = 0
+    private var previousCentroidX = 0f
+    private var previousCentroidY = 0f
+    private var previousSpan = 0f
+    private var previousAngle = 0f
+
+    /** Gestures active as of the last [update]. */
+    var active: List<RecognisedGesture> = emptyList()
+        private set
+
+    /**
+     * Feeds the current [pointers] and returns the gestures active this frame.
+     *
+     * Pass an empty list when all fingers lift.
+     */
+    fun update(pointers: List<Pointer>): List<RecognisedGesture> {
+        val count = pointers.size
+
+        // A change in finger count ends every gesture: the conditions that
+        // defined them no longer hold, whether or not any finger lifted.
+        if (count != previousCount) {
+            allAxes.forEach { it.reset() }
+            previousCount = count
+            if (count > 0) {
+                previousCentroidX = pointers.sumOf { it.x.toDouble() }.toFloat() / count
+                previousCentroidY = pointers.sumOf { it.y.toDouble() }.toFloat() / count
+                previousSpan = spanOf(pointers, previousCentroidX, previousCentroidY)
+                previousAngle = angleOf(pointers, previousCentroidX, previousCentroidY)
+            }
+            active = emptyList()
+            return active
+        }
+
+        if (count == 0) {
+            active = emptyList()
+            return active
+        }
+
+        val centroidX = pointers.sumOf { it.x.toDouble() }.toFloat() / count
+        val centroidY = pointers.sumOf { it.y.toDouble() }.toFloat() / count
+        val span = spanOf(pointers, centroidX, centroidY)
+        val angle = angleOf(pointers, centroidX, centroidY)
+
+        val dx = centroidX - previousCentroidX
+        val dy = centroidY - previousCentroidY
+        val dSpan = span - previousSpan
+        val dAngle = shortestAngleDelta(angle - previousAngle)
+
+        previousCentroidX = centroidX
+        previousCentroidY = centroidY
+        previousSpan = span
+        previousAngle = angle
+
+        val candidates: List<Axis> = when (count) {
+            1 -> {
+                oneFingerDrag.observe(hypot(dx, dy) * signOf(dx, dy))
+                listOf(oneFingerDrag)
+            }
+
+            2 -> {
+                twoFingerHorizontal.observe(dx)
+                twoFingerVertical.observe(dy)
+                twoFingerRotate.observe(dAngle)
+                twoFingerSpan.observe(dSpan)
+                twoFingerAxes
+            }
+
+            else -> {
+                // Three or more fingers transform the platter, so users can zoom
+                // in on part of a track and work precisely.
+                threeFingerMove.observe(hypot(dx, dy) * signOf(dx, dy))
+                threeFingerScale.observe(dSpan)
+                threeFingerRotate.observe(dAngle)
+                threeFingerAxes
+            }
+        }
+
+        arbitrate(candidates)
+
+        active = candidates
+            .filter { it.active }
+            .map { RecognisedGesture(it.kind, it.delta, it.total) }
+        return active
+    }
+
+    /**
+     * Decides which candidate axes are active.
+     *
+     * An axis switches on when its own accumulated movement clears its enter
+     * threshold and it is a meaningful share of the strongest axis. It switches
+     * off when its recent activity falls below its exit threshold. Enter uses
+     * total displacement, exit uses recent activity — so a gesture held still
+     * mid-motion ends, and does not need the finger lifted.
+     */
+    private fun arbitrate(candidates: List<Axis>) {
+        // Normalise each axis against its own enter threshold so pixels and
+        // radians can be compared.
+        var strongest = 0f
+        for (axis in candidates) {
+            val normalised = abs(axis.total) / axis.enterThreshold
+            if (normalised > strongest) strongest = normalised
+        }
+
+        for (axis in candidates) {
+            val normalised = abs(axis.total) / axis.enterThreshold
+            if (axis.active) {
+                if (axis.activity < axis.exitThreshold) {
+                    axis.reset()
+                }
+            } else {
+                val clearsThreshold = normalised >= 1f
+                val isSignificant = strongest <= 0f || normalised >= strongest * DOMINANCE_RATIO
+                if (clearsThreshold && isSignificant) {
+                    axis.active = true
+                }
+            }
+        }
+    }
+
+    /** Ends everything, e.g. when the pointer stream is cancelled. */
+    fun reset() {
+        allAxes.forEach { it.reset() }
+        previousCount = 0
+        active = emptyList()
+    }
+
+    /** Mean distance of pointers from their centroid; a rotation-invariant span. */
+    private fun spanOf(pointers: List<Pointer>, cx: Float, cy: Float): Float {
+        if (pointers.size < 2) return 0f
+        var sum = 0f
+        for (p in pointers) sum += hypot(p.x - cx, p.y - cy)
+        return sum / pointers.size
+    }
+
+    /**
+     * Orientation of the pointer set.
+     *
+     * Uses the first pointer relative to the centroid rather than an average of
+     * per-pointer angles: averaging angles is discontinuous across the -PI/PI
+     * boundary, which made the previous three-finger rotation jump.
+     */
+    private fun angleOf(pointers: List<Pointer>, cx: Float, cy: Float): Float {
+        if (pointers.size < 2) return 0f
+        val first = pointers.minByOrNull { it.id } ?: return 0f
+        return atan2(first.y - cy, first.x - cx)
+    }
+
+    /** Signs a magnitude by its dominant direction, so drags accumulate coherently. */
+    private fun signOf(dx: Float, dy: Float): Float =
+        if (abs(dx) >= abs(dy)) {
+            if (dx < 0) -1f else 1f
+        } else {
+            if (dy < 0) -1f else 1f
+        }
+
+    private fun shortestAngleDelta(delta: Float): Float {
+        var d = delta
+        val twoPi = (2.0 * Math.PI).toFloat()
+        while (d > Math.PI) d -= twoPi
+        while (d < -Math.PI) d += twoPi
+        return d
+    }
+
+    companion object {
+        /**
+         * How strong an axis must be relative to the strongest one to count.
+         *
+         * At 0.35 a deliberate diagonal — say crossfading while scratching —
+         * registers as both, while the incidental rotation and span drift that a
+         * two-finger drag inevitably produces do not.
+         */
+        const val DOMINANCE_RATIO = 0.35f
+
+        private const val ACTIVITY_SMOOTHING = 0.4f
+    }
+}
