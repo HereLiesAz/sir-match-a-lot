@@ -30,6 +30,29 @@ object HarmonicEngine {
 
     data class CamelotKey(val number: Int, val mode: Char)
 
+    /**
+     * Camelot code for a key identified by root pitch class (0 = C) and mode.
+     *
+     * This is the bridge from measured audio to the harmonic model: it takes the
+     * output of [com.hereliesaz.sirmatchalot.dsp.KeyDetector] and places it on
+     * the wheel, so every compatibility score below is computed from a key that
+     * was detected in the signal rather than derived from a filename.
+     */
+    fun camelotFor(rootPitchClass: Int, isMinor: Boolean): String {
+        val pitchClass = ((rootPitchClass % 12) + 12) % 12
+        return if (isMinor) {
+            // CAMELOT_MINOR is indexed from A minor, which is pitch class 9.
+            CAMELOT_MINOR[(pitchClass - 9 + 12) % 12]
+        } else {
+            // CAMELOT_MAJOR is indexed from C major, which is pitch class 0.
+            CAMELOT_MAJOR[pitchClass]
+        }
+    }
+
+    /** Convenience overload for a detected key. */
+    fun camelotFor(key: com.hereliesaz.sirmatchalot.dsp.KeyEstimate): String =
+        camelotFor(key.rootPitchClass, key.isMinor)
+
     fun parseCamelotKey(camelot: String): CamelotKey? {
         val trimmed = camelot.trim().uppercase()
         val regex = Regex("^(\\d+)([AB])$")
