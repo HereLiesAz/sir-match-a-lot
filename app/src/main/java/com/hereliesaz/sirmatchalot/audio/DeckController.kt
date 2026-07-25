@@ -52,13 +52,13 @@ class DeckController(
             repeatMode = Player.REPEAT_MODE_ONE
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
-                    if (loadedTrack?.localPath != null) {
+                    if (loadedTrack?.sourceUri != null) {
                         _isPlaying.value = playing
                         if (playing) startProgressTracking() else stopProgressTracking()
                     }
                 }
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_READY && loadedTrack?.localPath != null) {
+                    if (state == Player.STATE_READY && loadedTrack?.sourceUri != null) {
                         _duration.value = duration / 1000f
                     }
                 }
@@ -72,14 +72,11 @@ class DeckController(
         _currentTime.value = 0f
 
         try {
-            val uri = if (track.localPath != null) {
-                Uri.parse(track.localPath)
-            } else if (track.youtubeId != null) {
-                Uri.parse("http://10.0.2.2:8080/download?v=${track.youtubeId}")
-            } else {
-                return
-            }
-            
+            // The previous version also accepted a `youtubeId` and fetched it
+            // from http://10.0.2.2:8080 — the emulator loopback address, which
+            // cannot resolve on a real device. That path is gone.
+            val uri = Uri.parse(track.sourceUri ?: return)
+
             val mediaItem = MediaItem.fromUri(uri)
             val mediaSourceFactory = DefaultMediaSourceFactory(context)
             val baseSource = mediaSourceFactory.createMediaSource(mediaItem)
@@ -125,7 +122,7 @@ class DeckController(
 
     fun setPitchOnly(pitchRatio: Float) {
         pitch = (pitchRatio - 1f) * 100f
-        if (loadedTrack?.localPath != null) {
+        if (loadedTrack?.sourceUri != null) {
             // Speed remains locked at 1.0f (tempo/speed unaffected)
             exoPlayer?.playbackParameters = PlaybackParameters(1.0f, pitchRatio)
         }

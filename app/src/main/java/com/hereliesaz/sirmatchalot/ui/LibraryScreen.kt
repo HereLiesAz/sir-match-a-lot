@@ -42,15 +42,7 @@ fun LibraryScreen(
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri: Uri? ->
-            uri?.let {
-                val fileName = uri.lastPathSegment ?: "local_file.mp3"
-                val parsedNames = LinkParser.parseFileName(fileName)
-                viewModel.analyzeTrack(
-                    query = "${parsedNames.second} ${parsedNames.first}",
-                    path = uri.toString(),
-                    fileName = fileName
-                )
-            }
+            uri?.let { viewModel.importTrack(it) }
         }
     )
 
@@ -87,7 +79,7 @@ fun LibraryScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search song, artist, paste Spotify/YouTube link...", color = Color.Gray, fontSize = 11.sp) },
+                placeholder = { Text("Filter by title or artist...", color = Color.Gray, fontSize = 11.sp) },
                 singleLine = true,
                 modifier = Modifier
                     .weight(1f)
@@ -102,16 +94,11 @@ fun LibraryScreen(
             )
 
             Button(
-                onClick = {
-                    if (searchQuery.isNotEmpty()) {
-                        viewModel.analyzeTrack(query = searchQuery)
-                        searchQuery = ""
-                    }
-                },
+                onClick = { viewModel.analysePending() },
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Analyze", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 11.sp)
+                Text("Analyse new", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 11.sp)
             }
         }
 
@@ -171,9 +158,11 @@ fun TrackRowItem(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
+    val energy = track.energyLevel
     val energyColor = when {
-        track.energyLevel >= 8 -> Color(0xFFF43F5E)
-        track.energyLevel >= 5 -> Color(0xFFA855F7)
+        energy == null -> Color(0xFF52525B)
+        energy >= 8 -> Color(0xFFF43F5E)
+        energy >= 5 -> Color(0xFFA855F7)
         else -> Color(0xFF06B6D4)
     }
 
@@ -195,9 +184,9 @@ fun TrackRowItem(
                 Text(track.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Text(track.artist, color = Color.LightGray, fontSize = 11.sp)
                 Spacer(Modifier.height(4.dp))
-                if (track.localPath != null) {
+                if (!track.isAnalysed) {
                     Text(
-                        "LOCAL FILE",
+                        "NOT ANALYSED",
                         color = Color.Green,
                         fontSize = 8.sp,
                         fontWeight = FontWeight.Bold,
@@ -209,7 +198,13 @@ fun TrackRowItem(
             }
 
             Column(horizontalAlignment = Alignment.End) {
-                Text("${track.bpm} BPM", color = Color.White, fontWeight = FontWeight.Black, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    if (track.bpm != null) "${track.bpmLabel()} BPM" else "— BPM",
+                    color = if (track.bpm != null) Color.White else Color.Gray,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
                 Box(
                     modifier = Modifier
                         .padding(top = 4.dp)
@@ -217,7 +212,7 @@ fun TrackRowItem(
                         .border(1.dp, energyColor.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Text(track.camelotKey, color = energyColor, fontWeight = FontWeight.Bold, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(track.keyLabel(), color = energyColor, fontWeight = FontWeight.Bold, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                 }
             }
         }
@@ -227,11 +222,28 @@ fun TrackRowItem(
             Divider(color = Color(0xFF27272A))
             Spacer(Modifier.height(8.dp))
 
+            // Only measured facts are shown. The previous version displayed a
+            // "Vibe", a chord progression and a "DJ Tip" that were all generated
+            // prose, presented as though they described the audio.
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Vibe: ${track.atmosphere}", color = Color.LightGray, fontSize = 10.sp)
-                Text("Progression: ${track.progression}", color = Color.LightGray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
-                Text("DJ Tip: ${track.mixTips}", color = Color.Cyan, fontSize = 10.sp)
+                Text(
+                    text = track.keyName?.let { "Key: $it (${track.keyLabel()})" } ?: "Key: not measured",
+                    color = Color.LightGray,
+                    fontSize = 10.sp,
+                )
+                Text(
+                    text = track.energyLevel?.let { "Energy: $it / 10" } ?: "Energy: not measured",
+                    color = Color.LightGray,
+                    fontSize = 10.sp,
+                )
+                if (track.bpm != null) {
+                    Text(
+                        text = "Tempo confidence: ${(track.tempoConfidence * 100).toInt()}%",
+                        color = Color.Gray,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))

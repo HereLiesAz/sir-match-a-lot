@@ -12,7 +12,9 @@ import java.net.URL
 import java.util.zip.ZipInputStream
 
 object AzphaltStoreRepository {
-    private const val BASE_URL = "https://azphalt.store"
+    // The store lives at azphalt.org; the previous constant pointed at
+    // azphalt.store, a different host.
+    private const val BASE_URL = "https://azphalt.org"
 
     data class StorePackage(
         val id: String,
@@ -63,58 +65,23 @@ object AzphaltStoreRepository {
 
         unzip(connection.inputStream, extractDir)
 
+        // Downloaded audio is registered unanalysed. It is measured by the
+        // analysis pipeline like any other import — the previous version filled
+        // these rows with `bpm = (90..150).random()` and a hardcoded key of
+        // "8A", so a pack's tempo changed every time it was imported.
+        val audioExtensions = setOf("mp3", "wav", "flac", "ogg", "m4a", "aac", "opus")
         val tracks = mutableListOf<Track>()
         extractDir.walkTopDown().forEach { file ->
-            if (file.isFile && (file.extension.equals("mp3", true) || file.extension.equals("wav", true))) {
-                val extractedData = com.hereliesaz.sirmatchalot.audio.AudioWaveformExtractor.extract(context, android.net.Uri.fromFile(file))
-                
-                var finalDuration = 0L
-                var finalTrimStart = 0L
-                var finalTrimEnd = 0L
-                var peaksPath: String? = null
-                
-                if (extractedData != null) {
-                    finalDuration = extractedData.durationMs
-                    finalTrimStart = extractedData.trimStartMs
-                    finalTrimEnd = extractedData.trimEndMs
-                    
-                    // Save peaks to a binary file
-                    val peaksFile = File(file.absolutePath + ".peaks")
-                    try {
-                        val byteBuffer = java.nio.ByteBuffer.allocate(extractedData.peaks.size * 4)
-                        byteBuffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                        for (peak in extractedData.peaks) {
-                            byteBuffer.putFloat(peak)
-                        }
-                        FileOutputStream(peaksFile).use { fos ->
-                            fos.write(byteBuffer.array())
-                        }
-                        peaksPath = peaksFile.absolutePath
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-
+            if (file.isFile && file.extension.lowercase() in audioExtensions) {
                 val parsedNames = LinkParser.parseFileName(file.name)
                 tracks.add(
                     Track(
-                        id = file.absolutePath.hashCode().toString(),
                         title = parsedNames.first,
                         artist = pkg.name,
-                        energyLevel = (5..10).random(),
-                        bpm = (90..150).random(),
-                        keyName = "A minor",
-                        camelotKey = "8A",
-                        progression = "",
-                        atmosphere = "",
-                        mixTips = "",
-                        youtubeId = null,
-                        localPath = file.absolutePath,
-                        durationMs = finalDuration,
-                        trimStartMs = finalTrimStart,
-                        trimEndMs = finalTrimEnd,
-                        peaksPath = peaksPath
-                    )
+                        sourceUri = android.net.Uri.fromFile(file).toString(),
+                        isUserAdded = false,
+                        analysisVersion = 0,
+                    ),
                 )
             }
         }

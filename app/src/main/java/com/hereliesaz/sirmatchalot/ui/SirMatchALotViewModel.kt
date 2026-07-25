@@ -3,8 +3,9 @@ package com.hereliesaz.sirmatchalot.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.hereliesaz.sirmatchalot.ai.GeminiAnalyzer
-import com.hereliesaz.sirmatchalot.ai.SongAnalyzer
+import android.net.Uri
+import com.hereliesaz.sirmatchalot.analysis.TrackAnalyzer
+import com.hereliesaz.sirmatchalot.audio.AudioDecoder
 import com.hereliesaz.sirmatchalot.audio.DeckController
 import com.hereliesaz.sirmatchalot.audio.SynthEngine
 import com.hereliesaz.sirmatchalot.data.AppDatabase
@@ -27,7 +28,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     val synthEngine = SynthEngine(application)
     val syncClient = SyncClient(this)
 
-    private val analyzer: SongAnalyzer = GeminiAnalyzer(apiKey = "MY_GEMINI_API_KEY")
+    /**
+     * Measures tempo, key, energy and peaks from decoded audio.
+     *
+     * Replaces the previous `GeminiAnalyzer`, which was constructed with the
+     * literal placeholder key "MY_GEMINI_API_KEY" and so always fell through to
+     * a heuristic that derived BPM from a character-code sum of the filename.
+     */
+    private val analyzer = TrackAnalyzer()
 
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks
@@ -50,28 +58,38 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         when (option) {
             SortOption.ORIGINAL -> rawTracks
             SortOption.BPM -> {
-                if (referenceTrack != null) {
-                    rawTracks.sortedBy { kotlin.math.abs(it.bpm - referenceTrack.bpm) }
+                val referenceBpm = referenceTrack?.bpm
+                if (referenceBpm != null) {
+                    rawTracks.sortedBy { it.bpm?.let { bpm -> kotlin.math.abs(bpm - referenceBpm) } ?: Double.MAX_VALUE }
                 } else {
-                    rawTracks.sortedBy { it.bpm }
+                    rawTracks.sortedBy { it.bpm ?: Double.MAX_VALUE }
                 }
             }
             SortOption.PITCH -> {
-                if (referenceTrack != null) {
-                    rawTracks.sortedBy { HarmonicEngine.getCamelotDistance(it.camelotKey, referenceTrack.camelotKey) }
+                val referenceKey = referenceTrack?.camelotKey
+                if (referenceKey != null) {
+                    rawTracks.sortedBy { track ->
+                        track.camelotKey?.let { HarmonicEngine.getCamelotDistance(it, referenceKey) } ?: 999
+                    }
                 } else {
-                    rawTracks.sortedBy { it.camelotKey }
+                    rawTracks.sortedBy { it.camelotKey ?: "\uffff" }
                 }
             }
             SortOption.BOTH -> {
                 if (referenceTrack != null) {
                     rawTracks.sortedBy { track ->
-                        val bpmDiff = kotlin.math.abs(track.bpm - referenceTrack.bpm)
-                        val keyDist = HarmonicEngine.getCamelotDistance(track.camelotKey, referenceTrack.camelotKey)
+                        // Unmeasured tracks sort last rather than being given a
+                        // fabricated tempo or key to compare against.
+                        val bpmDiff = track.bpm?.let { bpm ->
+                            referenceTrack.bpm?.let { kotlin.math.abs(bpm - it) }
+                        } ?: 1000.0
+                        val keyDist = track.camelotKey?.let { key ->
+                            referenceTrack.camelotKey?.let { HarmonicEngine.getCamelotDistance(key, it) }
+                        } ?: 999
                         bpmDiff * 2 + keyDist * 10
                     }
                 } else {
-                    rawTracks.sortedBy { it.bpm }
+                    rawTracks.sortedBy { it.bpm ?: Double.MAX_VALUE }
                 }
             }
             SortOption.CUSTOM -> {
@@ -229,13 +247,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
         // AutoSync BPM & Harmonize against reference track (Deck B or Deck A first)
         val refTrack = _loadedTracksB.value.firstOrNull() ?: _loadedTracksA.value.firstOrNull()
-        if (refTrack != null && refTrack.id != track.id && track.bpm > 0) {
-            val bpmRate = refTrack.bpm.toFloat() / track.bpm.toFloat()
-            val keyDistance = HarmonicEngine.getCamelotDistance(track.camelotKey, refTrack.camelotKey)
-            val pitchFactor = Math.pow(2.0, (keyDistance % 3).toDouble() / 12.0).toFloat()
-            val finalRate = (bpmRate * pitchFactor).coerceIn(0.5f, 2.0f)
-            controller.setPlaybackRate(finalRate)
-            _feedbackMsg.value = "AUTOSYNCED: ${track.title} -> ${refTrack.bpm} BPM (Harmonized)"
+        val trackBpm = track.bpm
+        val refBpm = refTrack?.bpm
+        if (refTrack != null && refTrack.id != track.id && trackBpm != null && refBpm != null && trackBpm > 0) {
+            val rate = (refBpm / trackBpm).toFloat().coerceIn(0.5f, 2.0f)
+            controller.setPlaybackRate(rate)
+            _feedbackMsg.value = "Synced ${track.title} to ${String.format("%.1f", refBpm)} BPM"
+        } else if (trackBpm == null) {
+            _feedbackMsg.value = "${track.title} has not been analysed yet"
         }
 
         if (_isPlaying.value) controller.play()
@@ -259,13 +278,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
         // AutoSync BPM & Harmonize against reference track (Deck A or Deck B first)
         val refTrack = _loadedTracksA.value.firstOrNull() ?: _loadedTracksB.value.firstOrNull()
-        if (refTrack != null && refTrack.id != track.id && track.bpm > 0) {
-            val bpmRate = refTrack.bpm.toFloat() / track.bpm.toFloat()
-            val keyDistance = HarmonicEngine.getCamelotDistance(track.camelotKey, refTrack.camelotKey)
-            val pitchFactor = Math.pow(2.0, (keyDistance % 3).toDouble() / 12.0).toFloat()
-            val finalRate = (bpmRate * pitchFactor).coerceIn(0.5f, 2.0f)
-            controller.setPlaybackRate(finalRate)
-            _feedbackMsg.value = "AUTOSYNCED: ${track.title} -> ${refTrack.bpm} BPM (Harmonized)"
+        val trackBpm = track.bpm
+        val refBpm = refTrack?.bpm
+        if (refTrack != null && refTrack.id != track.id && trackBpm != null && refBpm != null && trackBpm > 0) {
+            val rate = (refBpm / trackBpm).toFloat().coerceIn(0.5f, 2.0f)
+            controller.setPlaybackRate(rate)
+            _feedbackMsg.value = "Synced ${track.title} to ${String.format("%.1f", refBpm)} BPM"
+        } else if (trackBpm == null) {
+            _feedbackMsg.value = "${track.title} has not been analysed yet"
         }
 
         if (_isPlaying.value) controller.play()
@@ -530,10 +550,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun autoSync() {
-        val baseBpm = _loadedTracksA.value.firstOrNull()?.bpm ?: 120
-        _controllersA.value.forEach { it.setPlaybackRate(baseBpm.toFloat() / (it.loadedTrack?.bpm ?: 120)) }
-        _controllersB.value.forEach { it.setPlaybackRate(baseBpm.toFloat() / (it.loadedTrack?.bpm ?: 120)) }
-        _feedbackMsg.value = "Synced all platter play rates to baseline ($baseBpm BPM)"
+        val baseBpm = _loadedTracksA.value.firstNotNullOfOrNull { it.bpm }
+        if (baseBpm == null) {
+            _feedbackMsg.value = "Nothing to sync to — no loaded track has a measured tempo"
+            return
+        }
+        // Tracks without a measured tempo are left alone rather than warped by a
+        // guessed ratio.
+        (_controllersA.value + _controllersB.value).forEach { controller ->
+            val bpm = controller.loadedTrack?.bpm ?: return@forEach
+            if (bpm > 0) controller.setPlaybackRate((baseBpm / bpm).toFloat().coerceIn(0.5f, 2.0f))
+        }
+        _feedbackMsg.value = "Synced to ${String.format("%.1f", baseBpm)} BPM"
     }
 
     fun startAutoDiscovery() {
@@ -546,23 +574,86 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         syncClient.connect(wsUrl)
     }
 
-    fun addTrackManually(title: String, artist: String, bpm: Int, key: String, camelot: String, energy: Int, path: String? = null) {
+    /**
+     * Registers a local audio file and measures it.
+     *
+     * Replaces `addTrackManually`, which took a BPM and key as arguments and
+     * synthesised a chord progression from whether the Camelot code ended in
+     * "A", and `analyzeTrack`, which produced a whole track record from a search
+     * string with no audio involved at all. Neither could produce a real
+     * measurement, because neither ever opened the file.
+     */
+    fun importTrack(uri: Uri, title: String? = null, artist: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val newTrack = Track(
-                id = "track-${System.currentTimeMillis()}",
-                title = title,
-                artist = artist,
-                bpm = bpm,
-                keyName = key,
-                camelotKey = camelot,
-                progression = if (camelot.endsWith("A")) "i - bVI - bIII - bVII" else "I - V - vi - IV",
-                atmosphere = "custom, manual",
-                energyLevel = energy,
-                mixTips = "Custom manual track.",
-                youtubeId = null,
-                localPath = path
+            val fileName = uri.lastPathSegment ?: "Unknown"
+            val parsed = com.hereliesaz.sirmatchalot.data.LinkParser.parseFileName(fileName)
+            val track = Track(
+                title = title ?: parsed.first,
+                artist = artist ?: parsed.second,
+                sourceUri = uri.toString(),
             )
-            trackDao.insertTrack(newTrack)
+            trackDao.insertTrack(track)
+            _feedbackMsg.value = "Analysing ${track.title}..."
+            analyseTrack(track)
+        }
+    }
+
+    /**
+     * Decodes [track] and stores what was measured from the audio.
+     *
+     * A track whose tempo or key could not be determined keeps nulls for those
+     * columns; it is not given a plausible-looking substitute.
+     */
+    suspend fun analyseTrack(track: Track) {
+        val source = track.sourceUri ?: return
+        try {
+            val decoded = AudioDecoder.decode(getApplication(), Uri.parse(source))
+            if (decoded == null) {
+                _feedbackMsg.value = "Could not decode ${track.title}"
+                return
+            }
+
+            val analysis = analyzer.analyse(decoded.pcm)
+            val peaksFile = java.io.File(getApplication<Application>().filesDir, "peaks/${track.id}.peaks")
+            peaksFile.parentFile?.mkdirs()
+            peaksFile.writeBytes(analysis.peaks.toByteArray())
+
+            val sampleRate = decoded.pcm.sampleRate.toDouble()
+            trackDao.updateTrack(
+                track.copy(
+                    bpm = analysis.bpm,
+                    tempoConfidence = analysis.tempoConfidence,
+                    firstBeatSeconds = analysis.beatGrid?.firstBeatSeconds,
+                    downbeatOffset = analysis.beatGrid?.downbeatOffset ?: 0,
+                    camelotKey = analysis.camelotKey,
+                    keyName = analysis.keyName,
+                    keyConfidence = analysis.keyConfidence,
+                    energyLevel = analysis.energyLevel,
+                    durationMs = (analysis.durationSeconds * 1000).toLong(),
+                    sampleRate = decoded.pcm.sampleRate,
+                    trimStartMs = (decoded.trimmedStartFrames / sampleRate * 1000).toLong(),
+                    trimEndMs = ((decoded.trimmedStartFrames + decoded.pcm.frameCount) / sampleRate * 1000).toLong(),
+                    peaksPath = peaksFile.absolutePath,
+                    analysisVersion = Track.CURRENT_ANALYSIS_VERSION,
+                ),
+            )
+
+            _feedbackMsg.value = buildString {
+                append(track.title)
+                append(": ")
+                append(analysis.bpm?.let { String.format("%.1f BPM", it) } ?: "tempo not found")
+                append(", ")
+                append(analysis.camelotKey ?: "key not found")
+            }
+        } catch (e: Exception) {
+            _feedbackMsg.value = "Analysis failed for ${track.title}: ${e.message}"
+        }
+    }
+
+    /** Re-measures every track whose stored analysis predates the current analyser. */
+    fun analysePending() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _tracks.value.filterNot { it.isAnalysed }.forEach { analyseTrack(it) }
         }
     }
 
@@ -570,20 +661,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.IO) {
             trackDao.deleteTrack(track)
             removeTrackFromDecks(track.id)
-        }
-    }
-
-    fun analyzeTrack(query: String, path: String? = null, fileName: String? = null) {
-        _feedbackMsg.value = "Running song analysis..."
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val track = analyzer.analyze(query, fileName)
-                val finalTrack = if (path != null) track.copy(localPath = path) else track
-                trackDao.insertTrack(finalTrack)
-                _feedbackMsg.value = "Track Analyzed: ${finalTrack.title}"
-            } catch (e: Exception) {
-                _feedbackMsg.value = "Analysis Failed. Used procedural fallback."
-            }
         }
     }
 

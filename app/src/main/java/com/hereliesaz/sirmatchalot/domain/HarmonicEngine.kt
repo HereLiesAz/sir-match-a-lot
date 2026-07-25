@@ -6,19 +6,30 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+/**
+ * How well two tracks mix.
+ *
+ * Scores are computed only from measured tempo and key. The previous version
+ * also scored "progression" and "atmosphere", which were prose strings invented
+ * by a language model from the track title — weighting 40% of a compatibility
+ * score on generated text was worse than not scoring it at all.
+ *
+ * @param isComplete false when either track lacks a measured tempo or key, in
+ *   which case the scores are provisional and the UI should say so rather than
+ *   present a number as fact.
+ */
 data class MixMatch(
     val trackA: Track,
     val trackB: Track,
     val overallScore: Int,
     val tempoScore: Int,
     val keyScore: Int,
-    val progressionScore: Int,
-    val atmosphereScore: Int,
     val tempoAdvice: String,
     val keyAdvice: String,
     val tempoDiffPercent: Double,
     val isHalfTimeDoubleTime: Boolean,
-    val canMixWithNudge: Boolean
+    val canMixWithNudge: Boolean,
+    val isComplete: Boolean,
 )
 
 object HarmonicEngine {
@@ -223,21 +234,34 @@ object HarmonicEngine {
         return (60 + ratio * 40).roundToInt()
     }
 
+    /**
+     * Compares two tracks on measured tempo and key.
+     *
+     * When either value is missing, its half of the score is reported as
+     * unknown (0) and [MixMatch.isComplete] is false, rather than substituting a
+     * plausible-looking default.
+     */
     fun compareTracks(trackA: Track, trackB: Track): MixMatch {
-        val keyRes = calculateKeyCompatibility(trackA.camelotKey, trackB.camelotKey)
-        val tempoRes = calculateTempoCompatibility(trackA.bpm.toDouble(), trackB.bpm.toDouble())
-        val progScore = calculateProgressionCompatibility(trackA.progression, trackB.progression)
-        val atmosScore = calculateAtmosphereCompatibility(trackA.atmosphere, trackB.atmosphere)
+        val bpmA = trackA.bpm
+        val bpmB = trackB.bpm
+        val keyA = trackA.camelotKey
+        val keyB = trackB.camelotKey
 
-        val tempoScore = tempoRes["score"] as Int
-        val keyScore = keyRes.first
-        val keyAdvice = keyRes.second
-        val tempoAdvice = tempoRes["advice"] as String
-        val diffPercent = tempoRes["diffPercent"] as Double
-        val isHalfDouble = tempoRes["isHalfTimeDoubleTime"] as Boolean
-        val canNudge = tempoRes["canMixWithNudge"] as Boolean
+        val hasTempo = bpmA != null && bpmB != null
+        val hasKey = keyA != null && keyB != null
 
-        val overall = (tempoScore * 0.30 + keyScore * 0.30 + progScore * 0.20 + atmosScore * 0.20).roundToInt()
+        val tempoRes = if (hasTempo) calculateTempoCompatibility(bpmA!!, bpmB!!) else null
+        val keyRes = if (hasKey) calculateKeyCompatibility(keyA!!, keyB!!) else null
+
+        val tempoScore = tempoRes?.get("score") as? Int ?: 0
+        val keyScore = keyRes?.first ?: 0
+
+        val overall = when {
+            hasTempo && hasKey -> ((tempoScore + keyScore) / 2.0).roundToInt()
+            hasTempo -> tempoScore
+            hasKey -> keyScore
+            else -> 0
+        }
 
         return MixMatch(
             trackA = trackA,
@@ -245,13 +269,12 @@ object HarmonicEngine {
             overallScore = overall,
             tempoScore = tempoScore,
             keyScore = keyScore,
-            progressionScore = progScore,
-            atmosphereScore = atmosScore,
-            tempoAdvice = tempoAdvice,
-            keyAdvice = keyAdvice,
-            tempoDiffPercent = diffPercent,
-            isHalfTimeDoubleTime = isHalfDouble,
-            canMixWithNudge = canNudge
+            tempoAdvice = tempoRes?.get("advice") as? String ?: "Tempo not measured yet",
+            keyAdvice = keyRes?.second ?: "Key not measured yet",
+            tempoDiffPercent = tempoRes?.get("diffPercent") as? Double ?: 0.0,
+            isHalfTimeDoubleTime = tempoRes?.get("isHalfTimeDoubleTime") as? Boolean ?: false,
+            canMixWithNudge = tempoRes?.get("canMixWithNudge") as? Boolean ?: false,
+            isComplete = hasTempo && hasKey,
         )
     }
 
