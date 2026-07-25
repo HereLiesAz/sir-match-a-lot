@@ -39,3 +39,18 @@ With Sir Match-a-Lot, your entire screen is your canvas. You don't need to hunt 
 
 ## 🛠️ Architecture
 Built natively for Android using **Jetpack Compose** and **Kotlin Coroutines**. The audio engine relies on high-performance custom renderers to draw the dynamic audio spectrum as continuous oscillating paths.
+
+## 📄 License
+
+Sir Match-a-Lot is licensed under the **GNU General Public License v3.0** — see
+[`LICENSE`](LICENSE).
+
+This is a deliberate choice, made to allow linking the
+[Rubber Band Library](https://breakfastquay.com/rubberband/) for high-quality
+time-stretching under its GPL terms. The consequence is that anyone who receives
+a build of this app may study, modify, and redistribute it, and any derivative
+work must also be GPL.
+
+Note that this covers the *application*. Sample packs, sound effects, and other
+content distributed through the [Azphalt Store](https://azphalt.org) are separate
+works, not derivatives of this code, and are not affected by this license.

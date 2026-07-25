@@ -666,8 +666,10 @@ fun RadialControllerPlatter(
                 delay(250) // Beat grid check interval
                 val refController = controllersA.firstOrNull() ?: controllersB.firstOrNull()
                 val refTrack = loadedTracksA.firstOrNull() ?: loadedTracksB.firstOrNull()
-                val refBpm = refTrack?.bpm ?: 120
-                val beatDurationSecs = 60f / refBpm.toFloat()
+                // Skip snapping entirely when no loaded track has a measured
+                // tempo, rather than snapping everything to an assumed 120 BPM.
+                val refBpm = refTrack?.bpm ?: return@LaunchedEffect
+                val beatDurationSecs = (60.0 / refBpm).toFloat()
                 val refTime = refController?.currentTime?.value ?: 0f
 
                 selectedTrackIds.forEach { selId ->
@@ -1299,8 +1301,8 @@ fun SongListItemCard(track: Track, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("${track.bpm} BPM", color = Color.Cyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text(track.camelotKey, color = Color.Magenta, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Text("${track.bpmLabel()} BPM", color = Color.Cyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Text(track.keyLabel(), color = Color.Magenta, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             }
         }
     }

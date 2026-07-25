@@ -156,10 +156,6 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.okhttp.core)
 
-    // Track analysis. Pending removal with `ai/SongAnalyzer.kt` once the DSP
-    // analysis pipeline replaces it (see docs/ARCHITECTURE.md, phase 3).
-    implementation(libs.google.ai.client)
-
     // Unit tests
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

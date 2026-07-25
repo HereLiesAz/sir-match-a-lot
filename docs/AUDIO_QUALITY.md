@@ -104,20 +104,34 @@ largely designed around.
 on sustained tonal material even at modest ratios, and a critical listener will
 hear it on a piano or a held vocal where they would not hear it on a drum loop.
 
-**Fix, in order of increasing cost:**
-1. A phase vocoder with identity phase locking — better on tonal material,
-   implementable in Kotlin, testable the same way WSOLA is.
-2. Rubber Band or SoundTouch via NDK. These are the state of the art and they are
-   C++. **This is the strongest case for native code anywhere in this project** —
-   stronger than the latency argument, which is mostly masked by touch and
-   display latency, and stronger than the GC argument, which the 17 ms output
-   buffer absorbs. Note the licensing: SoundTouch is LGPL, Rubber Band is
-   GPL-or-commercial, and that choice constrains how this app can ship.
+**Decided: Rubber Band via NDK, under the GPL.**
 
-A hybrid is worth considering on its merits rather than as a compromise: the
-engine and all analysis stay Kotlin and stay unit-tested, and one C++ library
-handles time-stretching, which is offline work on a background thread where JNI
-overhead is irrelevant.
+Rubber Band is the state of the art and it is C++. This is the strongest case for
+native code anywhere in this project — stronger than the latency argument, which
+is largely masked by touch and display latency, and stronger than the GC
+argument, which the 17 ms output buffer absorbs.
+
+The shape is a hybrid, and it stands on its own merits rather than as a
+compromise: the engine and all analysis stay Kotlin and stay unit-tested, and one
+C++ library handles time-stretching — offline work on a background thread, where
+JNI overhead is irrelevant. `TimeStretcher` becomes an interface with the existing
+WSOLA implementation retained as the fallback and, usefully, as the correctness
+oracle its tests already are.
+
+**Licensing consequence, recorded deliberately.** Rubber Band is GPL-or-commercial
+and the GPL route was chosen, so Sir Match-a-Lot itself is GPL-3.0 (see
+`LICENSE`). Every recipient of a build may fork, rebrand, and redistribute it,
+including a monetised build, and that cannot be withdrawn from any version
+already shipped. GPLv3 was picked over GPLv2 because Rubber Band is
+"GPLv2 or later" and so permits it; if Google Play distribution ever hits friction
+over GPLv3's installation-information terms, GPLv2 is the more conservative
+fallback and remains compatible.
+
+Rejected alternatives, for the record:
+- A Kotlin phase vocoder with identity phase locking. Cheaper and license-free,
+  and better than WSOLA on tonal material, but short of Rubber Band.
+- SoundTouch (LGPL), which would have left the app's own license untouched, at
+  lower quality than Rubber Band.
 
 ### 4. EQ is two fixed shelves
 

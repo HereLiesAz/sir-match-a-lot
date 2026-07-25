@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Track::class], version = 2, exportSchema = false)
+@Database(entities = [Track::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
 
@@ -13,18 +15,95 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        fun getDatabase(context: Context): AppDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "sir_match_a_lot_database"
+        /**
+         * Rebuilds `tracks` around measured analysis.
+         *
+         * The old schema stored `bpm INTEGER NOT NULL` and
+         * `camelotKey TEXT NOT NULL`, which had no way to express "not
+         * measured" — so those columns were filled with values derived from
+         * filenames and random numbers. Carrying them forward would preserve
+         * the fiction, so the migration keeps what a user actually supplied
+         * (identity, titles, file locations, cue points) and drops the invented
+         * tempo, key, progression, atmosphere, and energy values, leaving them
+         * null so the tracks are re-analysed from the audio.
+         *
+         * Cue points move from four nullable columns into one CSV column, since
+         * the count is no longer fixed at four.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS tracks_new (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        sourceUri TEXT,
+                        bpm REAL,
+                        tempoConfidence REAL NOT NULL DEFAULT 0,
+                        firstBeatSeconds REAL,
+                        downbeatOffset INTEGER NOT NULL DEFAULT 0,
+                        camelotKey TEXT,
+                        keyName TEXT,
+                        keyConfidence REAL NOT NULL DEFAULT 0,
+                        energyLevel INTEGER,
+                        durationMs INTEGER NOT NULL DEFAULT 0,
+                        sampleRate INTEGER NOT NULL DEFAULT 0,
+                        trimStartMs INTEGER NOT NULL DEFAULT 0,
+                        trimEndMs INTEGER NOT NULL DEFAULT 0,
+                        peaksPath TEXT,
+                        energyPath TEXT,
+                        analysisVersion INTEGER NOT NULL DEFAULT 0,
+                        isUserAdded INTEGER NOT NULL DEFAULT 0,
+                        cuePointsCsv TEXT
+                    )
+                    """.trimIndent(),
                 )
-                .fallbackToDestructiveMigration()
-                .build()
-                INSTANCE = instance
-                instance
+
+                // analysisVersion stays 0 so every carried-over row is treated as
+                // unanalysed and gets measured properly on next import scan.
+                db.execSQL(
+                    """
+                    INSERT INTO tracks_new (
+                        id, title, artist, sourceUri,
+                        durationMs, trimStartMs, trimEndMs,
+                        peaksPath, analysisVersion, isUserAdded, cuePointsCsv
+                    )
+                    SELECT
+                        id, title, artist, localPath,
+                        durationMs, trimStartMs, trimEndMs,
+                        peaksPath, 0, isUserAdded,
+                        NULLIF(
+                            TRIM(BOTH ',' FROM
+                                COALESCE(CAST(cuePoint1 AS TEXT), '') || ',' ||
+                                COALESCE(CAST(cuePoint2 AS TEXT), '') || ',' ||
+                                COALESCE(CAST(cuePoint3 AS TEXT), '') || ',' ||
+                                COALESCE(CAST(cuePoint4 AS TEXT), '')
+                            ),
+                            ''
+                        )
+                    FROM tracks
+                    """.trimIndent(),
+                )
+
+                db.execSQL("DROP TABLE tracks")
+                db.execSQL("ALTER TABLE tracks_new RENAME TO tracks")
             }
         }
+
+        fun getDatabase(context: Context): AppDatabase =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "sir_match_a_lot_database",
+                )
+                    // A real migration, not fallbackToDestructiveMigration().
+                    // The previous builder wiped the user's entire library on
+                    // every schema change.
+                    .addMigrations(MIGRATION_2_3)
+                    .build()
+                    .also { INSTANCE = it }
+            }
     }
 }

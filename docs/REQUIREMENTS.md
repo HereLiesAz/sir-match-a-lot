@@ -16,11 +16,11 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A3 | Musical key detected from the audio, mapped to Camelot | done (`dsp/KeyDetector` + `HarmonicEngine.camelotFor`) |
 | A4 | Energy over time, for the energy ring and track ranking | done (`dsp/EnergyCurve`) |
 | A5 | Real peak envelope for drawing | done (`dsp/PeakEnvelope`) |
-| A6 | Silence trimmed from the start and end of every track | done (`PeakEnvelope.contentBounds`); wiring: phase 3 |
-| A7 | Analysis runs over whole tracks, not excerpts | planned (phase 3) |
+| A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
+| A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
 | A8 | Loop candidates found automatically from the playlist's songs | planned (phase 3, `dsp/LoopFinder`) |
 | A9 | Points of interest tagged (drop, break, vocal entry) | planned (phase 3) |
-| A10 | Replace the filename-hash and random-number "analysis" entirely | planned (phase 3) — `ai/SongAnalyzer.kt` still present |
+| A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
 ## B. Audio engine
 
@@ -99,7 +99,7 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| F1 | Local audio files supported | partial — import exists, analysis is fake |
+| F1 | Local audio files supported | done — imported and measured |
 | F2 | Any music service whose link resolves to a track or playlist | planned (phase 3) |
 | F3 | A playlist link imports every track in it, not one | planned (phase 3) |
 | F4 | Long imports run in the background with a progress notification, pausable and resumable | planned (phase 3) |
@@ -107,7 +107,7 @@ Prompt 75 replaced it with D1–D6 below.
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | planned (phase 5) |
 | F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | planned (phase 5) |
 | F8 | Auto beat sync, auto pitch, auto stretch, harmonize | planned (phase 5), on measured data |
-| F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | planned (phase 3) — current code points at `azphalt.store` and auto-downloads |
+| F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
 
 ## G. Sampler and looper
