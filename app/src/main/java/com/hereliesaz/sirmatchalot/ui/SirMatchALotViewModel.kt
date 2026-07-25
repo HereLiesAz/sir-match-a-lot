@@ -6,6 +6,12 @@ import androidx.lifecycle.viewModelScope
 import android.net.Uri
 import com.hereliesaz.sirmatchalot.analysis.TrackAnalyzer
 import com.hereliesaz.sirmatchalot.audio.AudioDecoder
+import com.hereliesaz.sirmatchalot.audio.AudioEngine
+import com.hereliesaz.sirmatchalot.audio.AudioTrackOutput
+import com.hereliesaz.sirmatchalot.audio.Clip
+import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
 import com.hereliesaz.sirmatchalot.audio.DeckController
 import com.hereliesaz.sirmatchalot.audio.SynthEngine
 import com.hereliesaz.sirmatchalot.data.AppDatabase
@@ -14,6 +20,7 @@ import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
 import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.sync.SyncClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -26,6 +33,127 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val trackDao = db.trackDao()
 
     val synthEngine = SynthEngine(application)
+
+    /**
+     * The real-time mixing engine.
+     *
+     * Runs at the device's native mixer rate so AudioFlinger is not resampling
+     * every block on the way out. This replaces the previous arrangement of one
+     * ExoPlayer per clip, which had no mixing stage and so could not crossfade,
+     * EQ, scratch, or play in reverse.
+     */
+    val audioEngine = AudioEngine(AudioTrackOutput.forDevice(application))
+
+    private val _platterState = MutableStateFlow(PlatterState())
+    val platterState: StateFlow<PlatterState> = _platterState
+
+    /** Decoded audio per track id, so a clip is decoded once and reused. */
+    private val decoded = mutableMapOf<String, com.hereliesaz.sirmatchalot.audio.PcmBuffer>()
+    private val peaksCache = mutableMapOf<String, PeakEnvelope>()
+
+    init {
+        audioEngine.onReverseThreshold = { _feedbackMsg.value = "I am Satan, Lord of Darkness." }
+        audioEngine.start()
+        // Publish the engine's playhead and metered level for the platter. The
+        // playhead comes from the audio graph, not from a wall-clock animation,
+        // so what is drawn is where playback actually is.
+        viewModelScope.launch {
+            while (true) {
+                delay(16)
+                val deck = audioEngine.deckA.takeIf { it.cycleFrames > 0 } ?: audioEngine.deckB
+                _platterState.value = _platterState.value.copy(
+                    playheadFraction = deck.cyclePosition(),
+                    outputLevel = audioEngine.mixer.level.peak,
+                    isPlaying = audioEngine.deckA.playing || audioEngine.deckB.playing,
+                )
+            }
+        }
+    }
+
+    /**
+     * Loads [track] onto a deck, decoding it if necessary, and republishes the
+     * platter layout.
+     */
+    fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val source = track.sourceUri ?: return@launch
+            val pcm = decoded.getOrPut(track.id) {
+                AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: return@launch
+            }
+            peaksCache.getOrPut(track.id) {
+                track.peaksPath
+                    ?.let { path -> runCatching { PeakEnvelope.fromByteArray(java.io.File(path).readBytes()) }.getOrNull() }
+                    ?: PeakEnvelope.compute(pcm.toMonoFloat())
+            }
+
+            val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+            val existing = engineDeck.clips
+            val startFrame = existing.maxOfOrNull { it.endFrame } ?: 0
+            engineDeck.clips = existing + Clip(
+                id = track.id,
+                buffer = pcm,
+                startFrame = startFrame,
+                loop = existing.isEmpty(),
+            )
+            engineDeck.playing = true
+            republishPlatter()
+        }
+    }
+
+    /** Rebuilds the platter layout from the engine's clips. */
+    private fun republishPlatter() {
+        fun inputsFor(deck: PlatterGeometry.Deck): List<PlatterState.ClipLayoutInput> {
+            val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+            return engineDeck.clips.map { clip ->
+                PlatterState.ClipLayoutInput(
+                    id = clip.id,
+                    title = _tracks.value.firstOrNull { it.id == clip.id }?.title ?: clip.id,
+                    durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
+                    peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
+                )
+            }
+        }
+
+        val selected = _selectedTrackIds.value
+        _platterState.value = _platterState.value.copy(
+            deckA = PlatterState.layout(inputsFor(PlatterGeometry.Deck.A), selected, PlatterGeometry.Deck.A),
+            deckB = PlatterState.layout(inputsFor(PlatterGeometry.Deck.B), selected, PlatterGeometry.Deck.B),
+        )
+    }
+
+    /** Removes every selected clip from both decks. */
+    fun removeSelectedClips() {
+        val selected = _selectedTrackIds.value
+        if (selected.isEmpty()) return
+        audioEngine.deckA.clips = audioEngine.deckA.clips.filterNot { it.id in selected }
+        audioEngine.deckB.clips = audioEngine.deckB.clips.filterNot { it.id in selected }
+        _selectedTrackIds.value = emptySet()
+        republishPlatter()
+    }
+
+    /** Replaces the selection and republishes so the ring highlights it. */
+    fun setSelectionAndPublish(ids: Set<String>) {
+        _selectedTrackIds.value = ids
+        republishPlatter()
+    }
+
+    // --- Gesture entry points, mapped to the engine ---
+
+    fun nudgeCrossfade(delta: Float) {
+        audioEngine.mixer.crossfade = (audioEngine.mixer.crossfade + delta / 600f).coerceIn(0f, 1f)
+    }
+
+    fun nudgeMasterVolume(deltaRadians: Float) {
+        audioEngine.mixer.masterGain =
+            (audioEngine.mixer.masterGain + deltaRadians * 0.25f).coerceIn(0f, 1f)
+    }
+
+    fun nudgeBassBoost(delta: Float) {
+        val next = (audioEngine.deckA.bassBoostDb + delta * 0.06).coerceIn(-18.0, 18.0)
+        audioEngine.deckA.bassBoostDb = next
+        audioEngine.deckB.bassBoostDb = next
+    }
+
     val syncClient = SyncClient(this)
 
     /**
@@ -740,6 +868,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _controllersA.value.forEach { it.release() }
         _controllersB.value.forEach { it.release() }
         synthEngine.release()
+        audioEngine.release()
         syncClient.disconnect()
     }
 }
