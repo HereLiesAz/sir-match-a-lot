@@ -55,6 +55,15 @@ fun LibraryScreen(
         }
     )
 
+    // A whole folder, walked recursively — a music library is a folder of
+    // folders, so importing only the top level would usually find nothing.
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+        onResult = { uri: Uri? -> uri?.let { viewModel.importFolder(it) } },
+    )
+
+    val backgroundAnalysis by viewModel.backgroundAnalysis.collectAsState()
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -75,7 +84,63 @@ fun LibraryScreen(
             ) {
                 Icon(Icons.Default.AddCircle, contentDescription = "Import File", tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Import Local File", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                Text("File", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+            }
+
+            Button(
+                onClick = { folderPickerLauncher.launch(null) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E7490)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Import Folder", tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Folder", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+            }
+        }
+
+        // The background run, mirrored from the same state its notification
+        // shows, so the two can never disagree.
+        if (backgroundAnalysis.total > 0) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF111827))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = (if (backgroundAnalysis.paused) "PAUSED " else "ANALYSING ") +
+                        "${backgroundAnalysis.done}/${backgroundAnalysis.total}" +
+                        (if (backgroundAnalysis.current.isNotEmpty()) " — ${backgroundAnalysis.current}" else ""),
+                    color = Color(0xFF81E6D9),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+                LinearProgressIndicator(
+                    progress = { backgroundAnalysis.fraction },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    color = Color.Cyan,
+                    trackColor = Color(0xFF27272A),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (backgroundAnalysis.paused) viewModel.resumeBackgroundAnalysis()
+                            else viewModel.pauseBackgroundAnalysis()
+                        },
+                    ) {
+                        Text(
+                            if (backgroundAnalysis.paused) "RESUME" else "PAUSE",
+                            color = Color(0xFF22D3EE),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+                    TextButton(onClick = { viewModel.stopBackgroundAnalysis() }) {
+                        Text("STOP", color = Color(0xFF9CA3AF), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
 

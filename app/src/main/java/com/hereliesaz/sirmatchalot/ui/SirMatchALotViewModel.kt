@@ -3,6 +3,7 @@ package com.hereliesaz.sirmatchalot.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Intent
 import android.net.Uri
 import com.hereliesaz.sirmatchalot.analysis.TrackAnalyzer
 import com.hereliesaz.sirmatchalot.audio.AudioDecoder
@@ -37,6 +38,8 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ln
 import org.json.JSONObject
+
+private const val MAX_FOLDER_IMPORT = 5_000
 
 class SirMatchALotViewModel(application: Application) : AndroidViewModel(application), SyncClient.SyncListener {
 
@@ -981,6 +984,151 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             return false
         }
     }
+
+    /**
+     * Imports every audio file under [treeUri], recursively.
+     *
+     * Walks the document tree rather than taking a directory listing, because a
+     * music folder is almost always a folder of folders — artist, then album —
+     * and importing only the top level would find nothing at all in the usual
+     * layout.
+     *
+     * Files are added unanalysed and the background service is started once at
+     * the end, rather than analysing each file as it is found: a folder can hold
+     * hundreds of tracks, and measuring them inline would block the import for
+     * as long as the analysis takes.
+     */
+    fun importFolder(treeUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _feedbackMsg.value = "Scanning folder..."
+            val resolver = getApplication<Application>().contentResolver
+            runCatching {
+                resolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+
+            val found = ArrayList<Pair<Uri, String>>()
+            runCatching { walk(treeUri, treeUri, found) }
+                .onFailure {
+                    _feedbackMsg.value = "Could not read that folder"
+                    return@launch
+                }
+
+            if (found.isEmpty()) {
+                _feedbackMsg.value = "No audio files in that folder"
+                return@launch
+            }
+
+            val existing = _tracks.value.mapNotNull { it.sourceUri }.toHashSet()
+            var added = 0
+            for ((uri, name) in found) {
+                val source = uri.toString()
+                if (source in existing) continue
+                val parsed = com.hereliesaz.sirmatchalot.data.LinkParser.parseFileName(name)
+                trackDao.insertTrack(
+                    Track(title = parsed.first, artist = parsed.second, sourceUri = source),
+                )
+                added++
+            }
+
+            _feedbackMsg.value = when (added) {
+                0 -> "All ${found.size} files were already in the library"
+                else -> "Added $added of ${found.size} files — analysing in the background"
+            }
+            if (added > 0) startBackgroundAnalysis()
+        }
+    }
+
+    /**
+     * Collects audio documents under [folder] into [into], descending into
+     * subfolders.
+     *
+     * Iterative rather than recursive: a deep or symlink-looped tree would
+     * otherwise be a stack overflow, and the visited set makes a provider that
+     * reports a cycle terminate instead of spinning.
+     */
+    private fun walk(treeUri: Uri, folder: Uri, into: MutableList<Pair<Uri, String>>) {
+        val resolver = getApplication<Application>().contentResolver
+        val visited = HashSet<String>()
+        val pending = ArrayDeque<Uri>()
+        pending.add(folder)
+
+        while (pending.isNotEmpty() && into.size < MAX_FOLDER_IMPORT) {
+            val current = pending.removeFirst()
+            val documentId = runCatching {
+                android.provider.DocumentsContract.getDocumentId(current)
+            }.getOrNull() ?: runCatching {
+                android.provider.DocumentsContract.getTreeDocumentId(current)
+            }.getOrNull() ?: continue
+            if (!visited.add(documentId)) continue
+
+            val children = android.provider.DocumentsContract
+                .buildChildDocumentsUriUsingTree(treeUri, documentId)
+            resolver.query(
+                children,
+                arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+                ),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val childId = cursor.getString(0)
+                    val name = cursor.getString(1)
+                    val mime = cursor.getString(2)
+                    val childUri = android.provider.DocumentsContract
+                        .buildDocumentUriUsingTree(treeUri, childId)
+                    when {
+                        com.hereliesaz.sirmatchalot.data.AudioFileFilter.isDirectory(mime) ->
+                            pending.add(childUri)
+                        com.hereliesaz.sirmatchalot.data.AudioFileFilter.isAudio(mime, name) ->
+                            into.add(childUri to name)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Hands analysis to the background service.
+     *
+     * Analysis of a folder runs for minutes, and doing it in the ViewModel meant
+     * it stopped the moment the app was backgrounded — which is exactly when
+     * someone would leave it running.
+     */
+    fun startBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.start(getApplication())
+    }
+
+    fun pauseBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_PAUSE,
+        )
+    }
+
+    fun resumeBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_RESUME,
+        )
+    }
+
+    fun stopBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_STOP,
+        )
+    }
+
+    /** Progress of the background run, shared with its notification. */
+    val backgroundAnalysis: StateFlow<com.hereliesaz.sirmatchalot.analysis.AnalysisState> =
+        com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus.state
 
     /**
      * Imports whatever [input] refers to: a playlist, a track listing, or a
