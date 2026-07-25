@@ -53,7 +53,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C6 | Playhead collapses to a glowing dot when there is no waveform | done (tested) |
 | C7 | Waveforms glow, brightening and growing with live output | done — driven by `Mixer.level`, not an oscillator |
 | C8 | Deck B's waveform reaches inward toward the far side | done |
-| C9 | Energy graph around the circle, repeating as needed, colour-coded | partial — colour path plumbed via `PlatterClip.energy`, but the analyser does not yet persist the curve, so it renders at neutral brightness |
+| C9 | Energy graph around the circle, repeating as needed, colour-coded | done — the analyser now persists the curve to `Track.energyPath` (`EnergyCurve.toByteArray`, window length included so a curve read back can still answer `at`), and `republishPlatter` feeds it to `PlatterClip.energy`. A track analysed before the path was written recomputes the curve at load rather than falling back to neutral forever |
 | C10 | Cue markers visible on the ring | planned (phase 5) |
 | C11 | The platter is the feature — not inside a card, not on a grey panel | done |
 | C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |

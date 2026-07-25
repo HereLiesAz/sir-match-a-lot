@@ -34,8 +34,35 @@ class EnergyCurve(
     /** Mean energy mapped to the 1..10 scale used by the library UI. */
     fun energyLevel(): Int = (average() * 9f + 1f).toInt().coerceIn(1, 10)
 
+    /**
+     * Serialised as the window length followed by the values, little-endian.
+     *
+     * The window length has to travel with the values: without it a curve read
+     * back cannot answer [at], and a caller would have to guess the analyser's
+     * configuration. The same mistake in [PeakEnvelope] is harmless only because
+     * its buckets are a fraction of the track rather than a fixed duration.
+     */
+    fun toByteArray(): ByteArray {
+        val buffer = java.nio.ByteBuffer
+            .allocate(8 + values.size * 4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buffer.putDouble(windowSeconds)
+        for (value in values) buffer.putFloat(value)
+        return buffer.array()
+    }
+
     companion object {
         private const val SILENCE_DB = -60.0
+
+        /** Reads back [toByteArray]. Returns null for anything too short to be one. */
+        fun fromByteArray(bytes: ByteArray): EnergyCurve? {
+            if (bytes.size < 8) return null
+            val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val windowSeconds = buffer.double
+            if (windowSeconds <= 0.0 || !windowSeconds.isFinite()) return null
+            val count = (bytes.size - 8) / 4
+            return EnergyCurve(FloatArray(count) { buffer.float }, windowSeconds)
+        }
 
         /**
          * @param windowSeconds analysis window; ~0.5 s tracks build-ups and

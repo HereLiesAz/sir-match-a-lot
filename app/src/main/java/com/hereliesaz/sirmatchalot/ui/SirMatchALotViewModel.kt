@@ -54,6 +54,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /** Decoded audio per track id, so a clip is decoded once and reused. */
     private val decoded = mutableMapOf<String, com.hereliesaz.sirmatchalot.audio.PcmBuffer>()
     private val peaksCache = mutableMapOf<String, PeakEnvelope>()
+    private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
     init {
         audioEngine.onReverseThreshold = { _feedbackMsg.value = "I am Satan, Lord of Darkness." }
@@ -113,6 +114,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 track.peaksPath
                     ?.let { path -> runCatching { PeakEnvelope.fromByteArray(java.io.File(path).readBytes()) }.getOrNull() }
                     ?: PeakEnvelope.compute(pcm.toMonoFloat())
+            }
+            // Recomputing the curve is cheap next to the decode that just
+            // happened, so a track analysed before energyPath was written still
+            // gets coloured rather than falling back to neutral forever.
+            energyCache.getOrPut(track.id) {
+                track.energyPath
+                    ?.let { path ->
+                        runCatching {
+                            com.hereliesaz.sirmatchalot.dsp.EnergyCurve.fromByteArray(java.io.File(path).readBytes())
+                        }.getOrNull()
+                    }
+                    ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(pcm.toMonoFloat(), pcm.sampleRate)
             }
 
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
@@ -178,6 +191,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     title = _tracks.value.firstOrNull { it.id == clip.id }?.title ?: clip.id,
                     durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
                     peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
+                    energy = energyCache[clip.id],
                 )
             }
         }
@@ -753,6 +767,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             peaksFile.parentFile?.mkdirs()
             peaksFile.writeBytes(analysis.peaks.toByteArray())
 
+            // The energy curve was measured and then discarded, which is why the
+            // platter's clips all drew at neutral brightness however different
+            // the music was. Track.energyPath has existed for it since the schema
+            // was written; nothing ever filled it in.
+            val energyFile = java.io.File(getApplication<Application>().filesDir, "energy/${track.id}.energy")
+            energyFile.parentFile?.mkdirs()
+            energyFile.writeBytes(analysis.energyCurve.toByteArray())
+
             val sampleRate = decoded.pcm.sampleRate.toDouble()
             trackDao.updateTrack(
                 track.copy(
@@ -769,6 +791,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     trimStartMs = (decoded.trimmedStartFrames / sampleRate * 1000).toLong(),
                     trimEndMs = ((decoded.trimmedStartFrames + decoded.pcm.frameCount) / sampleRate * 1000).toLong(),
                     peaksPath = peaksFile.absolutePath,
+                    energyPath = energyFile.absolutePath,
                     analysisVersion = Track.CURRENT_ANALYSIS_VERSION,
                 ),
             )

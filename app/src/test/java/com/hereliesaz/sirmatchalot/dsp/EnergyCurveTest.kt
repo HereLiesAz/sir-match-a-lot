@@ -2,6 +2,8 @@ package com.hereliesaz.sirmatchalot.dsp
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import kotlin.random.Random
 
@@ -111,5 +113,54 @@ class EnergyCurveTest {
         } catch (expected: IllegalArgumentException) {
             // intended
         }
+    }
+
+    // --- Serialisation ---
+
+    @Test
+    fun `a curve survives a round trip through bytes`() {
+        val original = EnergyCurve(
+            values = FloatArray(97) { it / 97f },
+            windowSeconds = 0.25,
+        )
+        val restored = EnergyCurve.fromByteArray(original.toByteArray())
+        assertNotNull(restored)
+        restored!!
+        assertEquals(original.windowSeconds, restored.windowSeconds, 0.0)
+        assertEquals(original.size, restored.size)
+        for (i in 0 until original.size) {
+            assertEquals("value $i", original.values[i], restored.values[i], 0f)
+        }
+    }
+
+    @Test
+    fun `the window length travels with the values`() {
+        // Without it, a curve read back cannot answer at(), and the caller would
+        // have to guess the analyser's configuration.
+        val restored = EnergyCurve.fromByteArray(
+            EnergyCurve(FloatArray(4) { 0.5f }, windowSeconds = 1.75).toByteArray(),
+        )
+        assertNotNull(restored)
+        assertEquals(1.75, restored!!.windowSeconds, 0.0)
+        assertEquals(0.5f, restored.at(3.0), 0f)
+    }
+
+    @Test
+    fun `an empty curve round trips`() {
+        val restored = EnergyCurve.fromByteArray(
+            EnergyCurve(FloatArray(0), windowSeconds = 0.5).toByteArray(),
+        )
+        assertNotNull(restored)
+        assertEquals(0, restored!!.size)
+    }
+
+    @Test
+    fun `rubbish is rejected rather than read as a curve`() {
+        // A truncated or corrupt file must not produce a curve with a nonsense
+        // window length, because at() would then index by garbage.
+        assertNull(EnergyCurve.fromByteArray(ByteArray(0)))
+        assertNull(EnergyCurve.fromByteArray(ByteArray(4)))
+        // Eight zero bytes decode to windowSeconds = 0.0, which is unusable.
+        assertNull(EnergyCurve.fromByteArray(ByteArray(8)))
     }
 }
