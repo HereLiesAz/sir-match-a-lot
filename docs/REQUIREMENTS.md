@@ -18,8 +18,8 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A5 | Real peak envelope for drawing | done (`dsp/PeakEnvelope`) |
 | A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
 | A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
-| A8 | Loop candidates found automatically from the playlist's songs | planned (phase 5, `dsp/LoopFinder`) |
-| A9 | Points of interest tagged (drop, break, vocal entry) | planned (phase 5) |
+| A8 | Loop candidates found automatically from the playlist's songs | done (`dsp/StructureFinder.findLoops`, bar-aligned self-similarity); surfacing them in the sampler is phase 5b |
+| A9 | Points of interest tagged (drop, break, vocal entry) | partial — drops, breakdowns, builds and peaks are detected and snapped to bar lines (`StructureFinder.findPointsOfInterest`); vocal detection would need a separate model |
 | A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
 ## B. Audio engine
@@ -33,7 +33,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | B5 | Pitch shift independent of tempo ("auto pitch") | done (`dsp/PitchShifter`); quality gap 1 |
 | B6 | Per-deck EQ and bass boost in the music's signal path | done (`audio/Deck`, routed and tested) |
 | B7 | Crossfade with a correct gain law (no mid-fade level jump) | done (`audio/Crossfade`, equal power) |
-| B8 | Beat sync that converges, driven from the audio thread not the UI | planned (phase 5) |
+| B8 | Beat sync that converges, driven from the audio thread not the UI | partial — `domain/BeatSync` computes tempo ratio, phase offset and semitone shift from measured grids; applying them continuously in the engine is still to do |
 | B9 | Live output level published for the visuals | done (`audio/OutputLevel`, per deck and master) |
 | B10 | Multiple clips per deck; loops placeable on a deck exactly like songs | done (`audio/Clip` on a circular timeline) |
 | B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
@@ -103,10 +103,10 @@ Prompt 75 replaced it with D1–D6 below.
 | F2 | Any music service whose link resolves to a track or playlist | planned (phase 3) |
 | F3 | A playlist link imports every track in it, not one | planned (phase 3) |
 | F4 | Long imports run in the background with a progress notification, pausable and resumable | planned (phase 3) |
-| F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | planned (phase 5) |
-| F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | planned (phase 5) |
-| F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | planned (phase 5) |
-| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | planned (phase 5), on measured data |
+| F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
+| F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
+| F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | partial — running order, transitions and per-step alignments are planned (`MixPlanner.automatchicMix`); executing the plan automatically is still to do |
+| F8 | Auto beat sync, auto pitch, auto stretch, harmonize | partial — the corrections are computed by `BeatSync`; wiring them through the engine is still to do |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
 

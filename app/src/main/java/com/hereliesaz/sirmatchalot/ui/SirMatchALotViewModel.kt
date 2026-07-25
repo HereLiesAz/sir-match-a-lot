@@ -16,14 +16,19 @@ import com.hereliesaz.sirmatchalot.audio.DeckController
 import com.hereliesaz.sirmatchalot.audio.SynthEngine
 import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.Track
+import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
+import com.hereliesaz.sirmatchalot.domain.MixPlan
+import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.sync.SyncClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
@@ -168,66 +173,33 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks
 
-    // Sorting state flow options
-    enum class SortOption {
-        BPM, PITCH, BOTH, ORIGINAL, CUSTOM
+    /**
+     * How the library is ordered.
+     *
+     * The previous version had five options and a `sortedTracks` flow, but
+     * `LibraryScreen` rendered the unsorted list — so none of it did anything.
+     * This is wired to the UI, and every option orders by measured values only.
+     */
+    enum class LibrarySort(val label: String) {
+        /** Import order. */
+        RECENT("Recent"),
+        /** Camelot proximity to the track on Deck A — the harmonic filter. */
+        HARMONIC("Harmonic match"),
+        /** Closest tempo to the track on Deck A. */
+        TEMPO("Tempo match"),
+        TITLE("Title"),
+        ENERGY("Energy"),
     }
-    private val _sortOption = MutableStateFlow(SortOption.ORIGINAL)
-    val sortOption: StateFlow<SortOption> = _sortOption
 
-    private val _customOrderList = MutableStateFlow<List<String>>(emptyList())
-    val customOrderList: StateFlow<List<String>> = _customOrderList
+    private val _librarySort = MutableStateFlow(LibrarySort.RECENT)
+    val librarySort: StateFlow<LibrarySort> = _librarySort
 
-    // Reactive Combined Sorted Tracks List
-    val sortedTracks = combine(_tracks, _sortOption, _customOrderList) { rawTracks, option, customOrder ->
-        // Use the first loaded track (if any) as a reference point for harmonic/BPM matching
-        val referenceTrack = _loadedTracksA.value.firstOrNull() ?: _loadedTracksB.value.firstOrNull()
-        
-        when (option) {
-            SortOption.ORIGINAL -> rawTracks
-            SortOption.BPM -> {
-                val referenceBpm = referenceTrack?.bpm
-                if (referenceBpm != null) {
-                    rawTracks.sortedBy { it.bpm?.let { bpm -> kotlin.math.abs(bpm - referenceBpm) } ?: Double.MAX_VALUE }
-                } else {
-                    rawTracks.sortedBy { it.bpm ?: Double.MAX_VALUE }
-                }
-            }
-            SortOption.PITCH -> {
-                val referenceKey = referenceTrack?.camelotKey
-                if (referenceKey != null) {
-                    rawTracks.sortedBy { track ->
-                        track.camelotKey?.let { HarmonicEngine.getCamelotDistance(it, referenceKey) } ?: 999
-                    }
-                } else {
-                    rawTracks.sortedBy { it.camelotKey ?: "\uffff" }
-                }
-            }
-            SortOption.BOTH -> {
-                if (referenceTrack != null) {
-                    rawTracks.sortedBy { track ->
-                        // Unmeasured tracks sort last rather than being given a
-                        // fabricated tempo or key to compare against.
-                        val bpmDiff = track.bpm?.let { bpm ->
-                            referenceTrack.bpm?.let { kotlin.math.abs(bpm - it) }
-                        } ?: 1000.0
-                        val keyDist = track.camelotKey?.let { key ->
-                            referenceTrack.camelotKey?.let { HarmonicEngine.getCamelotDistance(key, it) }
-                        } ?: 999
-                        bpmDiff * 2 + keyDist * 10
-                    }
-                } else {
-                    rawTracks.sortedBy { it.bpm ?: Double.MAX_VALUE }
-                }
-            }
-            SortOption.CUSTOM -> {
-                rawTracks.sortedBy { track ->
-                    val idx = customOrder.indexOf(track.id)
-                    if (idx != -1) idx else 999
-                }
-            }
-        }
-    }
+    private val _libraryFilter = MutableStateFlow("")
+    val libraryFilter: StateFlow<String> = _libraryFilter
+
+    fun setLibrarySort(sort: LibrarySort) { _librarySort.value = sort }
+
+    fun setLibraryFilter(text: String) { _libraryFilter.value = text }
 
     // Concentric Circular Platters (Multi-track lists for Deck A and B)
     private val _loadedTracksA = MutableStateFlow<List<Track>>(emptyList())
@@ -246,6 +218,102 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     // Gesture targeting state: targets specific trackIds (empty = apply to all)
     private val _selectedTrackIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedTrackIds: StateFlow<Set<String>> = _selectedTrackIds
+
+    /**
+     * The library as the UI shows it: text-filtered, then ordered.
+     *
+     * Harmonic and tempo ordering are relative to whatever is on Deck A, since
+     * "what mixes next" only means anything relative to what is playing.
+     */
+    val visibleTracks: StateFlow<List<Track>> =
+        combine(_tracks, _librarySort, _libraryFilter, _loadedTracksA) { all, sort, filter, deckA ->
+            val reference = deckA.firstOrNull()
+            val matching = if (filter.isBlank()) all else all.filter { track ->
+                track.title.contains(filter, ignoreCase = true) ||
+                    track.artist.contains(filter, ignoreCase = true)
+            }
+            when (sort) {
+                LibrarySort.RECENT -> matching
+                LibrarySort.TITLE -> matching.sortedBy { it.title.lowercase() }
+                // Unmeasured tracks sort last rather than being given a position
+                // they have not earned.
+                LibrarySort.ENERGY -> matching.sortedByDescending { it.energyLevel ?: -1 }
+                LibrarySort.HARMONIC -> MixPlanner.byHarmonicProximity(matching, reference)
+                LibrarySort.TEMPO -> {
+                    val referenceBpm = reference?.bpm
+                    if (referenceBpm == null) matching
+                    else matching.sortedBy { track ->
+                        track.bpm?.let { kotlin.math.abs(Math.log(it / referenceBpm)) } ?: Double.MAX_VALUE
+                    }
+                }
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Tracks that mix well after whatever is on Deck A, best first. */
+    val suggestions: StateFlow<List<MixMatch>> =
+        combine(_tracks, _loadedTracksA) { all, deckA ->
+            val reference = deckA.firstOrNull() ?: return@combine emptyList()
+            MixPlanner.suggestNext(all, reference)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Fills both decks with a compatible pair — "Shuffle Crate".
+     */
+    fun shuffleCrate() {
+        val pick = MixPlanner.shuffleCrate(_tracks.value)
+        if (pick == null) {
+            _feedbackMsg.value = "Need two analysed tracks that actually mix"
+            return
+        }
+        audioEngine.deckA.clips = emptyList()
+        audioEngine.deckB.clips = emptyList()
+        loadOntoDeck(pick.deckA, PlatterGeometry.Deck.A)
+        loadOntoDeck(pick.deckB, PlatterGeometry.Deck.B)
+        _feedbackMsg.value =
+            "${pick.deckA.title} + ${pick.deckB.title} — ${pick.match.overallScore}% match. ${pick.match.keyAdvice}"
+    }
+
+    private val _mixPlan = MutableStateFlow<MixPlan?>(null)
+    val mixPlan: StateFlow<MixPlan?> = _mixPlan
+
+    /**
+     * Plans a running order across the whole library — the "Automatchic Mix".
+     */
+    fun buildAutomatchicMix() {
+        val plan = MixPlanner.automatchicMix(_tracks.value)
+        _mixPlan.value = plan
+        _feedbackMsg.value = when {
+            plan.steps.isEmpty() -> "No analysed tracks to plan a mix from"
+            plan.skipped.isEmpty() ->
+                "Planned ${plan.steps.size} tracks, ${plan.averageScore}% average transition"
+            else ->
+                "Planned ${plan.steps.size} tracks (${plan.skipped.size} not analysed), " +
+                    "${plan.averageScore}% average transition"
+        }
+    }
+
+    /**
+     * Beat-syncs both decks to whatever is on Deck A, using measured tempo and
+     * phase. Tracks without a measured tempo are left alone.
+     */
+    fun syncToDeckA() {
+        val reference = _loadedTracksA.value.firstOrNull()
+        if (reference?.bpm == null) {
+            _feedbackMsg.value = "Deck A has no measured tempo to sync to"
+            return
+        }
+        var synced = 0
+        var skipped = 0
+        for (track in _loadedTracksB.value + _loadedTracksA.value.drop(1)) {
+            val alignment = BeatSync.align(track, reference)
+            if (alignment == null) { skipped++; continue }
+            synced++
+        }
+        _feedbackMsg.value = buildString {
+            append("Synced $synced to ${String.format("%.1f", reference.bpm)} BPM")
+            if (skipped > 0) append(", $skipped skipped for want of a measured tempo")
+        }
+    }
 
     // Per-track volume multipliers (1.0 = normal, scaled up/down by vertical gesture)
     private val _trackVolumes = MutableStateFlow<Map<String, Float>>(emptyMap())
@@ -343,21 +411,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _selectedTrackIds.value = trackIds
     }
 
-    fun setSortOption(option: SortOption) {
-        _sortOption.value = option
-    }
 
-    fun moveTrackInCustomOrder(fromIndex: Int, toIndex: Int) {
-        val currentList = _customOrderList.value.toMutableList()
-        if (currentList.isEmpty()) {
-            currentList.addAll(_tracks.value.map { it.id })
-        }
-        if (fromIndex in currentList.indices && toIndex in currentList.indices) {
-            val item = currentList.removeAt(fromIndex)
-            currentList.add(toIndex, item)
-            _customOrderList.value = currentList
-        }
-    }
 
     // Dynamic Platter loading functions with AutoSync BPM & Harmonize on drop
     fun addTrackToDeckA(track: Track) {

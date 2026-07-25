@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,10 +36,12 @@ fun LibraryScreen(
     viewModel: SirMatchALotViewModel,
     modifier: Modifier = Modifier
 ) {
-    val tracks by viewModel.tracks.collectAsState()
+    // The filtered, sorted list — the previous screen rendered the raw list and
+    // ignored the ViewModel's sorting entirely, so none of it had any effect.
+    val tracks by viewModel.visibleTracks.collectAsState()
     val feedbackMsg by viewModel.feedbackMsg.collectAsState()
-
-    var searchQuery by remember { mutableStateOf("") }
+    val librarySort by viewModel.librarySort.collectAsState()
+    val searchQuery by viewModel.libraryFilter.collectAsState()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -78,7 +82,7 @@ fun LibraryScreen(
         ) {
             OutlinedTextField(
                 value = searchQuery,
-                onValueChange = { searchQuery = it },
+                onValueChange = { viewModel.setLibraryFilter(it) },
                 placeholder = { Text("Filter by title or artist...", color = Color.Gray, fontSize = 11.sp) },
                 singleLine = true,
                 modifier = Modifier
@@ -99,6 +103,59 @@ fun LibraryScreen(
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text("Analyse new", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 11.sp)
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Shuffle Crate and the Automatchic Mix, both driven by measured values.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { viewModel.shuffleCrate() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("SHUFFLE CRATE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+            Button(
+                onClick = { viewModel.buildAutomatchicMix() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDB2777)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("AUTOMATCHIC MIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // The harmonic filter: order the library by Camelot proximity to Deck A.
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(SirMatchALotViewModel.LibrarySort.entries.toList()) { option ->
+                val selected = option == librarySort
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (selected) Color(0xFF0891B2) else Color(0xFF18181B))
+                        .border(
+                            1.dp,
+                            if (selected) Color.Cyan else Color(0xFF27272A),
+                            RoundedCornerShape(20.dp)
+                        )
+                        .clickable { viewModel.setLibrarySort(option) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        option.label,
+                        color = if (selected) Color.White else Color(0xFF9CA3AF),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
