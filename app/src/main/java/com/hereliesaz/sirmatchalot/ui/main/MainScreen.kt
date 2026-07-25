@@ -19,7 +19,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
-import com.hereliesaz.sirmatchalot.ui.ControlsScreen
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterActions
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterScreen
 import com.hereliesaz.sirmatchalot.ui.PerformanceScreen
 
 enum class DjTab {
@@ -191,7 +193,15 @@ fun MainScreen(
         ) {
             when (currentTab) {
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
-                DjTab.CONTROLS -> ControlsScreen(viewModel = viewModel)
+                DjTab.CONTROLS -> {
+                    val platterState by viewModel.platterState.collectAsState()
+                    val tracks by viewModel.tracks.collectAsState()
+                    PlatterScreen(
+                        state = platterState,
+                        tracks = tracks,
+                        actions = rememberPlatterActions(viewModel),
+                    )
+                }
                 DjTab.PERFORMANCE -> PerformanceScreen(viewModel = viewModel)
             }
         }
@@ -266,3 +276,62 @@ fun MainScreen(
         )
     }
 }
+
+/**
+ * Binds the platter's gestures to the audio engine.
+ *
+ * Kept as a separate adapter so [PlatterScreen] depends only on an interface and
+ * can be previewed or driven by a synthetic platter in a test.
+ */
+@Composable
+private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterActions =
+    remember(viewModel) {
+        object : PlatterActions {
+            override fun onCrossfade(delta: Float) = viewModel.nudgeCrossfade(delta)
+
+            override fun onScratchBegin() = viewModel.audioEngine.beginScratch()
+
+            override fun onScratch(totalDeltaY: Float) = viewModel.audioEngine.updateScratch(totalDeltaY)
+
+            override fun onScratchEnd() = viewModel.audioEngine.endScratch()
+
+            override fun onVolume(delta: Float) = viewModel.nudgeMasterVolume(delta)
+
+            override fun onBassBoost(delta: Float) = viewModel.nudgeBassBoost(delta)
+
+            override fun onSelectAt(deck: PlatterGeometry.Deck, fraction: Float, additive: Boolean) {
+                val clip = viewModel.platterState.value.clipAt(deck, fraction) ?: return
+                val current = viewModel.selectedTrackIds.value
+                viewModel.setSelectionAndPublish(
+                    when {
+                        additive && clip.id in current -> current - clip.id
+                        additive -> current + clip.id
+                        clip.id in current -> current - clip.id
+                        else -> setOf(clip.id)
+                    },
+                )
+            }
+
+            // Double tap selects both decks' waveforms at that spot.
+            override fun onSelectBothAt(fraction: Float) {
+                val state = viewModel.platterState.value
+                val ids = listOfNotNull(
+                    state.clipAt(PlatterGeometry.Deck.A, fraction)?.id,
+                    state.clipAt(PlatterGeometry.Deck.B, fraction)?.id,
+                ).toSet()
+                if (ids.isNotEmpty()) viewModel.setSelectionAndPublish(ids)
+            }
+
+            // Long press removes the selected track(s).
+            override fun onRemoveSelected() = viewModel.removeSelectedClips()
+
+            override fun onLoadTrack(track: com.hereliesaz.sirmatchalot.data.Track) {
+                // Fill Deck A first, then Deck B, then keep stacking onto A.
+                val state = viewModel.platterState.value
+                val deck =
+                    if (state.deckA.isEmpty() || state.deckB.isNotEmpty()) PlatterGeometry.Deck.A
+                    else PlatterGeometry.Deck.B
+                viewModel.loadOntoDeck(track, deck)
+            }
+        }
+    }
