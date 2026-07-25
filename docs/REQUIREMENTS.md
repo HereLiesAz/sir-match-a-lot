@@ -18,8 +18,8 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A5 | Real peak envelope for drawing | done (`dsp/PeakEnvelope`) |
 | A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
 | A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
-| A8 | Loop candidates found automatically from the playlist's songs | planned (phase 5, `dsp/LoopFinder`) |
-| A9 | Points of interest tagged (drop, break, vocal entry) | planned (phase 5) |
+| A8 | Loop candidates found automatically from the playlist's songs | done (`dsp/StructureFinder.findLoops`, bar-aligned self-similarity); surfacing them in the sampler is phase 5b |
+| A9 | Points of interest tagged (drop, break, vocal entry) | partial — drops, breakdowns, builds and peaks are detected and snapped to bar lines (`StructureFinder.findPointsOfInterest`); vocal detection would need a separate model |
 | A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
 ## B. Audio engine
