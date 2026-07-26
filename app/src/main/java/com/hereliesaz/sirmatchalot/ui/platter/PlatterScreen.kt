@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,6 +48,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hereliesaz.sirmatchalot.data.Track
+import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.gesture.GestureEngine
 import com.hereliesaz.sirmatchalot.gesture.GestureKind
 import com.hereliesaz.sirmatchalot.gesture.GestureLabels
@@ -107,9 +109,12 @@ interface PlatterActions {
 @Composable
 fun PlatterScreen(
     state: PlatterState,
-    tracks: List<Track>,
+    tracks: List<RankedTrack>,
     actions: PlatterActions,
     modifier: Modifier = Modifier,
+    /** What the strip is ordered by, shown on the control that changes it. */
+    sortLabel: String = "",
+    onCycleSort: () -> Unit = {},
     /**
      * Whether to draw the room behind the platter.
      *
@@ -481,6 +486,8 @@ fun PlatterScreen(
 
         TrackStrip(
             tracks = tracks,
+            sortLabel = sortLabel,
+            onCycleSort = onCycleSort,
             onLoad = actions::onLoadTrack,
             onDragStart = { track, position ->
                 draggingTrack = track
@@ -566,11 +573,6 @@ private fun GestureLabelOverlay(
     }
 }
 
-/**
- * The track list: along the bottom, scrolling horizontally.
- *
- * No A/B buttons and no drag handle — tapping a row loads it.
- */
 private const val TWO_PI = (2.0 * Math.PI).toFloat()
 
 /**
@@ -582,14 +584,56 @@ private const val TWO_PI = (2.0 * Math.PI).toFloat()
  */
 private const val IDLE_FRAME_POLL_MILLIS = 100L
 
+/**
+ * The track list: along the bottom, scrolling horizontally, best match first.
+ *
+ * Tapping a card loads it; a long press drags it onto the circle.
+ *
+ * **Every card carries its own match.** The app measures tempo and key for
+ * every track and scores every pairing, and until now all of that reached the
+ * performer as an optional sort order on a *different screen*. The list you
+ * actually play from was the raw table in insertion order, with no indication
+ * of what would mix and what would clash — so the only way to use a match was
+ * to switch tabs, load a pair blind, and come back. The score is on the card
+ * now, in the order the score puts them, on the screen where tracks are chosen.
+ */
 @Composable
 private fun TrackStrip(
-    tracks: List<Track>,
+    tracks: List<RankedTrack>,
+    sortLabel: String,
+    onCycleSort: () -> Unit,
     onLoad: (Track) -> Unit,
     onDragStart: (Track, Offset) -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
 ) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The ordering is stated and changeable here rather than only in the
+        // Library, because this is where the choice is made.
+        Text(
+            text = "BY ${sortLabel.uppercase()}",
+            color = Color(0xFF22D3EE),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Black,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onCycleSort)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = tracks.firstOrNull()?.match?.let { "matched against the session" }
+                ?: "load a track to see what mixes with it",
+            color = Color(0xFF52525B),
+            fontSize = 9.sp,
+            maxLines = 1,
+        )
+    }
+
     LazyRow(
         modifier = Modifier
             .fillMaxWidth()
@@ -597,7 +641,8 @@ private fun TrackStrip(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        items(tracks, key = { it.id }) { track ->
+        items(tracks, key = { it.track.id }) { ranked ->
+            val track = ranked.track
             // Where this card sits in the window, so a drag can be reported in
             // the same coordinates the platter is hit-tested in.
             var cardOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -606,7 +651,7 @@ private fun TrackStrip(
                     .width(180.dp)
                     .fillMaxSize()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF121218))
+                    .background(if (ranked.isReference) Color(0xFF13232B) else Color(0xFF121218))
                     .onGloballyPositioned { cardOrigin = it.positionInRoot() }
                     .clickable { onLoad(track) }
                     // After a long press, not immediately: an immediate drag
@@ -623,27 +668,83 @@ private fun TrackStrip(
                     .padding(10.dp),
                 verticalArrangement = Arrangement.Center,
             ) {
-                Text(track.title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        track.title,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    val score = ranked.score
+                    if (score != null) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "$score%",
+                            color = scoreColour(score),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
                 Text(track.artist, color = Color(0xFF9CA3AF), fontSize = 11.sp, maxLines = 1)
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+
+                // What it would take to bring this one in, when there is
+                // something to bring it in after. Otherwise what it is.
+                val advice = ranked.advice()
+                if (ranked.isReference) {
                     Text(
-                        "${track.bpmLabel()} BPM",
-                        color = if (track.bpm != null) Color(0xFF7DF9FF) else Color(0xFF52525B),
-                        fontSize = 10.sp,
+                        "SETS THE SESSION — ${track.bpmLabel()} BPM, ${track.keyLabel()}",
+                        color = Color(0xFF22D3EE),
+                        fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 6.dp),
                     )
+                } else if (advice != null) {
                     Text(
-                        track.keyLabel(),
-                        color = if (track.camelotKey != null) Color(0xFFF0ABFC) else Color(0xFF52525B),
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
+                        advice,
+                        color = Color(0xFF9CA3AF),
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 6.dp),
                     )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${track.bpmLabel()} BPM",
+                            color = if (track.bpm != null) Color(0xFF7DF9FF) else Color(0xFF52525B),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        Text(
+                            track.keyLabel(),
+                            color = if (track.camelotKey != null) Color(0xFFF0ABFC) else Color(0xFF52525B),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * Green, amber, grey — and nothing in between worth distinguishing.
+ *
+ * The score is a measurement with real uncertainty in it, so three bands is
+ * about what it can honestly support: this will drop straight in, this needs
+ * work, this will fight you.
+ */
+private fun scoreColour(score: Int): Color = when {
+    score >= 85 -> Color(0xFF4ADE80)
+    score >= 60 -> Color(0xFFFBBF24)
+    else -> Color(0xFF71717A)
 }

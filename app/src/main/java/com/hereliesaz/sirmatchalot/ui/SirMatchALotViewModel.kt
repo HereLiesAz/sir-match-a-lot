@@ -27,6 +27,7 @@ import com.hereliesaz.sirmatchalot.domain.MixDirector
 import com.hereliesaz.sirmatchalot.domain.MixPlan
 import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
+import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.domain.LoopHarvest
 import com.hereliesaz.sirmatchalot.audio.PcmBuffer
 import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
@@ -46,6 +47,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ln
 import org.json.JSONObject
@@ -1190,23 +1192,53 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * This is wired to the UI, and every option orders by measured values only.
      */
     enum class LibrarySort(val label: String) {
-        /** Import order. */
+        /**
+         * How well each track mixes after what is loaded, best first.
+         *
+         * The default, because it is the only ordering that answers the
+         * question being asked of the list. With nothing loaded there is
+         * nothing to match against and it falls back to import order, which is
+         * what [RECENT] is.
+         */
+        HARMONIC("Match"),
+        /** Import order — the order the folder scan found them in. */
         RECENT("Recent"),
-        /** Camelot proximity to the track on Deck A — the harmonic filter. */
-        HARMONIC("Harmonic match"),
-        /** Closest tempo to the track on Deck A. */
-        TEMPO("Tempo match"),
+        /** Closest tempo to the reference. */
+        TEMPO("Tempo"),
         TITLE("Title"),
         ENERGY("Energy"),
     }
 
-    private val _librarySort = MutableStateFlow(LibrarySort.RECENT)
+    /**
+     * Ordered by match, not by import order.
+     *
+     * The strip on the platter — the list you actually drag tracks from — was
+     * fed the raw table in `SELECT * FROM tracks` order, which is insertion
+     * order: whatever sequence the folder walk happened to enumerate. Every
+     * measurement the app makes about what mixes with what existed, was
+     * computed, and changed nothing about the order they were offered in.
+     */
+    private val _librarySort = MutableStateFlow(LibrarySort.HARMONIC)
     val librarySort: StateFlow<LibrarySort> = _librarySort
 
     private val _libraryFilter = MutableStateFlow("")
     val libraryFilter: StateFlow<String> = _libraryFilter
 
     fun setLibrarySort(sort: LibrarySort) { _librarySort.value = sort }
+
+    /**
+     * Steps to the next ordering.
+     *
+     * The platter has room for one control, not five chips — and cycling is
+     * enough when the current one is named on the control itself. The Library's
+     * full set of chips sets the same state, so changing it in either place
+     * changes both: there is one library, and it should not be in two orders
+     * depending on which tab is open.
+     */
+    fun cycleLibrarySort() {
+        val entries = LibrarySort.entries
+        _librarySort.value = entries[(entries.indexOf(_librarySort.value) + 1) % entries.size]
+    }
 
     fun setLibraryFilter(text: String) { _libraryFilter.value = text }
 
@@ -1222,41 +1254,91 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     val selectedTrackIds: StateFlow<Set<String>> = _selectedTrackIds
 
     /**
-     * The library as the UI shows it: text-filtered, then ordered.
+     * What everything else is matched against.
      *
-     * Harmonic and tempo ordering are relative to whatever is on Deck A, since
-     * "what mixes next" only means anything relative to what is playing.
+     * The session reference, specifically — the first thing put on the platter —
+     * rather than "whatever is on Deck A". Every clip loaded after it is
+     * stretched to its tempo and shifted to its key before it is ever heard, so
+     * the reference *is* the session's tempo and key. Matching against Deck A's
+     * current occupant would score tracks against a clip that has already been
+     * conformed to the reference, which is to say against the reference, one
+     * rounding error later.
+     *
+     * Falls back to whatever is loaded during the moment before the first load
+     * completes.
      */
-    val visibleTracks: StateFlow<List<Track>> =
-        combine(_tracks, _librarySort, _libraryFilter, _loadedTracksA) { all, sort, filter, deckA ->
-            val reference = deckA.firstOrNull()
+    private val matchReference: StateFlow<Track?> =
+        combine(_reference, _loadedTracksA, _loadedTracksB) { reference, deckA, deckB ->
+            reference ?: deckA.firstOrNull() ?: deckB.firstOrNull()
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
+     * The library as both screens show it: text-filtered, ordered, and each
+     * track carrying its own match against what is loaded.
+     *
+     * One flow, because the platter strip and the library list were previously
+     * two different lists in two different orders — the library's sorted and
+     * searchable, the platter's the raw table — and only one of them had any
+     * relationship to the matching the app spends its analysis pass computing.
+     */
+    val rankedTracks: StateFlow<List<RankedTrack>> =
+        combine(_tracks, _librarySort, _libraryFilter, matchReference) { all, sort, filter, reference ->
             val matching = if (filter.isBlank()) all else all.filter { track ->
                 track.title.contains(filter, ignoreCase = true) ||
                     track.artist.contains(filter, ignoreCase = true)
             }
             when (sort) {
-                LibrarySort.RECENT -> matching
-                LibrarySort.TITLE -> matching.sortedBy { it.title.lowercase() }
+                // Ordered by the same number the card shows. Ordering by Camelot
+                // distance while labelling with the overall score put 82% above
+                // 91% for reasons the screen never gave.
+                LibrarySort.HARMONIC -> MixPlanner.byMixScore(matching, reference)
+                LibrarySort.RECENT -> MixPlanner.rank(matching, reference)
+                LibrarySort.TITLE ->
+                    MixPlanner.rank(matching.sortedBy { it.title.lowercase() }, reference)
                 // Unmeasured tracks sort last rather than being given a position
                 // they have not earned.
-                LibrarySort.ENERGY -> matching.sortedByDescending { it.energyLevel ?: -1 }
-                LibrarySort.HARMONIC -> MixPlanner.byHarmonicProximity(matching, reference)
+                LibrarySort.ENERGY ->
+                    MixPlanner.rank(matching.sortedByDescending { it.energyLevel ?: -1 }, reference)
                 LibrarySort.TEMPO -> {
                     val referenceBpm = reference?.bpm
-                    if (referenceBpm == null) matching
-                    else matching.sortedBy { track ->
+                    val ordered = if (referenceBpm == null) matching else matching.sortedBy { track ->
                         track.bpm?.let { kotlin.math.abs(Math.log(it / referenceBpm)) } ?: Double.MAX_VALUE
                     }
+                    MixPlanner.rank(ordered, reference)
                 }
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Tracks that mix well after whatever is on Deck A, best first. */
-    val suggestions: StateFlow<List<MixMatch>> =
-        combine(_tracks, _loadedTracksA) { all, deckA ->
-            val reference = deckA.firstOrNull() ?: return@combine emptyList()
-            MixPlanner.suggestNext(all, reference)
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** The same list without the scores, for callers that only need the tracks. */
+    val visibleTracks: StateFlow<List<Track>> =
+        rankedTracks.map { ranked -> ranked.map { it.track } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Every pair in the library that mixes, best first — the library's
+     * "compatible pairings" list.
+     *
+     * Here rather than in the composition, and off the main thread. It was an
+     * all-pairs comparison inside a `remember`, so a 500-track library ran
+     * 124,750 comparisons on the frame that opened the Library tab, and a
+     * 2,000-track one ran two million. Capped as well: past a few hundred tracks
+     * the answer is a list nobody reads, computed at a cost everybody feels.
+     */
+    val compatiblePairs: StateFlow<List<MixMatch>> =
+        _tracks.map { all ->
+            withContext(Dispatchers.Default) {
+                val usable = all.filter { it.bpm != null && it.camelotKey != null }
+                    .take(MAX_TRACKS_PAIRED)
+                buildList {
+                    for (i in usable.indices) {
+                        for (j in i + 1 until usable.size) {
+                            val match = HarmonicEngine.compareTracks(usable[i], usable[j])
+                            if (match.overallScore >= STRONG_PAIR_SCORE) add(match)
+                        }
+                    }
+                }.sortedByDescending { it.overallScore }.take(MAX_PAIRS_SHOWN)
+            }
+        }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     /**
      * Fills both decks with a compatible pair — "Shuffle Crate".
@@ -2441,5 +2523,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
          * is nothing to draw and nobody to draw it for.
          */
         private const val BACKGROUND_POLL_MILLIS = 500L
+
+        /**
+         * How many analysed tracks the all-pairs list will compare.
+         *
+         * The work is quadratic, so this is the difference between 20,000
+         * comparisons and two million. Two hundred tracks already yields far
+         * more strong pairs than anyone scrolls.
+         */
+        private const val MAX_TRACKS_PAIRED = 200
+
+        /** How many pairs to keep, best first. */
+        private const val MAX_PAIRS_SHOWN = 50
+
+        /** Below this a pairing is not worth offering as one. */
+        private const val STRONG_PAIR_SCORE = 60
     }
 }
