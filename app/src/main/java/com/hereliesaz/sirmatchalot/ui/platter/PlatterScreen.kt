@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -113,6 +114,11 @@ fun PlatterScreen(
     val gestures = remember { GestureEngine() }
     val labels = remember { GestureLabels() }
 
+    // The light rig's clock. Taken from the frame clock already running below,
+    // so the background costs no timer of its own and stops when the
+    // composition stops being drawn.
+    var elapsedMillis by remember { mutableLongStateOf(0L) }
+
     // Three-finger platter transform.
     var scale by remember { mutableFloatStateOf(1f) }
     var rotation by remember { mutableFloatStateOf(0f) }
@@ -174,6 +180,7 @@ fun PlatterScreen(
     LaunchedEffect(Unit) {
         while (true) {
             withFrameMillis { frameTimeMillis ->
+                elapsedMillis = frameTimeMillis
                 labels.update(
                     activeTexts = gestures.active.map { it.kind.label }.toSet(),
                     nowMillis = frameTimeMillis,
@@ -335,6 +342,12 @@ fun PlatterScreen(
                     )
                 },
         ) {
+            // The room, behind the instrument. Its brightness comes off the
+            // master bus and its motion from a free-running clock: lights in a
+            // real room sweep on their own and change with the music, they do
+            // not teleport on every kick.
+            RaveBackground(bands = state.bands, phase = rigPhase(elapsedMillis))
+
             PlatterCanvas(
                 state = state,
                 labels = visibleLabels,

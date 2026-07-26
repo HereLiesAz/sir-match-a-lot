@@ -256,6 +256,15 @@ class AudioEngine(
      */
     val growl = OneShotVoice()
 
+    /**
+     * Band levels for the background light show.
+     *
+     * Three bands rather than one number, because one number makes everything
+     * on screen pulse together — which is precisely what a strobe looks like,
+     * and precisely what C15 says the background must not be.
+     */
+    val spectrum = SpectrumMeter(sampleRate = output.sampleRate)
+
     private val scratch = ScratchModel()
     private var started = false
 
@@ -282,6 +291,9 @@ class AudioEngine(
             sampler.captureFromMaster(buffer, frames)
             sampler.render(buffer, frames)
             growl.render(buffer, frames)
+            // Measured last, so the lights follow everything a listener hears —
+            // decks, pads and all — rather than only the deck mix.
+            spectrum.measure(buffer, frames)
             if (scratch.accountForRenderedFrames(frames)) {
                 // Triggered here rather than by the listener, so the sound
                 // happens even if nothing is listening for the message.

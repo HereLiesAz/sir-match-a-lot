@@ -115,6 +115,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     playheadFraction = deck.cyclePosition(),
                     outputLevel = audioEngine.mixer.level.peak,
                     isPlaying = audioEngine.deckA.playing || audioEngine.deckB.playing,
+                    bands = com.hereliesaz.sirmatchalot.ui.platter.SpectrumBands(
+                        low = audioEngine.spectrum.low,
+                        mid = audioEngine.spectrum.mid,
+                        high = audioEngine.spectrum.high,
+                    ),
                 )
             }
         }

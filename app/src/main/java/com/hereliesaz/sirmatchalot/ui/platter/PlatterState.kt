@@ -77,6 +77,12 @@ data class PlatterState(
     val outputLevel: Float = 0f,
     val isPlaying: Boolean = false,
     val markers: List<PlatterMarker> = emptyList(),
+    /**
+     * Band levels off the master bus, for the background light show. Measured
+     * from the same signal the speakers get, so the room goes dark when the
+     * audio does.
+     */
+    val bands: SpectrumBands = SpectrumBands.DARK,
 ) {
     val isEmpty: Boolean get() = deckA.isEmpty() && deckB.isEmpty()
 
