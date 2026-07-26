@@ -301,6 +301,54 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         republishPlatter()
     }
 
+    /**
+     * Moves a clip already on a deck to a new point on the circle, and to the
+     * other deck if it was dragged across the base radius.
+     *
+     * Angle is time, so a move around the circle *is* a move in the timeline: the
+     * fraction becomes the clip's start frame. The clip keeps its decoded buffer
+     * — this is a placement change, not a reload.
+     */
+    fun moveClip(clipId: String, deck: PlatterGeometry.Deck, fraction: Float) {
+        val target = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val source = if (deck == PlatterGeometry.Deck.A) audioEngine.deckB else audioEngine.deckA
+
+        val existing = target.clips.firstOrNull { it.id == clipId }
+            ?: source.clips.firstOrNull { it.id == clipId }
+            ?: return
+
+        val cycle = target.cycleFrames.takeIf { it > 0 } ?: existing.frameCount
+        val startFrame = (fraction.coerceIn(0f, 1f) * cycle).toInt()
+        if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
+
+        val moved = Clip(
+            id = existing.id,
+            buffer = existing.buffer,
+            startFrame = startFrame,
+            gain = existing.gain,
+            loop = existing.loop,
+        )
+        source.clips = source.clips.filterNot { it.id == clipId }
+        target.clips = target.clips.filterNot { it.id == clipId } + moved
+
+        // Keep the deck metadata in step, since a clip can cross decks.
+        val track = _tracks.value.firstOrNull { it.id == clipId }
+        if (track != null) {
+            if (deck == PlatterGeometry.Deck.A) {
+                _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id == clipId }
+                if (_loadedTracksA.value.none { it.id == clipId }) {
+                    _loadedTracksA.value = _loadedTracksA.value + track
+                }
+            } else {
+                _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == clipId }
+                if (_loadedTracksB.value.none { it.id == clipId }) {
+                    _loadedTracksB.value = _loadedTracksB.value + track
+                }
+            }
+        }
+        republishPlatter()
+    }
+
     /** Empties both decks — the clips and the record of what is on them. */
     fun clearDecks() {
         audioEngine.deckA.clips = emptyList()

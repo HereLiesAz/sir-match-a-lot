@@ -70,7 +70,7 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| D1 | All single-finger gestures manipulate the audio clips themselves | partial — recognised as `CLIP_DRAG`, but the clip operations it should drive are phase 5 |
+| D1 | All single-finger gestures manipulate the audio clips themselves | **done** — a single finger starting on a clip drags that clip's placement around the circle, across decks, or off the platter to remove it |
 | D2 | 2-finger horizontal = crossfader A to B | done |
 | D3 | 2-finger vertical = smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | done (`ScratchModel`, continuity tested) |
 | D4 | 2-finger rotate = volume | done |

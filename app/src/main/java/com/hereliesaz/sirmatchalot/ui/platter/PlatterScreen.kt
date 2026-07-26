@@ -74,6 +74,12 @@ interface PlatterActions {
      *   time, so this is the point in the deck's timeline the clip starts at.
      */
     fun onDropTrack(track: Track, deck: PlatterGeometry.Deck, fraction: Float)
+
+    /** A clip already on the platter was dragged to a new point on its deck. */
+    fun onMoveClip(clipId: String, deck: PlatterGeometry.Deck, fraction: Float)
+
+    /** A clip was dragged off the circle entirely. */
+    fun onRemoveClip(clipId: String)
 }
 
 /**
@@ -99,9 +105,12 @@ fun PlatterScreen(
 
     // Three-finger platter transform.
     var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
     var rotation by remember { mutableFloatStateOf(0f) }
+
+    // Hold the playhead still and turn the record under it, the way a deck
+    // actually reads: the needle does not move, the disc does. Off by default,
+    // because a fixed waveform is easier to aim a gesture at.
+    var playheadLocked by remember { mutableStateOf(false) }
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -109,6 +118,16 @@ fun PlatterScreen(
     // than in TrackStrip because the drop target is the platter, which is a
     // sibling: the strip cannot hit-test something it does not contain.
     var draggingTrack by remember { mutableStateOf<Track?>(null) }
+
+    // A clip already on the platter, held under the finger. `offCircle` means it
+    // has been dragged out of the ring band and will be removed on release — but
+    // it stays under the finger until then, so the gesture can be reconsidered
+    // by moving back onto the circle.
+    var heldClipId by remember { mutableStateOf<String?>(null) }
+    var heldClipTitle by remember { mutableStateOf("") }
+    var heldClipDeck by remember { mutableStateOf(PlatterGeometry.Deck.A) }
+    var heldClipOffCircle by remember { mutableStateOf(false) }
+    var heldClipPosition by remember { mutableStateOf(Offset.Zero) }
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     var platterOrigin by remember { mutableStateOf(Offset.Zero) }
     var screenOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -122,8 +141,8 @@ fun PlatterScreen(
         ) {
             return null
         }
-        val cx = canvasSize.width / 2f + offsetX
-        val cy = canvasSize.height / 2f + offsetY
+        val cx = canvasSize.width / 2f
+        val cy = canvasSize.height / 2f
         val baseRadius = minOf(canvasSize.width, canvasSize.height) * 0.30f * scale
         val radius = PlatterGeometry.radiusOf(local.x, local.y, cx, cy)
         return PlatterGeometry.deckAt(radius, baseRadius) to
@@ -175,7 +194,52 @@ fun PlatterScreen(
                                 .filter { it.pressed }
                                 .map { Pointer(it.id.value, it.position.x, it.position.y) }
 
-                            val recognised = gestures.update(pointers)
+                            // One finger starting on a clip drags that clip's
+                            // placement rather than feeding the gesture engine.
+                            // Angle is time here, so moving it around the circle
+                            // *is* moving it in the timeline.
+                            val single = pointers.singleOrNull()
+                            if (single != null && canvasSize.width > 0) {
+                                val cx = canvasSize.width / 2f
+                                val cy = canvasSize.height / 2f
+                                val baseRadius =
+                                    minOf(canvasSize.width, canvasSize.height) * 0.30f * scale
+                                val radius = PlatterGeometry.radiusOf(single.x, single.y, cx, cy)
+                                val fraction =
+                                    PlatterGeometry.fractionOf(single.x, single.y, cx, cy)
+
+                                if (heldClipId == null) {
+                                    if (PlatterGeometry.isOnRing(radius, baseRadius)) {
+                                        val deck = PlatterGeometry.deckAt(radius, baseRadius)
+                                        val clip = PlatterGeometry.clipAt(state.clipsFor(deck), fraction)
+                                        if (clip != null) {
+                                            heldClipId = clip.id
+                                            heldClipTitle = clip.title
+                                            heldClipDeck = deck
+                                            heldClipOffCircle = false
+                                        }
+                                    }
+                                } else {
+                                    heldClipPosition = Offset(single.x, single.y)
+                                    val onRing = PlatterGeometry.isOnRing(radius, baseRadius)
+                                    heldClipOffCircle = !onRing
+                                    if (onRing) {
+                                        heldClipDeck = PlatterGeometry.deckAt(radius, baseRadius)
+                                        actions.onMoveClip(heldClipId!!, heldClipDeck, fraction)
+                                    }
+                                }
+                            }
+
+                            if (heldClipId != null && pointers.isEmpty()) {
+                                if (heldClipOffCircle) actions.onRemoveClip(heldClipId!!)
+                                heldClipId = null
+                                heldClipOffCircle = false
+                            }
+
+                            // While a clip is held, the gesture engine must not
+                            // also read the finger as a scratch or a crossfade.
+                            val recognised =
+                                if (heldClipId != null) emptyList() else gestures.update(pointers)
 
                             for (gesture in recognised) {
                                 when (gesture.kind) {
@@ -189,10 +253,6 @@ fun PlatterScreen(
                                     }
                                     GestureKind.VOLUME -> actions.onVolume(gesture.delta)
                                     GestureKind.BASS_BOOST -> actions.onBassBoost(gesture.delta)
-                                    GestureKind.PLATTER_MOVE -> {
-                                        offsetX += gesture.delta * 0.5f
-                                        offsetY += gesture.delta * 0.5f
-                                    }
                                     GestureKind.PLATTER_SCALE ->
                                         scale = (scale + gesture.delta * 0.004f).coerceIn(0.4f, 4f)
                                     GestureKind.PLATTER_ROTATE -> rotation += gesture.delta
@@ -210,8 +270,8 @@ fun PlatterScreen(
                 .pointerInput(state) {
                     detectTapGestures(
                         onTap = { position ->
-                            val cx = size.width / 2f + offsetX
-                            val cy = size.height / 2f + offsetY
+                            val cx = size.width / 2f
+                            val cy = size.height / 2f
                             val radius = PlatterGeometry.radiusOf(position.x, position.y, cx, cy)
                             val baseRadius = min(size.width, size.height) * 0.30f * scale
                             val fraction = PlatterGeometry.fractionOf(position.x, position.y, cx, cy)
@@ -223,8 +283,8 @@ fun PlatterScreen(
                         },
                         // Double tap selects both decks' waveforms at that spot.
                         onDoubleTap = { position ->
-                            val cx = size.width / 2f + offsetX
-                            val cy = size.height / 2f + offsetY
+                            val cx = size.width / 2f
+                            val cy = size.height / 2f
                             actions.onSelectBothAt(
                                 PlatterGeometry.fractionOf(position.x, position.y, cx, cy),
                             )
@@ -238,23 +298,43 @@ fun PlatterScreen(
                 state = state,
                 labels = visibleLabels,
                 scale = scale,
-                offsetX = offsetX,
-                offsetY = offsetY,
-                rotation = rotation,
+                offsetX = 0f,
+                offsetY = 0f,
+                // Locking the playhead is the same thing as turning the platter
+                // by the playhead's own position: the mark then always lands at
+                // the top and the waveform sweeps past it.
+                rotation = rotation + if (playheadLocked) {
+                    -state.playheadFraction * TWO_PI
+                } else {
+                    0f
+                },
             )
 
-            GestureLabelOverlay(visibleLabels, canvasSize, scale, offsetX, offsetY)
+            GestureLabelOverlay(visibleLabels, canvasSize, scale, 0f, 0f)
 
             // While a track is held over the platter, show exactly where it will
             // land: which ring, and which point on it. A drop that guesses is
             // worse than no drop at all.
+            // A clip dragged off the circle is gone from the deck but still in
+            // hand: it follows the finger, marked for removal, until release.
+            if (heldClipId != null && heldClipOffCircle) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawCircle(
+                        color = Color(0xFFDC2626),
+                        radius = 22f,
+                        center = heldClipPosition,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
+                    )
+                }
+            }
+
             draggingTrack?.let {
                 val target = dropTargetAt(dragPosition)
                 if (target != null) {
                     val (deck, fraction) = target
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        val cx = size.width / 2f + offsetX
-                        val cy = size.height / 2f + offsetY
+                        val cx = size.width / 2f
+                        val cy = size.height / 2f
                         val baseRadius = minOf(size.width, size.height) * 0.30f * scale
                         val ringRadius = if (deck == PlatterGeometry.Deck.A) {
                             baseRadius * 1.35f
@@ -274,6 +354,25 @@ fun PlatterScreen(
                     }
                 }
             }
+        }
+
+        // Playhead lock. Off by default: a fixed waveform is easier to aim a
+        // gesture at, and a constantly turning one is harder to read.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (playheadLocked) "PLAYHEAD LOCKED" else "PLAYHEAD FREE",
+                color = if (playheadLocked) Color(0xFF22D3EE) else Color(0xFF52525B),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { playheadLocked = !playheadLocked }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
         }
 
         TrackStrip(
@@ -333,8 +432,8 @@ private fun GestureLabelOverlay(
     if (canvasSize.width == 0 || labels.isEmpty()) return
     val density = LocalDensity.current
 
-    val cx = canvasSize.width / 2f + offsetX
-    val cy = canvasSize.height / 2f + offsetY
+    val cx = canvasSize.width / 2f
+    val cy = canvasSize.height / 2f
     val radius = min(canvasSize.width, canvasSize.height) * 0.30f * scale * 1.45f
 
     for (label in labels) {
@@ -368,6 +467,8 @@ private fun GestureLabelOverlay(
  *
  * No A/B buttons and no drag handle — tapping a row loads it.
  */
+private const val TWO_PI = (2.0 * Math.PI).toFloat()
+
 @Composable
 private fun TrackStrip(
     tracks: List<Track>,

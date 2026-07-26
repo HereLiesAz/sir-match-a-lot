@@ -20,7 +20,6 @@ enum class GestureKind(val label: String) {
     SCRATCH("SMART SCRATCH"),
     VOLUME("VOLUME"),
     BASS_BOOST("BASS BOOST"),
-    PLATTER_MOVE("MOVE PLATTER"),
     PLATTER_SCALE("ZOOM PLATTER"),
     PLATTER_ROTATE("ROTATE PLATTER"),
 }
@@ -99,7 +98,6 @@ class GestureEngine {
     private val twoFingerVertical = Axis(GestureKind.SCRATCH, 8f, 0.2f)
     private val twoFingerRotate = Axis(GestureKind.VOLUME, 0.08f, 0.004f)
     private val twoFingerSpan = Axis(GestureKind.BASS_BOOST, 14f, 0.3f)
-    private val threeFingerMove = Axis(GestureKind.PLATTER_MOVE, 8f, 0.2f)
     private val threeFingerScale = Axis(GestureKind.PLATTER_SCALE, 14f, 0.3f)
     private val threeFingerRotate = Axis(GestureKind.PLATTER_ROTATE, 0.08f, 0.004f)
 
@@ -107,7 +105,7 @@ class GestureEngine {
         twoFingerHorizontal, twoFingerVertical, twoFingerRotate, twoFingerSpan,
     )
     private val threeFingerAxes = listOf(
-        threeFingerMove, threeFingerScale, threeFingerRotate,
+        threeFingerScale, threeFingerRotate,
     )
     private val allAxes = listOf(oneFingerDrag) + twoFingerAxes + threeFingerAxes
 
@@ -179,9 +177,10 @@ class GestureEngine {
             }
 
             else -> {
-                // Three or more fingers transform the platter, so users can zoom
-                // in on part of a track and work precisely.
-                threeFingerMove.observe(hypot(dx, dy) * signOf(dx, dy))
+                // Three or more fingers zoom and rotate the platter, so users can
+                // work on part of a track precisely. Panning was removed: the
+                // platter is a fixed circle centred on the screen, and being able
+                // to shove it off-centre only ever made it harder to find.
                 threeFingerScale.observe(dSpan)
                 threeFingerRotate.observe(dAngle)
                 threeFingerAxes
