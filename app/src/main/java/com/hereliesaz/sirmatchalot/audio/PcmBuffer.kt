@@ -191,6 +191,51 @@ class PcmBuffer(
     }
 
     /**
+     * This buffer time-stretched by [ratio], keeping its pitch.
+     *
+     * A ratio above 1 makes the clip longer and therefore slower — its BPM falls
+     * — and below 1 makes it shorter and faster. Pitch does not follow, which is
+     * the whole difference between this and changing a deck's rate: stretching a
+     * clip to fit a tempo must not move its key, or a harmonic match made a
+     * moment ago stops being one.
+     *
+     * Rendered offline, like [pitchShifted], because a pinch sets a length once
+     * and the result is then played many times. Always derive it from the
+     * pristine decoded buffer: stretching an already-stretched clip compounds
+     * both the ratio and the smearing WSOLA leaves on transients.
+     *
+     * @return this buffer when [ratio] is 1.
+     */
+    fun timeStretched(
+        ratio: Double,
+        stretcher: com.hereliesaz.sirmatchalot.dsp.TimeStretcher =
+            com.hereliesaz.sirmatchalot.dsp.TimeStretcher(),
+    ): PcmBuffer {
+        require(ratio > 0.0) { "ratio must be positive, was $ratio" }
+        if (abs(ratio - 1.0) < 1e-9) return this
+
+        // One channel at a time, so a channel's float intermediates are
+        // collectable before the next allocates its own.
+        val stretched = arrayOfNulls<ShortArray>(channelCount)
+        for (c in 0 until channelCount) {
+            val source = FloatArray(frameCount) { i -> channels[c][i] * SHORT_SCALE }
+            val out = stretcher.stretch(source, ratio)
+            stretched[c] = ShortArray(out.size) { i ->
+                (out[i].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
+            }
+        }
+        val length = stretched.minOf { it!!.size }
+        if (length <= 0) return this
+        return PcmBuffer(
+            channels = Array(channelCount) { c ->
+                val channel = stretched[c]!!
+                if (channel.size == length) channel else channel.copyOf(length)
+            },
+            sampleRate = sampleRate,
+        )
+    }
+
+    /**
      * Sums all channels to mono as normalised floats.
      *
      * Analysis works on mono — tempo, key, and onset detection gain nothing from

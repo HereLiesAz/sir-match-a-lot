@@ -49,6 +49,8 @@ import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.gesture.GestureEngine
 import com.hereliesaz.sirmatchalot.gesture.GestureKind
 import com.hereliesaz.sirmatchalot.gesture.GestureLabels
+import kotlin.math.abs
+import kotlin.math.hypot
 import com.hereliesaz.sirmatchalot.gesture.Pointer
 import androidx.compose.runtime.withFrameMillis
 import kotlin.math.min
@@ -80,6 +82,14 @@ interface PlatterActions {
 
     /** A clip was dragged off the circle entirely. */
     fun onRemoveClip(clipId: String)
+
+    /**
+     * A held clip was pinched, stretching it in time.
+     *
+     * @param ratio above 1 makes it longer and slower, below 1 shorter and
+     *   faster. Pitch is held either way.
+     */
+    fun onScaleClip(clipId: String, deck: PlatterGeometry.Deck, ratio: Float)
 }
 
 /**
@@ -128,6 +138,12 @@ fun PlatterScreen(
     var heldClipDeck by remember { mutableStateOf(PlatterGeometry.Deck.A) }
     var heldClipOffCircle by remember { mutableStateOf(false) }
     var heldClipPosition by remember { mutableStateOf(Offset.Zero) }
+
+    // Pinch span while a clip is held. Captured on the second finger going down
+    // and compared on release: a time-stretch re-renders the whole clip, so it
+    // is applied once at the end rather than on every frame of the pinch.
+    var pinchStartSpan by remember { mutableFloatStateOf(0f) }
+    var pinchRatio by remember { mutableFloatStateOf(1f) }
     var dragPosition by remember { mutableStateOf(Offset.Zero) }
     var platterOrigin by remember { mutableStateOf(Offset.Zero) }
     var screenOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -230,10 +246,35 @@ fun PlatterScreen(
                                 }
                             }
 
+                            // A second finger on a held clip turns the drag into
+                            // a pinch that stretches it: same gesture, one more
+                            // finger, so the clip never has to be let go of.
+                            if (heldClipId != null && pointers.size >= 2) {
+                                val a = pointers[0]
+                                val b = pointers[1]
+                                val span = hypot(a.x - b.x, a.y - b.y)
+                                if (pinchStartSpan <= 0f) {
+                                    pinchStartSpan = span
+                                    pinchRatio = 1f
+                                } else if (span > 1f) {
+                                    // Spreading makes the clip longer, which makes
+                                    // it slower — the waveform grows with the
+                                    // fingers.
+                                    pinchRatio = (span / pinchStartSpan).coerceIn(0.25f, 4f)
+                                }
+                            }
+
                             if (heldClipId != null && pointers.isEmpty()) {
-                                if (heldClipOffCircle) actions.onRemoveClip(heldClipId!!)
+                                val id = heldClipId!!
+                                when {
+                                    heldClipOffCircle -> actions.onRemoveClip(id)
+                                    pinchStartSpan > 0f && abs(pinchRatio - 1f) > 0.01f ->
+                                        actions.onScaleClip(id, heldClipDeck, pinchRatio)
+                                }
                                 heldClipId = null
                                 heldClipOffCircle = false
+                                pinchStartSpan = 0f
+                                pinchRatio = 1f
                             }
 
                             // While a clip is held, the gesture engine must not
@@ -315,6 +356,17 @@ fun PlatterScreen(
             // While a track is held over the platter, show exactly where it will
             // land: which ring, and which point on it. A drop that guesses is
             // worse than no drop at all.
+            if (heldClipId != null && pinchStartSpan > 0f && abs(pinchRatio - 1f) > 0.01f) {
+                Text(
+                    text = "STRETCH ${"%.2f".format(pinchRatio)}x — SAME KEY",
+                    color = Color(0xFF22D3EE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+                )
+            }
+
             // A clip dragged off the circle is gone from the deck but still in
             // hand: it follows the finger, marked for removal, until release.
             if (heldClipId != null && heldClipOffCircle) {

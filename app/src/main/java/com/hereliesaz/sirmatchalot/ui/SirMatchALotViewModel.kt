@@ -17,6 +17,7 @@ import com.hereliesaz.sirmatchalot.data.AnalysisQueue
 import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
+import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
 import com.hereliesaz.sirmatchalot.domain.MixCommand
@@ -40,6 +41,10 @@ import kotlin.math.ln
 import org.json.JSONObject
 
 private const val MAX_FOLDER_IMPORT = 5_000
+
+/** Stretch limits. Beyond these WSOLA stops sounding like the music it started as. */
+private const val MIN_CLIP_SCALE = 0.25
+private const val MAX_CLIP_SCALE = 4.0
 
 class SirMatchALotViewModel(application: Application) : AndroidViewModel(application), SyncClient.SyncListener {
 
@@ -318,7 +323,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             ?: return
 
         val cycle = target.cycleFrames.takeIf { it > 0 } ?: existing.frameCount
-        val startFrame = (fraction.coerceIn(0f, 1f) * cycle).toInt()
+        val raw = (fraction.coerceIn(0f, 1f) * cycle).toInt()
+        // Land on a beat. A finger on a five-minute revolution is tens of
+        // milliseconds out at best, which is audibly off and impossible to
+        // correct by eye.
+        val startFrame = BeatSnap.snapFrame(
+            frame = raw,
+            framesPerBeat = deckFramesPerBeat(deck),
+            phaseFrames = deckBeatPhaseFrames(deck),
+        )
         if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
 
         val moved = Clip(
@@ -347,6 +360,73 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
         republishPlatter()
+    }
+
+    /** Frames per beat on [deck], from the first track on it with a measured tempo. */
+    private fun deckFramesPerBeat(deck: PlatterGeometry.Deck): Double {
+        val tracks = if (deck == PlatterGeometry.Deck.A) _loadedTracksA.value else _loadedTracksB.value
+        val reference = tracks.firstOrNull { it.bpm != null } ?: return 0.0
+        return BeatSnap.framesPerBeat(reference.bpm, audioEngine.output.sampleRate)
+    }
+
+    /** Where [deck]'s grid starts, so beat lines sit on the music rather than on frame zero. */
+    private fun deckBeatPhaseFrames(deck: PlatterGeometry.Deck): Double {
+        val tracks = if (deck == PlatterGeometry.Deck.A) _loadedTracksA.value else _loadedTracksB.value
+        val reference = tracks.firstOrNull { it.bpm != null } ?: return 0.0
+        return (reference.firstBeatSeconds ?: 0.0) * audioEngine.output.sampleRate
+    }
+
+    /**
+     * Stretches a clip by [ratio], changing its tempo without moving its pitch.
+     *
+     * A ratio above 1 makes the clip longer and slower; below 1, shorter and
+     * faster. Pitch is held, which is the whole difference between this and
+     * changing the deck's rate — stretching a clip to fit a tempo must not move
+     * its key, or a harmonic match made a moment ago stops being one.
+     *
+     * The ratio is snapped so the result is a whole number of beats: the reason
+     * to stretch a clip at all is to make it line up, and 3.97 bars does not.
+     *
+     * Rendered from the pristine decoded buffer rather than from whatever is on
+     * the deck, so repeated pinches do not compound the ratio or the smearing
+     * WSOLA leaves on transients. Applied once, on release — re-rendering a
+     * whole track on every frame of a pinch is not affordable.
+     */
+    fun scaleClip(clipId: String, deck: PlatterGeometry.Deck, ratio: Double) {
+        if (ratio <= 0.0 || abs(ratio - 1.0) < 1e-3) return
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val existing = engineDeck.clips.firstOrNull { it.id == clipId } ?: return
+        val pristine = decoded[clipId] ?: existing.buffer
+
+        val framesPerBeat = deckFramesPerBeat(deck)
+        val snapped = BeatSnap.snapRatio(pristine.frameCount, ratio, framesPerBeat)
+            .coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+
+        viewModelScope.launch(Dispatchers.Default) {
+            _feedbackMsg.value = "Stretching to ${String.format("%.2fx", snapped)}..."
+            val stretched = pristine.timeStretched(snapped)
+            val current = engineDeck.clips.firstOrNull { it.id == clipId } ?: return@launch
+            engineDeck.clips = engineDeck.clips.map { clip ->
+                if (clip.id != clipId) {
+                    clip
+                } else {
+                    Clip(
+                        id = clip.id,
+                        buffer = stretched,
+                        startFrame = current.startFrame,
+                        gain = clip.gain,
+                        loop = clip.loop,
+                    )
+                }
+            }
+            republishPlatter()
+            val track = _tracks.value.firstOrNull { it.id == clipId }
+            val newBpm = track?.bpm?.let { it / snapped }
+            _feedbackMsg.value = buildString {
+                append("Stretched ${String.format("%.2fx", snapped)}")
+                if (newBpm != null) append(" — now ${String.format("%.1f", newBpm)} BPM, same key")
+            }
+        }
     }
 
     /** Empties both decks — the clips and the record of what is on them. */

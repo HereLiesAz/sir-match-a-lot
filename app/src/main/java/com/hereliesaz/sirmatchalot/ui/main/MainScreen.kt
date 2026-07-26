@@ -383,5 +383,11 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
 
             override fun onRemoveClip(clipId: String) =
                 viewModel.removeTrackFromDecks(clipId)
+
+            override fun onScaleClip(
+                clipId: String,
+                deck: PlatterGeometry.Deck,
+                ratio: Float,
+            ) = viewModel.scaleClip(clipId, deck, ratio.toDouble())
         }
     }
