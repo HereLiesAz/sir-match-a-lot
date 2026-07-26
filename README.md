@@ -77,6 +77,7 @@ Kotlin and Jetpack Compose throughout.
 | `domain/` | The Camelot wheel and mix compatibility scoring. |
 | `gesture/` | Concurrent multi-axis gesture recognition and label placement. |
 | `ui/platter/` | Platter geometry, palette, and rendering. |
+| `sync/` | Multi-device rooms: LAN discovery, an RFC 6455 WebSocket server and client, per-device roles, and the shareable session link. |
 
 Audio is mixed by the app itself rather than by a platform player, which is what
 makes reverse playback, sample-accurate scratching, crossfading and EQ possible at
@@ -85,8 +86,23 @@ touching the DSP or the UI.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
 [`docs/AUDIO_QUALITY.md`](docs/AUDIO_QUALITY.md) for the signal path and its known
-limitations, and [`docs/PLATTER_VISUAL.md`](docs/PLATTER_VISUAL.md) for the
-rendering specification.
+limitations, [`docs/PLATTER_VISUAL.md`](docs/PLATTER_VISUAL.md) for the
+rendering specification, and [`docs/API.md`](docs/API.md) for the protocols the
+app speaks.
+
+## 📡 Multi-device
+
+One phone hosts a room; the others find it on the same Wi-Fi and join. There is
+no server to run and no account — a room is a handful of devices and nothing
+else.
+
+Each device picks what it is for — the library, the decks, or the pads — and
+shows only that screen, so several people play one instrument rather than three
+copies of the same app. A loaded session can also be copied out as an ordinary
+link with readable query parameters and opened anywhere.
+
+Both are open formats rather than an SDK, specified in
+[`docs/API.md`](docs/API.md), so anything can speak them.
 
 ## 🔨 Building
 
@@ -106,13 +122,12 @@ tracks every requirement individually with its current state. In summary:
 
 **Working.** Measured tempo, key, energy and peak analysis. The mixing engine,
 with reverse playback, scratching, crossfade, EQ and metering. The platter
-renderer and the gesture engine.
+renderer and the gesture engine. Multi-device rooms — hosting, LAN discovery,
+per-device roles — the shareable session link, and the documented API.
 
 **Not yet built.** The sampler is still a placeholder synthesiser with no
 recording or sample extraction. Also outstanding: the automatic loop maker,
-Shuffle Crate and Automatchic Mix; playlist import and background analysis;
-multi-device linking (there is a sync client, but no server for it to talk to);
-the shareable session link; and the public API.
+running it across a whole playlist, and placing a pad bank on a deck slot.
 
 ## 📄 License
 

@@ -3,6 +3,8 @@ package com.hereliesaz.sirmatchalot.ui.main
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -23,10 +25,28 @@ import com.hereliesaz.sirmatchalot.ui.platter.PlatterActions
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterScreen
 import com.hereliesaz.sirmatchalot.ui.SamplerScreen
+import com.hereliesaz.sirmatchalot.sync.SyncRole
 
 enum class DjTab {
     LIBRARY, CONTROLS, PERFORMANCE
 }
+
+/**
+ * The screen a role is for.
+ *
+ * This is where "each device shows a different screen" actually happens: a phone
+ * that joined as the pad player opens on the pads and its other tabs go dark,
+ * so the room is one instrument with several surfaces rather than three copies
+ * of the same app shouting at each other.
+ */
+fun SyncRole.tab(): DjTab = when (this) {
+    SyncRole.LIBRARY -> DjTab.LIBRARY
+    SyncRole.PADS -> DjTab.PERFORMANCE
+    SyncRole.DECKS, SyncRole.ALL -> DjTab.CONTROLS
+}
+
+/** True when a device in this role may reach [tab]. */
+fun SyncRole.allows(tab: DjTab): Boolean = isFullControl || tab == tab()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,6 +65,16 @@ fun MainScreen(
     var inputCode by remember { mutableStateOf("ROOM") }
     val isPlaying by viewModel.isPlaying.collectAsState()
     val keylock by viewModel.keylock.collectAsState()
+    val isHosting by viewModel.isHosting.collectAsState()
+    val peerCount by viewModel.peerCount.collectAsState()
+    val hostUrl by viewModel.hostUrl.collectAsState()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var linkInput by remember { mutableStateOf("") }
+    val role by viewModel.role.collectAsState()
+
+    // Changing role moves the device to the screen it is now for, rather than
+    // leaving it on a tab it is no longer allowed to reach.
+    LaunchedEffect(role) { currentTab = role.tab() }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -157,6 +187,7 @@ fun MainScreen(
                 ) {
                     NavigationBarItem(
                         selected = currentTab == DjTab.CONTROLS,
+                        enabled = role.allows(DjTab.CONTROLS),
                         onClick = { currentTab = DjTab.CONTROLS },
                         label = { Text("Platter Main", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
                         icon = { Icon(Icons.Default.Refresh, contentDescription = "Platter Main") },
@@ -170,6 +201,7 @@ fun MainScreen(
                     )
                     NavigationBarItem(
                         selected = currentTab == DjTab.LIBRARY,
+                        enabled = role.allows(DjTab.LIBRARY),
                         onClick = { currentTab = DjTab.LIBRARY },
                         label = { Text("Library", fontSize = 10.sp) },
                         icon = { Icon(Icons.Default.List, contentDescription = "Library") },
@@ -202,6 +234,7 @@ fun MainScreen(
 
                     NavigationBarItem(
                         selected = currentTab == DjTab.PERFORMANCE,
+                        enabled = role.allows(DjTab.PERFORMANCE),
                         onClick = { currentTab = DjTab.PERFORMANCE },
                         label = { Text("Sampler", fontSize = 10.sp) },
                         icon = { Icon(Icons.Default.Star, contentDescription = "Sampler") },
@@ -246,9 +279,65 @@ fun MainScreen(
             containerColor = Color(0xFF18181B),
             title = { Text("Link Multi-Device Session", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Auto Connect will search your local Wi-Fi router for the server room broadcast.", color = Color.LightGray, fontSize = 11.sp)
-                    
+                Column(
+                    // The dialog now carries hosting, joining, roles and links;
+                    // without this the last controls are off the bottom of a
+                    // phone and unreachable.
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // One device has to host. Nothing answered the discovery
+                    // broadcast before this, which is why auto-connect could
+                    // never find anything.
+                    Text(
+                        if (isHosting) {
+                            "Hosting room $roomCode — $peerCount ${if (peerCount == 1) "device" else "devices"} joined" +
+                                (hostUrl?.let { "\n$it" } ?: "\nNot on a network")
+                        } else {
+                            "One device hosts the room; the others find it automatically on the same Wi-Fi."
+                        },
+                        color = if (isHosting) Color(0xFF6EE7B7) else Color.LightGray,
+                        fontSize = 11.sp,
+                    )
+
+                    Button(
+                        onClick = { if (isHosting) viewModel.stopHosting() else viewModel.startHosting() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isHosting) Color(0xFFDC2626) else Color(0xFF059669),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (isHosting) "STOP HOSTING" else "HOST THIS DEVICE",
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+
+                    Divider(color = Color(0xFF27272A))
+
+                    // "Each device shows a different screen": the role picks
+                    // which one this device is, and the tab bar follows.
+                    Text("This device is for:", color = Color.LightGray, fontSize = 11.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        SyncRole.entries.forEach { option ->
+                            FilterChip(
+                                selected = role == option,
+                                onClick = { viewModel.setRole(option) },
+                                label = { Text(option.label, fontSize = 9.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    labelColor = Color.LightGray,
+                                    selectedContainerColor = Color(0xFF0E7490),
+                                    selectedLabelColor = Color.White,
+                                ),
+                            )
+                        }
+                    }
+
+                    Divider(color = Color(0xFF27272A))
+
+                    Text("Auto Connect will search your local Wi-Fi for a hosting device.", color = Color.LightGray, fontSize = 11.sp)
+
                     Button(
                         onClick = {
                             viewModel.startAutoDiscovery()
@@ -285,13 +374,53 @@ fun MainScreen(
                             unfocusedTextColor = Color.White
                         )
                     )
+
+                    Divider(color = Color(0xFF27272A))
+
+                    // The loaded session as a link: readable query parameters,
+                    // so it can be pasted anywhere and read by anything.
+                    Text("Share this session, or open one:", color = Color.LightGray, fontSize = 11.sp)
+                    Button(
+                        onClick = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(viewModel.sessionLink().toUrl()))
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("COPY SESSION LINK", color = Color.White, fontWeight = FontWeight.Black)
+                    }
+                    OutlinedTextField(
+                        value = linkInput,
+                        onValueChange = { linkInput = it },
+                        label = { Text("Paste a session link", color = Color.Gray, fontSize = 10.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF7C3AED),
+                            unfocusedBorderColor = Color(0xFF27272A),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.openSessionLink(linkInput)
+                            linkInput = ""
+                            showSyncDialog = false
+                        },
+                        enabled = linkInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E7490)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("OPEN SESSION", color = Color.White, fontWeight = FontWeight.Black)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         val cleanIp = inputIp.trim()
-                        val wsUrl = "ws://$cleanIp:3000/ws"
+                        // The port the app's own host listens on. The old value
+                        // pointed at a server that never existed.
+                        val wsUrl = "ws://$cleanIp:${com.hereliesaz.sirmatchalot.sync.SyncServer.DEFAULT_PORT}"
                         viewModel.connectToRoom(wsUrl, inputCode.trim())
                         showSyncDialog = false
                     },

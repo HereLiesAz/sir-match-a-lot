@@ -143,6 +143,16 @@ class SyncClient(private val listener: SyncListener) {
                                         payload.optString("direction")
                                     )
                                 }
+                                // `onSeekEvent` was declared on the listener and
+                                // implemented, but no message ever reached it —
+                                // half an API, which is worse than none, because
+                                // it reads as working.
+                                "seek_deck" -> {
+                                    listener.onSeekEvent(
+                                        payload.optString("deck"),
+                                        payload.optDouble("time").toFloat()
+                                    )
+                                }
                             }
                         }
                     }
@@ -229,6 +239,22 @@ class SyncClient(private val listener: SyncListener) {
             put("trackId", trackId)
         }
         sendTriggerEvent("load_track_direct", payload, roomCode)
+    }
+
+    fun triggerNudge(deck: String, direction: String, roomCode: String) {
+        val payload = JSONObject().apply {
+            put("deck", deck)
+            put("direction", direction)
+        }
+        sendTriggerEvent("nudge_deck_direct", payload, roomCode)
+    }
+
+    fun triggerSeek(deck: String, timeSeconds: Float, roomCode: String) {
+        val payload = JSONObject().apply {
+            put("deck", deck)
+            put("time", timeSeconds.toDouble())
+        }
+        sendTriggerEvent("seek_deck", payload, roomCode)
     }
 
     private fun sendUpdateState(stateJson: JSONObject, roomCode: String) {
