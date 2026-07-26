@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.data.LinkParser
-import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
 import com.hereliesaz.sirmatchalot.domain.MixMatch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,6 +40,7 @@ fun LibraryScreen(
     val tracks by viewModel.visibleTracks.collectAsState()
     val feedbackMsg by viewModel.feedbackMsg.collectAsState()
     val librarySort by viewModel.librarySort.collectAsState()
+    val compatiblePairs by viewModel.compatiblePairs.collectAsState()
     val searchQuery by viewModel.libraryFilter.collectAsState()
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
@@ -396,7 +396,7 @@ fun LibraryScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        CompatibleTransitionsSection(tracks = tracks, onLoadPair = { a, b ->
+        CompatibleTransitionsSection(pairs = compatiblePairs, onLoadPair = { a, b ->
             viewModel.addTrackToDeckA(a)
             viewModel.addTrackToDeckB(b)
         })
@@ -539,26 +539,20 @@ fun TrackRowItem(
     }
 }
 
+/**
+ * Pairs from the library that mix, best first.
+ *
+ * The pairing is computed in the ViewModel now, off the main thread and capped.
+ * It used to be an all-pairs comparison inside a `remember` in this composable,
+ * so opening this tab with a 500-track library ran 124,750 comparisons on the
+ * frame that opened it — quadratic work on the thread that draws.
+ */
 @Composable
 fun CompatibleTransitionsSection(
-    tracks: List<Track>,
+    pairs: List<MixMatch>,
     onLoadPair: (Track, Track) -> Unit
 ) {
-    val compatiblePairs = remember(tracks) {
-        val list = mutableListOf<MixMatch>()
-        if (tracks.size >= 2) {
-            for (i in 0 until tracks.size) {
-                for (j in (i + 1) until tracks.size) {
-                    val match = HarmonicEngine.compareTracks(tracks[i], tracks[j])
-                    if (match.overallScore >= 60) {
-                        list.add(match)
-                    }
-                }
-            }
-        }
-        list.sortByDescending { it.overallScore }
-        list
-    }
+    val compatiblePairs = pairs
 
     Text("COMPATIBLE PAIRINGS", color = Color(0xFF71717A), fontWeight = FontWeight.Black, fontSize = 10.sp, letterSpacing = 1.sp)
     Spacer(Modifier.height(8.dp))

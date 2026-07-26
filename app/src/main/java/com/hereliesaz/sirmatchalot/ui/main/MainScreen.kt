@@ -287,12 +287,19 @@ fun MainScreen(
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
                 DjTab.CONTROLS -> {
                     val platterState by viewModel.platterState.collectAsState()
-                    val tracks by viewModel.tracks.collectAsState()
+                    // Ordered by what mixes next, and each card carrying its
+                    // own score. This was `viewModel.tracks` — the raw table in
+                    // insertion order, which is the one list in the app that
+                    // every measurement it makes had no effect on.
+                    val ranked by viewModel.rankedTracks.collectAsState()
+                    val sort by viewModel.librarySort.collectAsState()
                     PlatterScreen(
                         state = platterState,
-                        tracks = tracks,
+                        tracks = ranked,
                         actions = rememberPlatterActions(viewModel),
                         lightShow = settings.lightShow,
+                        sortLabel = sort.label,
+                        onCycleSort = { viewModel.cycleLibrarySort() },
                     )
                 }
                 // Keyed on the engine generation: the pad grid holds the
