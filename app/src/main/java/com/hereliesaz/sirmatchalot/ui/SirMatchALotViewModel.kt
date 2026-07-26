@@ -201,8 +201,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, first, track.downbeatOffset)
                         }
                     }
-                    com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                    val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
                         .findPointsOfInterest(curve, grid)
+                    // Vocal entry needs the audio rather than the energy curve
+                    // — it is a pitch measurement, not an amplitude one — so it
+                    // runs here where the decoded buffer is still in hand.
+                    val vocal = com.hereliesaz.sirmatchalot.dsp.VocalDetector()
+                        .findVocalEntry(pcm.toMonoFloat(), pcm.sampleRate)
+                    if (vocal == null) structural else structural + vocal
                 }
             }
 
@@ -444,6 +450,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                         PointOfInterest.Kind.DROP -> PlatterMarker.Kind.DROP
                         PointOfInterest.Kind.BREAKDOWN -> PlatterMarker.Kind.BREAKDOWN
                         PointOfInterest.Kind.BUILD -> PlatterMarker.Kind.BUILD
+                        PointOfInterest.Kind.VOCAL -> PlatterMarker.Kind.VOCAL
                         // A peak is where the waveform is already tallest. A
                         // tick there says nothing the rays do not.
                         PointOfInterest.Kind.PEAK -> continue

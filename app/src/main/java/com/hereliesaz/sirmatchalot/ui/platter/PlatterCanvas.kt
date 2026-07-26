@@ -141,6 +141,7 @@ private fun markerColour(kind: PlatterMarker.Kind): Color = when (kind) {
     PlatterMarker.Kind.DROP -> Color(0xFFF59E0B)
     PlatterMarker.Kind.BREAKDOWN -> Color(0xFF60A5FA)
     PlatterMarker.Kind.BUILD -> Color(0xFFA78BFA)
+    PlatterMarker.Kind.VOCAL -> Color(0xFF34D399)
 }
 
 /** Draws one deck's rays. */

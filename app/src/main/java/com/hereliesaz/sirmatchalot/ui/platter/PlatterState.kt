@@ -51,6 +51,9 @@ data class PlatterMarker(
 
         /** Energy climbing toward something. */
         BUILD,
+
+        /** Something starts singing. */
+        VOCAL,
     }
 }
 
