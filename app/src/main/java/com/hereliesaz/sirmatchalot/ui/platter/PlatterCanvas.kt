@@ -83,8 +83,64 @@ fun PlatterCanvas(
             outward = false,
         )
 
+        // Under the playhead, so the playhead is never hidden behind a cue that
+        // happens to sit at the same angle.
+        drawMarkers(state, cx, cy, baseRadius, rotation)
         drawPlayhead(state, cx, cy, baseRadius, maxHeight, lengthScale, glow, rotation)
     }
+}
+
+/**
+ * Draws cue points and structural landmarks as ticks straddling the ring.
+ *
+ * Deliberately not scaled by the metered level. Everything else on this platter
+ * breathes with the audio; a marker names a fixed instant, and one that shrank
+ * during a quiet passage would be hardest to see exactly when the performer is
+ * looking for where to come back in.
+ *
+ * Deck A's ticks sit outside the ring and Deck B's inside, matching the
+ * direction that deck's rays already point, so a marker belongs to a ring
+ * without needing a legend.
+ */
+private fun DrawScope.drawMarkers(
+    state: PlatterState,
+    cx: Float,
+    cy: Float,
+    baseRadius: Float,
+    rotation: Float,
+) {
+    if (state.markers.isEmpty()) return
+
+    val length = 10.dp.toPx()
+    val inset = 3.dp.toPx()
+
+    for (marker in state.markers) {
+        val outward = marker.deck == PlatterGeometry.Deck.A
+        val colour = markerColour(marker.kind)
+        val angle = PlatterGeometry.screenAngleForFraction(marker.fraction) + rotation
+        val cosA = cos(angle)
+        val sinA = sin(angle)
+
+        val near = if (outward) baseRadius - inset else baseRadius + inset
+        val far = if (outward) near + length else near - length
+        val start = Offset(cx + cosA * near, cy + sinA * near)
+        val end = Offset(cx + cosA * far, cy + sinA * far)
+
+        drawLine(colour.copy(alpha = 0.20f), start, end, 8.dp.toPx(), StrokeCap.Round, blendMode = BlendMode.Plus)
+        drawLine(colour, start, end, 2.dp.toPx(), StrokeCap.Round)
+        // A dot at the tip, so a cue is findable at a glance among the rays it
+        // shares an angle with.
+        drawCircle(colour, 2.5.dp.toPx(), end)
+    }
+}
+
+private fun markerColour(kind: PlatterMarker.Kind): Color = when (kind) {
+    // White reads as "mine" against the hue-coded waveform, which is the point:
+    // a cue is the one mark the performer put there.
+    PlatterMarker.Kind.CUE -> Color(0xFFFFFFFF)
+    PlatterMarker.Kind.DROP -> Color(0xFFF59E0B)
+    PlatterMarker.Kind.BREAKDOWN -> Color(0xFF60A5FA)
+    PlatterMarker.Kind.BUILD -> Color(0xFFA78BFA)
 }
 
 /** Draws one deck's rays. */

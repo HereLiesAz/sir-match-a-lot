@@ -27,11 +27,17 @@ import com.hereliesaz.sirmatchalot.domain.MixDirector
 import com.hereliesaz.sirmatchalot.domain.MixPlan
 import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
+import com.hereliesaz.sirmatchalot.domain.LoopHarvest
+import com.hereliesaz.sirmatchalot.audio.PcmBuffer
+import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
+import com.hereliesaz.sirmatchalot.ui.platter.PlatterMarker
 import com.hereliesaz.sirmatchalot.sync.SessionLink
 import com.hereliesaz.sirmatchalot.sync.SyncClient
 import com.hereliesaz.sirmatchalot.sync.SyncRole
 import com.hereliesaz.sirmatchalot.sync.SyncServer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -181,6 +187,23 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                         }.getOrNull()
                     }
                     ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(pcm.toMonoFloat(), pcm.sampleRate)
+            }
+
+            // Landmarks come from the energy curve that was just cached, so
+            // marking the drops costs no decode and no second analysis pass.
+            poiCache.getOrPut(track.id) {
+                val curve = energyCache[track.id]
+                if (curve == null) {
+                    emptyList()
+                } else {
+                    val grid = track.bpm?.let { bpm ->
+                        track.firstBeatSeconds?.let { first ->
+                            com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, first, track.downbeatOffset)
+                        }
+                    }
+                    com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                        .findPointsOfInterest(curve, grid)
+                }
             }
 
             // The first track on the platter sets the session's tempo and key;
@@ -355,7 +378,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             return engineDeck.clips.map { clip ->
                 PlatterState.ClipLayoutInput(
                     id = clip.id,
-                    title = _tracks.value.firstOrNull { it.id == clip.id }?.title ?: clip.id,
+                    // A pad bank on the circle has no library row behind it, so
+                    // its name comes from the pad rather than from `_tracks`.
+                    title = _tracks.value.firstOrNull { it.id == clip.id }?.title
+                        ?: clipTitles[clip.id]
+                        ?: clip.id,
                     durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
                     peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
                     energy = energyCache[clip.id],
@@ -367,8 +394,76 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _platterState.value = _platterState.value.copy(
             deckA = PlatterState.layout(inputsFor(PlatterGeometry.Deck.A), selected, PlatterGeometry.Deck.A),
             deckB = PlatterState.layout(inputsFor(PlatterGeometry.Deck.B), selected, PlatterGeometry.Deck.B),
+            markers = buildMarkers(),
         )
     }
+
+    /**
+     * Recomputes only the markers, leaving the layout alone.
+     *
+     * Setting a cue does not move a clip, and rebuilding the whole layout to
+     * show one tick would rebuild every waveform's peaks for nothing.
+     */
+    private fun republishMarkers() {
+        _platterState.value = _platterState.value.copy(markers = buildMarkers())
+    }
+
+    /**
+     * Cue points and structural landmarks, placed on the circle.
+     *
+     * Angle is time, so both are the same arithmetic: a moment in seconds
+     * divided by the deck's revolution. Cues are given in deck time already;
+     * a landmark is in *track* time, so it is offset by where its clip starts.
+     */
+    private fun buildMarkers(): List<PlatterMarker> {
+        val markers = ArrayList<PlatterMarker>()
+
+        for (deck in listOf(PlatterGeometry.Deck.A, PlatterGeometry.Deck.B)) {
+            val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+            val cycle = engineDeck.cycleSeconds
+            if (cycle <= 0.0) continue
+
+            val cues = if (deck == PlatterGeometry.Deck.A) _cuesA.value else _cuesB.value
+            cues.forEachIndexed { index, seconds ->
+                if (seconds == null) return@forEachIndexed
+                markers.add(
+                    PlatterMarker(
+                        deck = deck,
+                        fraction = PlatterGeometry.fractionForTime(seconds.toDouble(), cycle),
+                        kind = PlatterMarker.Kind.CUE,
+                        label = "Cue ${index + 1}",
+                    ),
+                )
+            }
+
+            for (clip in engineDeck.clips) {
+                val points = poiCache[clip.id] ?: continue
+                val clipStart = clip.startFrame.toDouble() / clip.buffer.sampleRate
+                for (point in points) {
+                    val kind = when (point.kind) {
+                        PointOfInterest.Kind.DROP -> PlatterMarker.Kind.DROP
+                        PointOfInterest.Kind.BREAKDOWN -> PlatterMarker.Kind.BREAKDOWN
+                        PointOfInterest.Kind.BUILD -> PlatterMarker.Kind.BUILD
+                        // A peak is where the waveform is already tallest. A
+                        // tick there says nothing the rays do not.
+                        PointOfInterest.Kind.PEAK -> continue
+                    }
+                    markers.add(
+                        PlatterMarker(
+                            deck = deck,
+                            fraction = PlatterGeometry.fractionForTime(clipStart + point.timeSeconds, cycle),
+                            kind = kind,
+                            label = point.kind.label,
+                        ),
+                    )
+                }
+            }
+        }
+        return markers
+    }
+
+    /** Structural landmarks per clip id, measured once from the energy curve. */
+    private val poiCache = HashMap<String, List<PointOfInterest>>()
 
     /**
      * Fills empty sampler pads with loops found in the track on Deck A.
@@ -410,6 +505,213 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
     }
+
+    /** Progress of a playlist-wide loop harvest, or null when none is running. */
+    private val _harvestProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val harvestProgress: StateFlow<Pair<Int, Int>?> = _harvestProgress
+
+    private var harvestJob: Job? = null
+
+    /**
+     * Fills empty pads with loops taken from **every** song in the playlist.
+     *
+     * The single-track version above is the loop maker for a song; this is the
+     * one that was asked for — *"samples loops from the active playlist's
+     * songs"*. `LoopHarvest` decides the allocation: every song contributes its
+     * best loop before any song contributes its second, because eight loops
+     * from one track is a worse pad bank than eight loops from eight tracks.
+     *
+     * Two passes, deliberately. The first decodes one track at a time, measures
+     * it, and **drops it** — a playlist does not fit in memory, and holding
+     * candidate audio for every track would be the same problem in a smaller
+     * font. Only the tracks the plan actually uses, at most one per free pad,
+     * are decoded again to be sliced.
+     */
+    fun harvestLoopsFromPlaylist() {
+        if (harvestJob?.isActive == true) {
+            _feedbackMsg.value = "Already harvesting loops"
+            return
+        }
+        val freePads = audioEngine.sampler.pads.filter { it.isEmpty }.map { it.index }
+        if (freePads.isEmpty()) {
+            _feedbackMsg.value = "Every pad is occupied — clear one first"
+            return
+        }
+
+        // A track with no measured grid has no bar lines to cut on. Skipped
+        // rather than guessed at, and counted so the report can say so.
+        val playlist = _tracks.value.filter { it.sourceUri != null }
+        val usable = playlist.filter { it.bpm != null && it.firstBeatSeconds != null }
+        if (usable.isEmpty()) {
+            _feedbackMsg.value =
+                if (playlist.isEmpty()) "No tracks with audio to harvest from"
+                else "No analysed tracks — run Analyse first, loops need a beat grid"
+            return
+        }
+
+        harvestJob = viewModelScope.launch(Dispatchers.IO) {
+            val finder = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+            val sources = ArrayList<LoopHarvest.Source>(usable.size)
+
+            usable.forEachIndexed { index, track ->
+                ensureActive()
+                _harvestProgress.value = (index + 1) to usable.size
+                val pcm = decodeForHarvest(track) ?: return@forEachIndexed
+                val candidates = finder.findLoops(
+                    pcm.toMonoFloat(),
+                    pcm.sampleRate,
+                    com.hereliesaz.sirmatchalot.dsp.BeatGrid(
+                        bpm = track.bpm!!,
+                        firstBeatSeconds = track.firstBeatSeconds!!,
+                        downbeatOffset = track.downbeatOffset,
+                    ),
+                )
+                if (candidates.isNotEmpty()) {
+                    sources.add(LoopHarvest.Source(track.id, track.title, candidates))
+                }
+            }
+
+            val plan = LoopHarvest.plan(sources, freePads)
+            if (plan.isEmpty()) {
+                _harvestProgress.value = null
+                _feedbackMsg.value = "Nothing in the playlist loops cleanly enough"
+                return@launch
+            }
+
+            // Second pass: only the tracks the plan chose, and only their
+            // chosen seconds. At most one decode per free pad.
+            var filled = 0
+            for (trackId in LoopHarvest.decodeOrder(plan)) {
+                ensureActive()
+                val track = usable.first { it.id == trackId }
+                val pcm = decodeForHarvest(track) ?: continue
+                for (assignment in plan.filter { it.trackId == trackId }) {
+                    val start = (assignment.candidate.startSeconds * pcm.sampleRate).toInt()
+                    val end = (assignment.candidate.endSeconds * pcm.sampleRate).toInt()
+                    if (start >= pcm.frameCount || end <= start) continue
+                    audioEngine.sampler.pads[assignment.padIndex].load(
+                        buffer = pcm.slice(start, end.coerceAtMost(pcm.frameCount)),
+                        label = assignment.label,
+                        loop = true,
+                    )
+                    filled++
+                }
+            }
+
+            _harvestProgress.value = null
+            val songs = plan.map { it.trackId }.distinct().size
+            _feedbackMsg.value = buildString {
+                append("Filled $filled pads from $songs ")
+                append(if (songs == 1) "song" else "songs")
+                val skipped = playlist.size - usable.size
+                if (skipped > 0) append(" — $skipped unanalysed and skipped")
+            }
+        }
+    }
+
+    /** Stops a harvest in progress. */
+    fun cancelHarvest() {
+        harvestJob?.cancel()
+        harvestJob = null
+        _harvestProgress.value = null
+        _feedbackMsg.value = "Loop harvest stopped"
+    }
+
+    /**
+     * Decodes [track] for the harvest, at its own sample rate.
+     *
+     * Not put in [decoded]: the cache is sized for what is on the decks, and
+     * pushing a whole playlist through it would evict the clips that are
+     * playing. The result is used and dropped within one iteration.
+     *
+     * Rate conversion is skipped too — a loop's audio is resampled when it is
+     * loaded onto a pad if it needs to be, and self-similarity does not care
+     * what rate it is measured at.
+     */
+    private suspend fun decodeForHarvest(track: Track): PcmBuffer? {
+        decoded[track.id]?.let { return it }
+        val source = track.sourceUri ?: return null
+        return runCatching {
+            AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm
+        }.getOrNull()
+    }
+
+    // --- The pad bank as a deck slot ---
+
+    /**
+     * Titles for clips that are not library tracks, so the platter can name
+     * them. A pad bank on a deck has no `Track` row behind it.
+     */
+    private val clipTitles = HashMap<String, String>()
+
+    /**
+     * Puts the loaded pads onto [deck], as clips on the circle.
+     *
+     * Asked for as *"the sampler/looper can occupy a deck slot, showing N loops
+     * the way songs are shown"*. Each loaded pad becomes its own clip, so each
+     * gets its own arc, its own colour and its own waveform — shown the way a
+     * song is shown, because on this platter that is what showing something
+     * means. They are laid consecutively so the bank reads as one run.
+     *
+     * The pads keep their audio: a loop on the circle and the same loop under a
+     * finger are the same material, and taking it off the pad to put it on the
+     * deck would make placing it cost you the pad.
+     */
+    fun placePadsOnDeck(deck: PlatterGeometry.Deck) {
+        val loaded = audioEngine.sampler.pads.filter { !it.isEmpty }
+        if (loaded.isEmpty()) {
+            _feedbackMsg.value = "No pads loaded to place"
+            return
+        }
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+
+        viewModelScope.launch(Dispatchers.Default) {
+            var cursor = engineDeck.clips.maxOfOrNull { it.endFrame } ?: 0
+            val added = ArrayList<com.hereliesaz.sirmatchalot.audio.Clip>()
+            for (pad in loaded) {
+                val buffer = pad.buffer ?: continue
+                // The engine renders one rate; a pad recorded or sliced at
+                // another has to be converted or it plays at the wrong speed.
+                val playable =
+                    if (buffer.sampleRate == audioEngine.output.sampleRate) buffer
+                    else buffer.resampledTo(audioEngine.output.sampleRate)
+                val id = padClipId(pad.index)
+                clipTitles[id] = pad.label ?: "Pad ${pad.index + 1}"
+                peaksCache[id] = PeakEnvelope.compute(playable.toMonoFloat())
+                added.add(
+                    com.hereliesaz.sirmatchalot.audio.Clip(
+                        id = id,
+                        buffer = playable,
+                        startFrame = cursor,
+                        loop = false,
+                    ),
+                )
+                cursor += playable.frameCount
+            }
+            if (added.isEmpty()) return@launch
+
+            engineDeck.clips = engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) } + added
+            republishPlatter()
+            _feedbackMsg.value = "Placed ${added.size} loops on Deck ${deckLabel(deck)}"
+        }
+    }
+
+    /** Takes the pad bank back off [deck], leaving the songs alone. */
+    fun removePadsFromDeck(deck: PlatterGeometry.Deck) {
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val before = engineDeck.clips.size
+        engineDeck.clips = engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) }
+        val removed = before - engineDeck.clips.size
+        republishPlatter()
+        _feedbackMsg.value =
+            if (removed == 0) "No pad loops on Deck ${deckLabel(deck)}"
+            else "Removed $removed pad loops from Deck ${deckLabel(deck)}"
+    }
+
+    private fun deckLabel(deck: PlatterGeometry.Deck) =
+        if (deck == PlatterGeometry.Deck.A) "A" else "B"
+
+    private fun padClipId(index: Int) = "$PAD_CLIP_PREFIX$index"
 
     /** Removes every selected clip from both decks. */
     fun removeSelectedClips() {
@@ -1052,6 +1354,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             nextCues[index - 1] = time
             _cuesB.value = nextCues
         }
+        // A cue that cannot be seen is a cue you have to remember. Republish so
+        // the mark appears on the ring the moment it is set.
+        republishMarkers()
     }
 
     fun triggerCue(deck: String, index: Int) {
@@ -1834,9 +2139,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     override fun onCleared() {
         super.onCleared()
+        harvestJob?.cancel()
         audioEngine.release()
         decoded.clear()
         syncServer.stop()
         syncClient.disconnect()
+    }
+
+    companion object {
+        /**
+         * Marks a deck clip as coming from a sampler pad rather than a library
+         * track. Prefixed rather than tracked in a set so the mark survives
+         * anything that rebuilds the clip list from the engine.
+         */
+        const val PAD_CLIP_PREFIX = "pad:"
     }
 }

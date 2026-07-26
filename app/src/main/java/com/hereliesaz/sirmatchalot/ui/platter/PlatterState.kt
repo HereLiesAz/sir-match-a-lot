@@ -23,6 +23,38 @@ data class PlatterClip(
 )
 
 /**
+ * A mark on the ring at a moment in the revolution.
+ *
+ * Cue points had no visual at all: they could be set and jumped to, but nothing
+ * on the platter said where they were, which makes a cue a thing you remember
+ * rather than a thing you can see. Structural landmarks ride the same mechanism
+ * because they are the same idea — a labelled instant on the circle.
+ *
+ * @param fraction where on the revolution, 0..1.
+ * @param deck which ring it belongs to.
+ */
+data class PlatterMarker(
+    val deck: PlatterGeometry.Deck,
+    val fraction: Float,
+    val kind: Kind,
+    val label: String,
+) {
+    enum class Kind {
+        /** A cue point the performer set. */
+        CUE,
+
+        /** The moment a track kicks back in. */
+        DROP,
+
+        /** Energy falls away and stays down. */
+        BREAKDOWN,
+
+        /** Energy climbing toward something. */
+        BUILD,
+    }
+}
+
+/**
  * Everything the platter draws, as one immutable snapshot.
  *
  * Rendering takes this rather than a ViewModel so the Canvas has no dependency
@@ -41,11 +73,15 @@ data class PlatterState(
     val playheadFraction: Float = 0f,
     val outputLevel: Float = 0f,
     val isPlaying: Boolean = false,
+    val markers: List<PlatterMarker> = emptyList(),
 ) {
     val isEmpty: Boolean get() = deckA.isEmpty() && deckB.isEmpty()
 
     fun clipsFor(deck: PlatterGeometry.Deck): List<PlatterClip> =
         if (deck == PlatterGeometry.Deck.A) deckA else deckB
+
+    fun markersFor(deck: PlatterGeometry.Deck): List<PlatterMarker> =
+        markers.filter { it.deck == deck }
 
     /**
      * The clip covering [fraction] on [deck], or null.
