@@ -247,19 +247,45 @@ class AudioEngine(
     @Volatile
     var onReverseThreshold: (() -> Unit)? = null
 
+    /**
+     * The voice that answers a long backward scratch.
+     *
+     * Synthesised rather than shipped as a file: requirement F9 says no built-in
+     * audio clips, and a bundled growl.ogg is a built-in audio clip whatever is
+     * on it. See [com.hereliesaz.sirmatchalot.dsp.GrowlVoice].
+     */
+    val growl = OneShotVoice()
+
     private val scratch = ScratchModel()
     private var started = false
 
     fun start() {
         if (started) return
         started = true
+
+        // Synthesised off the audio thread, once. It is a couple of seconds of
+        // formant synthesis — milliseconds of work, but not work the render
+        // callback can be asked to wait for even once.
+        if (!growl.isLoaded) {
+            Thread({
+                growl.load(
+                    com.hereliesaz.sirmatchalot.dsp.GrowlVoice(sampleRate = output.sampleRate)
+                        .render(),
+                )
+            }, "SirMatchALot-Growl").apply { isDaemon = true }.start()
+        }
+
         output.start { buffer, frames ->
             mixer.render(buffer, frames)
             // Capture the deck mix before the pads are added, so re-triggering a
             // recorded pad while recording cannot feed back on itself.
             sampler.captureFromMaster(buffer, frames)
             sampler.render(buffer, frames)
+            growl.render(buffer, frames)
             if (scratch.accountForRenderedFrames(frames)) {
+                // Triggered here rather than by the listener, so the sound
+                // happens even if nothing is listening for the message.
+                growl.trigger()
                 onReverseThreshold?.invoke()
             }
         }

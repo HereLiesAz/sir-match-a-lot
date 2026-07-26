@@ -96,6 +96,19 @@ fun LibraryScreen(
                 Spacer(Modifier.width(4.dp))
                 Text("Folder", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
             }
+
+            // Store packs arrive when asked for. They used to download
+            // themselves whenever the library was empty, which is a built-in
+            // clip that took a detour through someone's mobile data.
+            Button(
+                onClick = { viewModel.importAzphaltPack() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.ShoppingCart, contentDescription = "Azphalt Store", tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Store", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+            }
         }
 
         // The background run, mirrored from the same state its notification

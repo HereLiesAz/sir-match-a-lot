@@ -1368,28 +1368,56 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            trackDao.getAllTracksFlow().collect { list ->
-                if (list.isEmpty()) {
-                    fetchAndImportAzphaltStore()
-                } else {
-                    _tracks.value = list
-                }
-            }
+            // Every emission, including the empty one. The previous version
+            // published the list only when it was non-empty, so clearing the
+            // library left the last non-empty list on screen for ever — and an
+            // empty library reached the branch below instead.
+            trackDao.getAllTracksFlow().collect { list -> _tracks.value = list }
         }
     }
 
-    private suspend fun fetchAndImportAzphaltStore() {
-        try {
-            val packages = com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.fetchAudioPackages()
-            if (packages.isNotEmpty()) {
-                // Download the first audio package as default library
-                val downloadedTracks = com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.downloadAndExtractPackage(getApplication(), packages.first())
-                if (downloadedTracks.isNotEmpty()) {
-                    trackDao.insertTracks(downloadedTracks)
-                }
+    /**
+     * Imports a pack from the Azphalt store, on request.
+     *
+     * This used to run **on its own**, whenever the library was empty: a first
+     * launch downloaded and installed a sample pack over the network without
+     * being asked. That is the opposite of what F9 says — "no built-in audio
+     * clips" — because a pack that arrives unasked is a built-in clip that took
+     * a detour. It also spent someone's mobile data before they had touched
+     * anything.
+     *
+     * Now it happens when someone asks for it. Packs still arrive unanalysed;
+     * measuring them is the analysis queue's job, not the importer's.
+     */
+    fun importAzphaltPack() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _feedbackMsg.value = "Checking the Azphalt store..."
+            val packages = runCatching {
+                com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.fetchAudioPackages()
+            }.getOrElse {
+                _feedbackMsg.value = "Could not reach the Azphalt store"
+                return@launch
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            if (packages.isEmpty()) {
+                _feedbackMsg.value = "No packs available"
+                return@launch
+            }
+            val pack = packages.first()
+            _feedbackMsg.value = "Downloading ${pack.name}..."
+            val tracks = runCatching {
+                com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository
+                    .downloadAndExtractPackage(getApplication(), pack)
+            }.getOrElse {
+                _feedbackMsg.value = "Could not install ${pack.name}"
+                return@launch
+            }
+            if (tracks.isEmpty()) {
+                _feedbackMsg.value = "${pack.name} contained no audio"
+                return@launch
+            }
+            trackDao.insertTracks(tracks)
+            _feedbackMsg.value =
+                "Imported ${tracks.size} from ${pack.name} — run Analyse to measure them"
         }
     }
 
