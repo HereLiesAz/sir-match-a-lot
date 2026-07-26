@@ -239,6 +239,37 @@ and no gesture label is still fading; and the light show — six full-screen
 additive blooms, the most expensive thing drawn — is not composed at all when it
 is off or when the room is dark.
 
+## Saying what it is doing
+
+Nearly everything expensive in this app is asynchronous, and each piece of it
+used to report itself to exactly one screen — analysis to the Library tab, loop
+harvesting to a button on the Sampler tab, and loading a track, which decodes a
+whole file, converts its rate and then stretches and shifts it to match the
+session, to nowhere at all. Whichever screen you were on, the work you had just
+started from it was invisible.
+
+`ui/BackgroundWork` is a registry of what is in flight, rendered in the app bar
+every tab shares. Two decisions carry it:
+
+- **Work is wrapped, not bracketed.** `BackgroundWork.track` puts the clear-down
+  in a `finally`, because the failure mode of a progress indicator is an orphan:
+  a spinner left running by an early return, a decode that gave up, a caught
+  `OutOfMemoryError` or a cancelled harvest teaches you to ignore the one place
+  the app tells you anything. It is `inline` so the long functions it wraps keep
+  their early returns instead of being reshaped around the wrapper.
+- **Unknown progress stays unknown.** A fraction is shown where one is genuinely
+  known — analysis is track *n* of *m* — and an indeterminate spinner where it is
+  not. A bar that creeps to 90% and waits is a lie about a measurement.
+
+The background analysis service is folded in from `AnalysisProgressBus` rather
+than registered, since it outlives the ViewModel and a run started before the app
+was reopened still has to appear. Outcomes — what a track conformed to, that a
+clip was dropped to make room, that a file would not decode — come from
+`feedbackMsg`, which is now drawn over every screen instead of only the Library,
+and dismisses itself. It is an overlay rather than a row in the layout: taking
+space would resize the platter each time a message appeared or expired, including
+under a finger mid-gesture.
+
 ## Delivery phases
 
 - **1 — DSP foundation.** `dsp/` in full, with unit tests: FFT against a known

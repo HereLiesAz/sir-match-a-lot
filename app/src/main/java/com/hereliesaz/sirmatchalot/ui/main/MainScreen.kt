@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.ui.main
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -62,8 +63,17 @@ fun MainScreen(
 
     var showSyncDialog by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showWork by remember { mutableStateOf(false) }
     val settings by viewModel.settings.collectAsState()
     val engineGeneration by viewModel.engineGeneration.collectAsState()
+    val activeWork by viewModel.activeWork.collectAsState()
+    val feedbackMsg by viewModel.feedbackMsg.collectAsState()
+
+    // The detail sheet is worth nothing once the work it describes is done, and
+    // a dialog left open over an empty list is a dead end to back out of.
+    LaunchedEffect(activeWork.isEmpty()) {
+        if (activeWork.isEmpty()) showWork = false
+    }
 
     // Nothing on this screen is worth a wake-up when the screen is not in front
     // of anyone. The ViewModel's publishing loop runs off this, and used to run
@@ -94,16 +104,33 @@ fun MainScreen(
                 title = {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(end = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Weighted and ellipsised: with the work indicator
+                        // showing there are four things competing for a phone's
+                        // width, and the name of the app is the one of them
+                        // nobody needs to finish reading.
                         Text(
                             text = "SIR MATCH-A-LOT",
                             color = Color.White,
                             fontWeight = FontWeight.Black,
                             fontSize = 15.sp,
-                            letterSpacing = 1.sp
+                            letterSpacing = 1.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
+
+                        // What the app is doing, wherever you are. Everything
+                        // slow here reported itself on exactly one tab — and
+                        // never the tab you started it from.
+                        if (activeWork.isNotEmpty()) {
+                            WorkIndicator(
+                                work = activeWork,
+                                onClick = { showWork = true },
+                            )
+                        }
 
                         // Where the memory and battery levers live. Reachable
                         // from every tab and every role, because running out of
@@ -310,7 +337,70 @@ fun MainScreen(
                     SamplerScreen(viewModel = viewModel)
                 }
             }
+
+            // Drawn over the content rather than above it. Taking layout space
+            // would mean the platter resized itself every time a message
+            // appeared or expired — including mid-gesture, with a finger on it.
+            FeedbackBanner(
+                message = feedbackMsg,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
         }
+    }
+
+    if (showWork) {
+        AlertDialog(
+            onDismissRequest = { showWork = false },
+            containerColor = Color(0xFF18181B),
+            title = {
+                Text(
+                    if (activeWork.size == 1) "Working" else "${activeWork.size} things running",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    for (item in activeWork) {
+                        Column {
+                            Text(item.label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (!item.detail.isNullOrBlank()) {
+                                Text(
+                                    item.detail!!,
+                                    color = Color(0xFF9CA3AF),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            // A known fraction gets a bar; an unknown one gets a
+                            // moving line. Neither pretends to be the other.
+                            val fraction = item.progress
+                            if (fraction != null) {
+                                LinearProgressIndicator(
+                                    progress = { fraction },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color.Cyan,
+                                    trackColor = Color(0xFF27272A),
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color.Cyan,
+                                    trackColor = Color(0xFF27272A),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showWork = false }) {
+                    Text("Close", color = Color(0xFF22D3EE), fontWeight = FontWeight.Bold)
+                }
+            },
+        )
     }
 
     if (showSettings) {
@@ -584,3 +674,109 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
             ) = viewModel.scaleClip(clipId, deck, ratio.toDouble())
         }
     }
+
+/**
+ * The one place the app says it is busy, in the bar every tab shares.
+ *
+ * A spinner and the name of the work, which is more than the count on its own
+ * would say: "loading" and "loading Blue Monday — stretching to 128 BPM" answer
+ * different questions, and the second is the one being asked when a drop on the
+ * platter has apparently done nothing for twenty seconds.
+ *
+ * Only the first item is named. Several things at once is normal here — a mix
+ * director preloads while the library analyses — and cycling names would make a
+ * bar that reads as broken; the count says there is more, and tapping shows all
+ * of it.
+ */
+@Composable
+private fun WorkIndicator(
+    work: List<com.hereliesaz.sirmatchalot.ui.WorkItem>,
+    onClick: () -> Unit,
+) {
+    val first = work.firstOrNull() ?: return
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF0E3A44))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Determinate where the fraction is known, so a long analysis run reads
+        // as progress rather than as a hang with a nice animation on it.
+        val fraction = first.progress
+        if (fraction != null) {
+            CircularProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.size(11.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xFF22D3EE),
+                trackColor = Color(0xFF164E5C),
+            )
+        } else {
+            CircularProgressIndicator(
+                modifier = Modifier.size(11.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xFF22D3EE),
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = first.summary(),
+            color = Color(0xFF7DD3FC),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 130.dp),
+        )
+        if (work.size > 1) {
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "+${work.size - 1}",
+                color = Color(0xFF22D3EE),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+/**
+ * The last thing the app said, wherever you are.
+ *
+ * `feedbackMsg` carries every outcome the app reports — what a track conformed
+ * to, that the platter dropped a clip to make room, that a file would not
+ * decode, that it ran out of memory and which setting would help — and it was
+ * rendered on the Library tab and nowhere else. Most of those messages are
+ * about things that happen while you are on the platter.
+ *
+ * Dismisses itself, because it is a report on something finished rather than a
+ * state to be acknowledged, and a line that stays forever stops being read.
+ */
+@Composable
+private fun FeedbackBanner(message: String, modifier: Modifier = Modifier) {
+    var visible by remember(message) { mutableStateOf(message.isNotBlank()) }
+    LaunchedEffect(message) {
+        if (message.isBlank()) return@LaunchedEffect
+        visible = true
+        kotlinx.coroutines.delay(6_000)
+        visible = false
+    }
+    if (!visible) return
+
+    Text(
+        text = message,
+        color = Color(0xFF81E6D9),
+        fontSize = 10.sp,
+        fontFamily = FontFamily.Monospace,
+        maxLines = 2,
+        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color(0xCC0B1A1F))
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    )
+}

@@ -111,6 +111,42 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     val platterState: StateFlow<PlatterState> = _platterState
 
     /**
+     * What the app is doing right now.
+     *
+     * Everything slow here used to happen silently unless you were on the one
+     * tab that reported it: analysis on the Library screen, loop harvesting on
+     * the Sampler screen, and loading a track — which decodes a whole file,
+     * converts its rate, then stretches and shifts it to match the session —
+     * nowhere at all.
+     */
+    private val work = BackgroundWork()
+
+    /**
+     * In-flight work, including the background service's.
+     *
+     * The service runs in its own right and survives this ViewModel, so its
+     * progress is folded in from [AnalysisProgressBus] rather than registered:
+     * a run started before the app was reopened still has to show up.
+     */
+    val activeWork: StateFlow<List<WorkItem>> =
+        combine(
+            work.items,
+            com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus.state,
+        ) { items, analysis ->
+            if (analysis.total <= 0) {
+                items
+            } else {
+                items + WorkItem(
+                    id = BackgroundWork.SERVICE_ANALYSIS,
+                    label = if (analysis.paused) "Analysis paused" else "Analysing library",
+                    detail = "${analysis.done + 1} of ${analysis.total}" +
+                        if (analysis.current.isNotEmpty()) " — ${analysis.current}" else "",
+                    progress = analysis.fraction,
+                )
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
      * Decoded audio per track id, so a clip is decoded once and reused.
      *
      * Bounded. The plain map this replaces was never emptied, so every track
@@ -324,133 +360,140 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             var monoDownmix: FloatArray? = null
 
             try {
-                val pcm = decoded[track.id] ?: run {
-                    // Ask the container how big this is before committing to
-                    // holding it. Finding out from the allocator instead means
-                    // an OutOfMemoryError thrown while the decoder holds a whole
-                    // track's accumulation buffers — which is a crash, where
-                    // this is a sentence.
-                    val probe = AudioDecoder.probe(getApplication(), Uri.parse(source))
-                    if (probe != null && probe.durationSeconds > 0.0) {
-                        val estimate = probe.decodedBytes(engine.output.sampleRate)
-                        if (!decoded.canAdmit(estimate, pinnedTrackIds())) {
-                            _feedbackMsg.value = tooLargeMessage(track, estimate)
-                            return@launch
-                        }
-                    }
-
-                    val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
-                        _feedbackMsg.value = "Could not decode ${track.title}"
-                        return@launch
-                    }
-                    // Convert to the engine's rate here, once, with a filter good
-                    // enough to be inaudible. The alternative is the render loop's
-                    // 4-point spline doing it on every sample forever, at rate
-                    // 0.919 for a 44.1 kHz file on a 48 kHz device.
-                    if (raw.sampleRate != engine.output.sampleRate) {
-                        _feedbackMsg.value =
-                            "Converting ${track.title} to ${engine.output.sampleRate} Hz..."
-                    }
-                    val converted = raw.resampledTo(engine.output.sampleRate)
-                    decoded.put(track.id, converted, pinnedTrackIds())
-                    if (decoded.overBudget) {
-                        _feedbackMsg.value =
-                            "Low on memory — unload a track, or lower the engine rate in Settings"
-                    }
-                    converted
-                }
-
-                fun mono(): FloatArray = monoDownmix ?: pcm.toMonoFloat().also { monoDownmix = it }
-
-                peaksCache.getOrPut(track.id) {
-                    track.peaksPath
-                        ?.let { path -> runCatching { PeakEnvelope.fromByteArray(java.io.File(path).readBytes()) }.getOrNull() }
-                        ?: PeakEnvelope.compute(mono())
-                }
-                // Recomputing the curve is cheap next to the decode that just
-                // happened, so a track analysed before energyPath was written still
-                // gets coloured rather than falling back to neutral forever.
-                energyCache.getOrPut(track.id) {
-                    track.energyPath
-                        ?.let { path ->
-                            runCatching {
-                                com.hereliesaz.sirmatchalot.dsp.EnergyCurve.fromByteArray(java.io.File(path).readBytes())
-                            }.getOrNull()
-                        }
-                        ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(mono(), pcm.sampleRate)
-                }
-
-                // Landmarks come from the energy curve that was just cached, so
-                // marking the drops costs no decode and no second analysis pass.
-                poiCache.getOrPut(track.id) {
-                    val curve = energyCache[track.id]
-                    if (curve == null) {
-                        emptyList()
-                    } else {
-                        val grid = track.bpm?.let { bpm ->
-                            track.firstBeatSeconds?.let { first ->
-                                com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, first, track.downbeatOffset)
+                work.track(BackgroundWork.loadId(track.id), "Loading ${track.title}") { progress ->
+                    val pcm = decoded[track.id] ?: run {
+                        progress.detail("decoding")
+                        // Ask the container how big this is before committing to
+                        // holding it. Finding out from the allocator instead means
+                        // an OutOfMemoryError thrown while the decoder holds a whole
+                        // track's accumulation buffers — which is a crash, where
+                        // this is a sentence.
+                        val probe = AudioDecoder.probe(getApplication(), Uri.parse(source))
+                        if (probe != null && probe.durationSeconds > 0.0) {
+                            val estimate = probe.decodedBytes(engine.output.sampleRate)
+                            if (!decoded.canAdmit(estimate, pinnedTrackIds())) {
+                                _feedbackMsg.value = tooLargeMessage(track, estimate)
+                                return@launch
                             }
                         }
-                        val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
-                            .findPointsOfInterest(curve, grid)
-                        // Vocal entry needs the audio rather than the energy curve
-                        // — it is a pitch measurement, not an amplitude one — so it
-                        // runs here where the decoded buffer is still in hand.
-                        val vocal = com.hereliesaz.sirmatchalot.dsp.VocalDetector()
-                            .findVocalEntry(mono(), pcm.sampleRate)
-                        if (vocal == null) structural else structural + vocal
-                    }
-                }
 
-                // The first track on the platter sets the session's tempo and key;
-                // everything after is rendered to match before it is ever heard.
-                // Conforming the audio itself, rather than setting a deck rate, is
-                // what lets several clips share one circle: a deck has one rate, so
-                // rate-matching only ever works when a deck holds one track.
-                val playable = conformToReference(track, pcm)
-
-                val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
-                val existing = engineDeck.clips
-                // A drop names a point on the circle, and angle is time — so the
-                // fraction dropped at *is* the frame the clip starts on. With an
-                // empty deck there is no circle yet: the first clip defines one, so
-                // it starts at zero and loops however it was dropped.
-                val cycle = engineDeck.cycleFrames
-                val startFrame = when {
-                    existing.isEmpty() -> 0
-                    atFraction != null && cycle > 0 ->
-                        // Snapped, exactly as a drag is. A drop that landed off the
-                        // grid while a drag of the same clip snapped onto it would
-                        // be two different answers to the same question.
-                        BeatSnap.snapFrame(
-                            frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
-                            framesPerBeat = sessionFramesPerBeat(),
-                            phaseFrames = sessionBeatPhaseFrames(),
-                        ).coerceIn(0, cycle)
-                    else -> existing.maxOfOrNull { it.endFrame } ?: 0
-                }
-                engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
-                    id = track.id,
-                    buffer = playable,
-                    startFrame = startFrame,
-                    loop = existing.isEmpty(),
-                )
-                if (!startSilent) {
-                    // The first track dropped starts the mix; later ones join whatever
-                    // the transport is already doing.
-                    if (!_isPlaying.value && engine.deckA.clips.size + engine.deckB.clips.size == 1) {
-                        _isPlaying.value = true
-                        engine.deckA.playing = true
-                        engine.deckB.playing = true
+                        val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
+                            _feedbackMsg.value = "Could not decode ${track.title}"
+                            return@launch
+                        }
+                        // Convert to the engine's rate here, once, with a filter good
+                        // enough to be inaudible. The alternative is the render loop's
+                        // 4-point spline doing it on every sample forever, at rate
+                        // 0.919 for a 44.1 kHz file on a 48 kHz device.
+                        if (raw.sampleRate != engine.output.sampleRate) {
+                            progress.detail("converting ${raw.sampleRate} Hz to ${engine.output.sampleRate} Hz")
+                            _feedbackMsg.value =
+                                "Converting ${track.title} to ${engine.output.sampleRate} Hz..."
+                        }
+                        val converted = raw.resampledTo(engine.output.sampleRate)
+                        decoded.put(track.id, converted, pinnedTrackIds())
+                        if (decoded.overBudget) {
+                            _feedbackMsg.value =
+                                "Low on memory — unload a track, or lower the engine rate in Settings"
+                        }
+                        converted
                     }
-                    engineDeck.playing = _isPlaying.value
-                    if (_isPlaying.value) engine.wake()
+
+                    progress.detail("measuring")
+
+                    fun mono(): FloatArray = monoDownmix ?: pcm.toMonoFloat().also { monoDownmix = it }
+
+                    peaksCache.getOrPut(track.id) {
+                        track.peaksPath
+                            ?.let { path -> runCatching { PeakEnvelope.fromByteArray(java.io.File(path).readBytes()) }.getOrNull() }
+                            ?: PeakEnvelope.compute(mono())
+                    }
+                    // Recomputing the curve is cheap next to the decode that just
+                    // happened, so a track analysed before energyPath was written still
+                    // gets coloured rather than falling back to neutral forever.
+                    energyCache.getOrPut(track.id) {
+                        track.energyPath
+                            ?.let { path ->
+                                runCatching {
+                                    com.hereliesaz.sirmatchalot.dsp.EnergyCurve.fromByteArray(java.io.File(path).readBytes())
+                                }.getOrNull()
+                            }
+                            ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(mono(), pcm.sampleRate)
+                    }
+
+                    // Landmarks come from the energy curve that was just cached, so
+                    // marking the drops costs no decode and no second analysis pass.
+                    poiCache.getOrPut(track.id) {
+                        val curve = energyCache[track.id]
+                        if (curve == null) {
+                            emptyList()
+                        } else {
+                            val grid = track.bpm?.let { bpm ->
+                                track.firstBeatSeconds?.let { first ->
+                                    com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, first, track.downbeatOffset)
+                                }
+                            }
+                            val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                                .findPointsOfInterest(curve, grid)
+                            // Vocal entry needs the audio rather than the energy curve
+                            // — it is a pitch measurement, not an amplitude one — so it
+                            // runs here where the decoded buffer is still in hand.
+                            val vocal = com.hereliesaz.sirmatchalot.dsp.VocalDetector()
+                                .findVocalEntry(mono(), pcm.sampleRate)
+                            if (vocal == null) structural else structural + vocal
+                        }
+                    }
+
+                    // The first track on the platter sets the session's tempo and key;
+                    // everything after is rendered to match before it is ever heard.
+                    // Conforming the audio itself, rather than setting a deck rate, is
+                    // what lets several clips share one circle: a deck has one rate, so
+                    // rate-matching only ever works when a deck holds one track.
+                    progress.detail(conformingDetail(track))
+                    val playable = conformToReference(track, pcm)
+
+                    val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+                    val existing = engineDeck.clips
+                    // A drop names a point on the circle, and angle is time — so the
+                    // fraction dropped at *is* the frame the clip starts on. With an
+                    // empty deck there is no circle yet: the first clip defines one, so
+                    // it starts at zero and loops however it was dropped.
+                    val cycle = engineDeck.cycleFrames
+                    val startFrame = when {
+                        existing.isEmpty() -> 0
+                        atFraction != null && cycle > 0 ->
+                            // Snapped, exactly as a drag is. A drop that landed off the
+                            // grid while a drag of the same clip snapped onto it would
+                            // be two different answers to the same question.
+                            BeatSnap.snapFrame(
+                                frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
+                                framesPerBeat = sessionFramesPerBeat(),
+                                phaseFrames = sessionBeatPhaseFrames(),
+                            ).coerceIn(0, cycle)
+                        else -> existing.maxOfOrNull { it.endFrame } ?: 0
+                    }
+                    engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
+                        id = track.id,
+                        buffer = playable,
+                        startFrame = startFrame,
+                        loop = existing.isEmpty(),
+                    )
+                    if (!startSilent) {
+                        // The first track dropped starts the mix; later ones join whatever
+                        // the transport is already doing.
+                        if (!_isPlaying.value && engine.deckA.clips.size + engine.deckB.clips.size == 1) {
+                            _isPlaying.value = true
+                            engine.deckA.playing = true
+                            engine.deckB.playing = true
+                        }
+                        engineDeck.playing = _isPlaying.value
+                        if (_isPlaying.value) engine.wake()
+                    }
+                    onDeck.value = onDeck.value + track
+                    republishPlatter()
+                    if (!startSilent) reportConformed(track)
+                    syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
                 }
-                onDeck.value = onDeck.value + track
-                republishPlatter()
-                if (!startSilent) reportConformed(track)
-                syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
             } catch (e: OutOfMemoryError) {
                 // Caught deliberately, and only here. Everything large is
                 // reachable from the caches this drops, so releasing them really
@@ -535,6 +578,29 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (semitones != 0) result = result.pitchShifted(semitones.toDouble())
 
         return result
+    }
+
+    /**
+     * What conforming is about to do, while it is doing it.
+     *
+     * Said before rather than after, because it is the slowest part of a load —
+     * a WSOLA pass and a phase-vocoder pass over the whole track — and "45
+     * seconds of silence" and "45 seconds of silence, then a message about
+     * stretching" are the same experience while you are waiting.
+     */
+    private fun conformingDetail(track: Track): String {
+        val existing = _reference.value
+        if (existing == null || existing.id == track.id) return "setting the session tempo and key"
+        val stretching = existing.bpm != null && track.bpm != null &&
+            abs(track.bpm!! - existing.bpm!!) > 0.1
+        val shifting = (BeatSync.align(track, existing)?.semitoneShift ?: 0) != 0
+        return when {
+            stretching && shifting ->
+                "stretching to ${String.format("%.1f", existing.bpm)} BPM and shifting to ${existing.keyLabel()}"
+            stretching -> "stretching to ${String.format("%.1f", existing.bpm)} BPM"
+            shifting -> "shifting to ${existing.keyLabel()}"
+            else -> "already in step"
+        }
     }
 
     /** Says what conforming did, once the clip is on the deck. */
@@ -729,6 +795,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
 
         viewModelScope.launch(Dispatchers.Default) {
+          work.track(BackgroundWork.PADS, "Finding loops in ${track.title}") {
             val grid = com.hereliesaz.sirmatchalot.dsp.BeatGrid(
                 bpm = bpm,
                 firstBeatSeconds = firstBeat,
@@ -742,6 +809,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 filled == 0 -> "No free pads to fill"
                 else -> "Filled $filled pads from ${track.title}"
             }
+          }
         }
     }
 
@@ -789,12 +857,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
 
         harvestJob = viewModelScope.launch(Dispatchers.IO) {
+          try {
             val finder = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
             val sources = ArrayList<LoopHarvest.Source>(usable.size)
 
             usable.forEachIndexed { index, track ->
                 ensureActive()
                 _harvestProgress.value = (index + 1) to usable.size
+                work.begin(
+                    id = BackgroundWork.HARVEST,
+                    label = "Harvesting loops",
+                    detail = "${index + 1} of ${usable.size} — ${track.title}",
+                    progress = (index + 1).toFloat() / usable.size,
+                )
                 val pcm = decodeForHarvest(track) ?: return@forEachIndexed
                 val candidates = finder.findLoops(
                     pcm.toMonoFloat(),
@@ -845,8 +920,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 val skipped = playlist.size - usable.size
                 if (skipped > 0) append(" — $skipped unanalysed and skipped")
             }
+          } finally {
+            // Cancelling a harvest, or an early return when nothing loops
+            // cleanly, must take the indicator with it. An indicator that
+            // outlives its work teaches you to ignore the indicator.
+            work.end(BackgroundWork.HARVEST)
+          }
         }
     }
+
+    /** The name a clip goes by, for saying what is being worked on. */
+    private fun clipTitle(clipId: String): String =
+        _tracks.value.firstOrNull { it.id == clipId }?.title
+            ?: clipTitles[clipId]
+            ?: "clip"
 
     /** Stops a harvest in progress. */
     fun cancelHarvest() {
@@ -905,6 +992,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
 
         viewModelScope.launch(Dispatchers.Default) {
+          work.track(BackgroundWork.PADS, "Placing loops on Deck ${deckLabel(deck)}") {
             var cursor = engineDeck.clips.maxOfOrNull { it.endFrame } ?: 0
             val added = ArrayList<com.hereliesaz.sirmatchalot.audio.Clip>()
             for (pad in loaded) {
@@ -932,6 +1020,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             engineDeck.clips = engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) } + added
             republishPlatter()
             _feedbackMsg.value = "Placed ${added.size} loops on Deck ${deckLabel(deck)}"
+          }
         }
     }
 
@@ -1084,7 +1173,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch(Dispatchers.Default) {
             _feedbackMsg.value = "Stretching to ${String.format("%.2fx", snapped)}..."
-            val stretched = pristine.timeStretched(snapped)
+            val stretched = work.track(
+                id = BackgroundWork.stretchId(clipId),
+                label = "Stretching ${clipTitle(clipId)}",
+                detail = String.format("%.2fx, holding pitch", snapped),
+            ) { pristine.timeStretched(snapped) }
             val current = engineDeck.clips.firstOrNull { it.id == clipId } ?: return@launch
             engineDeck.clips = engineDeck.clips.map { clip ->
                 if (clip.id != clipId) {
@@ -1582,7 +1675,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     ) {
         viewModelScope.launch(Dispatchers.Default) {
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
-            val shifted = engineDeck.clips.map { clip ->
+            val shifted = work.track(
+                id = BackgroundWork.SYNC,
+                label = "Harmonizing Deck ${deckLabel(deck)}",
+                detail = String.format("%+.2f semitones", semitones),
+            ) { engineDeck.clips.map { clip ->
                 val pristine = decoded[clip.id] ?: clip.buffer
                 Clip(
                     id = clip.id,
@@ -1591,7 +1688,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     gain = clip.gain,
                     loop = clip.loop,
                 )
-            }
+            } }
             if (shifted.isEmpty()) return@launch
             // Replaced wholesale; Deck.clips is volatile and keeps the playhead
             // inside the new cycle itself.
@@ -1711,6 +1808,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      */
     fun importAzphaltPack() {
         viewModelScope.launch(Dispatchers.IO) {
+          work.track(BackgroundWork.IMPORT, "Azphalt store", "checking for packs") { progress ->
             _feedbackMsg.value = "Checking the Azphalt store..."
             val packages = runCatching {
                 com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.fetchAudioPackages()
@@ -1723,6 +1821,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 return@launch
             }
             val pack = packages.first()
+            progress.detail("downloading ${pack.name}")
             _feedbackMsg.value = "Downloading ${pack.name}..."
             val tracks = runCatching {
                 com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository
@@ -1738,6 +1837,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             trackDao.insertTracks(tracks)
             _feedbackMsg.value =
                 "Imported ${tracks.size} from ${pack.name} — run Analyse to measure them"
+          }
         }
     }
 
@@ -2113,6 +2213,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      */
     fun importFolder(treeUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
+          work.track(BackgroundWork.IMPORT, "Importing folder", "scanning") {
             _feedbackMsg.value = "Scanning folder..."
             val resolver = getApplication<Application>().contentResolver
             runCatching {
@@ -2151,6 +2252,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 else -> "Added $added of ${found.size} files — analysing in the background"
             }
             if (added > 0) startBackgroundAnalysis()
+          }
         }
     }
 
@@ -2267,6 +2369,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
 
         viewModelScope.launch(Dispatchers.IO) {
+          work.track(BackgroundWork.IMPORT, "Importing playlist", "reading the link") {
             _feedbackMsg.value = "Reading..."
             val document = when {
                 // Not a URL at all: a pasted tracklist is itself the document.
@@ -2312,6 +2415,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 if (named > 0) append(" — $named named only, with no audio file yet")
             }
             if (withAudio > 0) analysePending()
+          }
         }
     }
 
@@ -2386,10 +2490,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         analysisJob = viewModelScope.launch(Dispatchers.IO) {
             var done = 0
             var failed = 0
-            for (track in plan.toAnalyse) {
-                _analysisProgress.value = AnalysisProgress(done, plan.toAnalyse.size, track.title)
-                if (!analyseTrack(track)) failed++
-                done++
+            try {
+                for (track in plan.toAnalyse) {
+                    _analysisProgress.value = AnalysisProgress(done, plan.toAnalyse.size, track.title)
+                    work.begin(
+                        id = BackgroundWork.ANALYSIS,
+                        label = "Analysing",
+                        detail = "${done + 1} of ${plan.toAnalyse.size} — ${track.title}",
+                        progress = done.toFloat() / plan.toAnalyse.size,
+                    )
+                    if (!analyseTrack(track)) failed++
+                    done++
+                }
+            } finally {
+                work.end(BackgroundWork.ANALYSIS)
             }
             _analysisProgress.value = null
             _feedbackMsg.value = buildString {
