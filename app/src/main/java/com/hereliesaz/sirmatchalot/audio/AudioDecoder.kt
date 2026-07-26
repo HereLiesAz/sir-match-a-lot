@@ -100,11 +100,21 @@ object AudioDecoder {
 
         // Growable planar accumulation. Sized from the container duration when
         // available so the common case does no reallocation.
+        // Container durations are approximate and decoders commonly emit a little
+        // more than they imply (encoder priming and padding). Allocating exactly
+        // the estimate therefore guarantees one reallocation, at the worst
+        // possible moment — when the buffer is already whole-track sized. A few
+        // per cent of slack makes the common case allocate once and never grow.
         val estimatedFrames = runCatching {
             (inputFormat.getLong(MediaFormat.KEY_DURATION) * sampleRate / 1_000_000L).toInt()
         }.getOrNull()?.coerceIn(0, 60 * 60 * 192_000) ?: 0
+        val initialFrames = if (estimatedFrames > 0) {
+            (estimatedFrames + estimatedFrames / 32 + sampleRate).coerceAtMost(60 * 60 * 192_000)
+        } else {
+            sampleRate
+        }
 
-        var planar = Array(channelCount) { ShortArray(estimatedFrames.coerceAtLeast(sampleRate)) }
+        var planar = Array(channelCount) { ShortArray(initialFrames) }
         var frames = 0
 
         codec.configure(inputFormat, null, null, 0)
@@ -172,7 +182,12 @@ object AudioDecoder {
         if (frames == 0) return@withContext null
 
         val exact = PcmBuffer(
-            channels = Array(channelCount) { planar[it].copyOf(frames) },
+            // copyOf is what trims the over-allocated tail; when the estimate
+            // landed exactly there is nothing to trim and the copy would be a
+            // whole extra track in memory for no change.
+            channels = Array(channelCount) {
+                if (planar[it].size == frames) planar[it] else planar[it].copyOf(frames)
+            },
             sampleRate = sampleRate,
         )
 
@@ -180,9 +195,11 @@ object AudioDecoder {
             return@withContext DecodedAudio(exact, frames, 0)
         }
 
-        // Trim from the mono sum, so a channel that is silent alone does not
-        // make the whole track look silent.
-        val bounds = PeakEnvelope.contentBounds(exact.toMonoFloat(), SILENCE_THRESHOLD)
+        // Bounds are taken from the summed channels, so a channel that is silent
+        // alone does not make the whole track look silent — but scanned in place
+        // rather than through toMonoFloat(), which would materialise a
+        // whole-track FloatArray purely to find two indices.
+        val bounds = exact.contentBounds(SILENCE_THRESHOLD)
             ?: return@withContext DecodedAudio(exact, frames, 0)
 
         DecodedAudio(
@@ -224,11 +241,33 @@ object AudioDecoder {
         return byteCount / (bytesPerSample * channelCount)
     }
 
+    /**
+     * Grows [planar] in place to hold at least [required] frames.
+     *
+     * Two things here are deliberate, and the previous version got both wrong in
+     * the same line — `Array(planar.size) { planar[it].copyOf(capacity) }`:
+     *
+     * **Per channel, not all at once.** That expression builds every new channel
+     * before assigning, so for stereo the two old arrays and the two new
+     * (double-sized) ones are all live at the same instant: six times the current
+     * PCM. Replacing one channel at a time drops each old array immediately, so
+     * the peak is the old total plus one new channel.
+     *
+     * **Grow by half, not by double.** The buffer is pre-sized from the
+     * container's duration, so the only growth that normally happens is one small
+     * overshoot at the very end — decoders routinely emit a little more than the
+     * duration implies. Doubling there asks for a second whole track's worth of
+     * memory at the precise moment the heap is fullest, which is what threw
+     * OutOfMemoryError on a 256 MB device.
+     */
     private fun ensureCapacity(planar: Array<ShortArray>, required: Int): Array<ShortArray> {
         if (planar[0].size >= required) return planar
-        var capacity = planar[0].size.coerceAtLeast(1)
-        while (capacity < required) capacity *= 2
-        return Array(planar.size) { planar[it].copyOf(capacity) }
+        var capacity = planar[0].size.coerceAtLeast(1024)
+        while (capacity < required) capacity += capacity / 2 + 1
+        for (channel in planar.indices) {
+            planar[channel] = planar[channel].copyOf(capacity)
+        }
+        return planar
     }
 
     /**

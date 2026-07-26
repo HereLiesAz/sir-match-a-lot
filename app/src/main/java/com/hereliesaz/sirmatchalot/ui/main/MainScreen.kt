@@ -365,5 +365,29 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
                     else PlatterGeometry.Deck.B
                 viewModel.loadOntoDeck(track, deck)
             }
+
+            override fun onDropTrack(
+                track: com.hereliesaz.sirmatchalot.data.Track,
+                deck: PlatterGeometry.Deck,
+                fraction: Float,
+            ) {
+                // A drop says which deck and where on it; nothing is inferred.
+                viewModel.loadOntoDeck(track, deck, atFraction = fraction)
+            }
+
+            override fun onMoveClip(
+                clipId: String,
+                deck: PlatterGeometry.Deck,
+                fraction: Float,
+            ) = viewModel.moveClip(clipId, deck, fraction)
+
+            override fun onRemoveClip(clipId: String) =
+                viewModel.removeTrackFromDecks(clipId)
+
+            override fun onScaleClip(
+                clipId: String,
+                deck: PlatterGeometry.Deck,
+                ratio: Float,
+            ) = viewModel.scaleClip(clipId, deck, ratio.toDouble())
         }
     }

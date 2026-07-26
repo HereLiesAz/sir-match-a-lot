@@ -143,6 +143,83 @@ class SincResampler(
         return out
     }
 
+    /**
+     * As [resample], but reading 16-bit storage directly.
+     *
+     * Playback buffers are `ShortArray`
+     * ([com.hereliesaz.sirmatchalot.audio.PcmBuffer]). Widening a whole track to
+     * float just to feed the float overload allocates four bytes per frame —
+     * twice the size of the storage being converted — on top of the output. On a
+     * five-minute stereo track that is an extra 57 MB per channel, live at the
+     * same moment as everything else in the load path, and it contributed to
+     * running out of heap on a 256 MB device. Reading the shorts in the
+     * convolution costs one multiply per tap and allocates nothing.
+     */
+    fun resample(input: ShortArray, fromRate: Int, toRate: Int): FloatArray {
+        require(fromRate > 0 && toRate > 0) { "rates must be positive, were $fromRate and $toRate" }
+        if (input.isEmpty()) {
+            phaseInterpolated = false
+            return FloatArray(0)
+        }
+        if (fromRate == toRate) {
+            phaseInterpolated = false
+            return FloatArray(input.size) { input[it] * SHORT_SCALE }
+        }
+
+        val divisor = gcd(fromRate, toRate)
+        val num = fromRate / divisor
+        val den = toRate / divisor
+        val ratio = fromRate.toDouble() / toRate
+        val edge = min(1.0, 1.0 / ratio)
+        val cutoff = (edge - transitionWidth() / 2).coerceAtLeast(edge * 0.5)
+
+        val phases = if (den <= MAX_PHASES) den else MAX_PHASES
+        phaseInterpolated = den > MAX_PHASES
+        val table = buildTable(phases, cutoff)
+
+        val outputLength = ceil(input.size / ratio).toInt()
+        val out = FloatArray(outputLength)
+        val half = taps / 2
+
+        for (m in 0 until outputLength) {
+            val scaled = m.toLong() * num
+            val base = (scaled / den).toInt()
+            val remainder = (scaled % den).toInt()
+            val from = base - half + 1
+
+            out[m] = if (phaseInterpolated) {
+                val exact = remainder.toDouble() / den * phases
+                val low = exact.toInt().coerceAtMost(phases - 1)
+                val blend = (exact - low).toFloat()
+                val high = (low + 1) % phases
+                val shift = if (low + 1 >= phases) 1 else 0
+                convolveChecked(input, from, table[low]) * (1f - blend) +
+                    convolveChecked(input, from + shift, table[high]) * blend
+            } else if (from >= 0 && from + taps <= input.size) {
+                convolveInterior(input, from, table[remainder])
+            } else {
+                convolveChecked(input, from, table[remainder])
+            }
+        }
+        return out
+    }
+
+    private fun convolveInterior(input: ShortArray, from: Int, row: FloatArray): Float {
+        var sum = 0f
+        for (k in 0 until taps) sum += input[from + k] * SHORT_SCALE * row[k]
+        return sum
+    }
+
+    private fun convolveChecked(input: ShortArray, from: Int, row: FloatArray): Float {
+        var sum = 0f
+        var index = from
+        for (k in 0 until taps) {
+            if (index >= 0 && index < input.size) sum += input[index] * SHORT_SCALE * row[k]
+            index++
+        }
+        return sum
+    }
+
     /** Dot product with the kernel wholly inside [input]. No bounds checks. */
     private fun convolveInterior(input: FloatArray, from: Int, row: FloatArray): Float {
         var sum = 0f
@@ -284,5 +361,8 @@ class SincResampler(
          * normal one and interpolation is the rare fallback.
          */
         const val MAX_PHASES = 4096
+
+        /** Normalisation applied when reading 16-bit storage. */
+        const val SHORT_SCALE = 1f / 32768f
     }
 }

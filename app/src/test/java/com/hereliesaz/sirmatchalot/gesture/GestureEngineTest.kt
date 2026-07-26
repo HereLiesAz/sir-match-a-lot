@@ -109,19 +109,31 @@ class GestureEngineTest {
     }
 
     @Test
-    fun `three fingers transform the platter`() {
+    fun `sliding three fingers together does nothing`() {
+        // This used to pan the platter. Panning is gone: the platter is a fixed
+        // circle centred on the screen, and being able to shove it off-centre
+        // only ever made it harder to find again. Three fingers moving as one
+        // change neither spread nor twist, so there is nothing left to
+        // recognise — and in particular this must not fall through to a mix
+        // control.
         val engine = GestureEngine()
         engine.update(three(0f, 0f))
         for (i in 1..12) engine.update(three(i * 4f, 0f))
         val recognised = kinds(engine)
+
+        assertEquals("a pure three-finger slide should do nothing", emptySet<GestureKind>(), recognised)
+    }
+
+    @Test
+    fun `three fingers are never mistaken for a mix control`() {
+        val engine = GestureEngine()
+        engine.update(three(0f, 0f))
+        for (i in 1..12) engine.update(three(i * 4f, i * 2f, spread = 100f + i * 6f, twist = i * 3f))
+        val recognised = kinds(engine)
+
         assertTrue("expected a platter transform, got $recognised", recognised.any {
-            it in setOf(
-                GestureKind.PLATTER_MOVE,
-                GestureKind.PLATTER_SCALE,
-                GestureKind.PLATTER_ROTATE,
-            )
+            it in setOf(GestureKind.PLATTER_SCALE, GestureKind.PLATTER_ROTATE)
         })
-        // Three-finger gestures must never be mistaken for mix controls.
         assertTrue(GestureKind.CROSSFADE !in recognised)
         assertTrue(GestureKind.SCRATCH !in recognised)
     }

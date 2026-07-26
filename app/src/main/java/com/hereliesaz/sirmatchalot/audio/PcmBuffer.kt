@@ -48,6 +48,43 @@ class PcmBuffer(
     fun channel(index: Int): ShortArray = channels[index.coerceIn(0, channelCount - 1)]
 
     /**
+     * First and last frame whose local peak exceeds [threshold], scanning the
+     * stored samples directly.
+     *
+     * The equivalent used to be `PeakEnvelope.contentBounds(toMonoFloat())`,
+     * which materialises a whole-track `FloatArray` — four bytes per frame, so
+     * *twice* the size of the 16-bit storage it is summarising — purely to find
+     * two indices. On a five-minute stereo track that is an extra 53 MB held
+     * live at the exact moment the decoder is already holding its accumulation
+     * buffers, and it was one of several contributors to running out of heap.
+     *
+     * @return the inclusive range, or null when the whole buffer is silent.
+     */
+    fun contentBounds(threshold: Float = 0.02f, windowSize: Int = 1024): IntRange? {
+        if (frameCount == 0) return null
+        val scale = SHORT_SCALE / channelCount
+        var first = -1
+        var last = -1
+        var i = 0
+        while (i < frameCount) {
+            val end = minOf(i + windowSize, frameCount)
+            var peak = 0f
+            for (frame in i until end) {
+                var sum = 0f
+                for (channel in channels) sum += channel[frame] * scale
+                val magnitude = if (sum < 0f) -sum else sum
+                if (magnitude > peak) peak = magnitude
+            }
+            if (peak > threshold) {
+                if (first < 0) first = i
+                last = end - 1
+            }
+            i = end
+        }
+        return if (first < 0) null else first..last
+    }
+
+    /**
      * A view of this buffer covering only `[startFrame, endFrame)`.
      *
      * Used to apply silence trimming without a second decode. Copies, because
@@ -56,6 +93,10 @@ class PcmBuffer(
     fun slice(startFrame: Int, endFrame: Int): PcmBuffer {
         val from = startFrame.coerceIn(0, frameCount)
         val to = endFrame.coerceIn(from, frameCount)
+        // A slice covering the whole buffer is this buffer. Copying it anyway
+        // doubles a whole track's memory for no change — which matters because
+        // the common case, a track with no silence to trim, hits exactly that.
+        if (from == 0 && to == frameCount) return this
         return PcmBuffer(
             channels = Array(channelCount) { channels[it].copyOfRange(from, to) },
             sampleRate = sampleRate,
@@ -87,14 +128,20 @@ class PcmBuffer(
         // A mono buffer stores one array and hands it out for both channels.
         // Converting `channels` rather than `channel(i)` preserves that, so a
         // mono clip stays centred instead of silently becoming hard-left stereo.
-        val converted = Array(channelCount) { c ->
-            val source = FloatArray(frameCount) { i -> channels[c][i] * SHORT_SCALE }
-            val out = resampler.resample(source, sampleRate, targetRate)
-            ShortArray(out.size) { i ->
+        //
+        // One channel at a time, and each intermediate dropped before the next
+        // begins: converting both channels in a single `Array(...)` expression
+        // keeps every intermediate of every channel live at once, which on a
+        // long track is several times the size of the track itself.
+        val converted = arrayOfNulls<ShortArray>(channelCount)
+        for (c in 0 until channelCount) {
+            val out = resampler.resample(channels[c], sampleRate, targetRate)
+            converted[c] = ShortArray(out.size) { i ->
                 (out[i].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
             }
         }
-        return PcmBuffer(converted, targetRate)
+        @Suppress("UNCHECKED_CAST")
+        return PcmBuffer(converted as Array<ShortArray>, targetRate)
     }
 
     /**
@@ -121,19 +168,68 @@ class PcmBuffer(
 
         // As in resampledTo: convert the stored channels, not the accessor, so a
         // mono buffer stays mono and therefore stays centred.
-        val shifted = Array(channelCount) { c ->
+        // One channel at a time, so a channel's float intermediates are
+        // collectable before the next channel allocates its own.
+        val shifted = arrayOfNulls<ShortArray>(channelCount)
+        for (c in 0 until channelCount) {
             val source = FloatArray(frameCount) { i -> channels[c][i] * SHORT_SCALE }
             val out = shifter.shift(source, semitones)
-            ShortArray(out.size) { i ->
+            shifted[c] = ShortArray(out.size) { i ->
                 (out[i].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
             }
         }
         // The shifter's output length can differ by a frame or two from rounding;
         // trim to the shortest so the channels stay the same length.
-        val length = shifted.minOf { it.size }
+        val length = shifted.minOf { it!!.size }
         return PcmBuffer(
             channels = Array(channelCount) { c ->
-                if (shifted[c].size == length) shifted[c] else shifted[c].copyOf(length)
+                val channel = shifted[c]!!
+                if (channel.size == length) channel else channel.copyOf(length)
+            },
+            sampleRate = sampleRate,
+        )
+    }
+
+    /**
+     * This buffer time-stretched by [ratio], keeping its pitch.
+     *
+     * A ratio above 1 makes the clip longer and therefore slower — its BPM falls
+     * — and below 1 makes it shorter and faster. Pitch does not follow, which is
+     * the whole difference between this and changing a deck's rate: stretching a
+     * clip to fit a tempo must not move its key, or a harmonic match made a
+     * moment ago stops being one.
+     *
+     * Rendered offline, like [pitchShifted], because a pinch sets a length once
+     * and the result is then played many times. Always derive it from the
+     * pristine decoded buffer: stretching an already-stretched clip compounds
+     * both the ratio and the smearing WSOLA leaves on transients.
+     *
+     * @return this buffer when [ratio] is 1.
+     */
+    fun timeStretched(
+        ratio: Double,
+        stretcher: com.hereliesaz.sirmatchalot.dsp.TimeStretcher =
+            com.hereliesaz.sirmatchalot.dsp.TimeStretcher(),
+    ): PcmBuffer {
+        require(ratio > 0.0) { "ratio must be positive, was $ratio" }
+        if (abs(ratio - 1.0) < 1e-9) return this
+
+        // One channel at a time, so a channel's float intermediates are
+        // collectable before the next allocates its own.
+        val stretched = arrayOfNulls<ShortArray>(channelCount)
+        for (c in 0 until channelCount) {
+            val source = FloatArray(frameCount) { i -> channels[c][i] * SHORT_SCALE }
+            val out = stretcher.stretch(source, ratio)
+            stretched[c] = ShortArray(out.size) { i ->
+                (out[i].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
+            }
+        }
+        val length = stretched.minOf { it!!.size }
+        if (length <= 0) return this
+        return PcmBuffer(
+            channels = Array(channelCount) { c ->
+                val channel = stretched[c]!!
+                if (channel.size == length) channel else channel.copyOf(length)
             },
             sampleRate = sampleRate,
         )

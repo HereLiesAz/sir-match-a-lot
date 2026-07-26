@@ -42,6 +42,11 @@ fun LibraryScreen(
     val feedbackMsg by viewModel.feedbackMsg.collectAsState()
     val librarySort by viewModel.librarySort.collectAsState()
     val searchQuery by viewModel.libraryFilter.collectAsState()
+    val isAutoMixing by viewModel.isAutoMixing.collectAsState()
+    val nowPlaying by viewModel.nowPlaying.collectAsState()
+    val transitionProgress by viewModel.transitionProgress.collectAsState()
+    val analysisProgress by viewModel.analysisProgress.collectAsState()
+    var linkInput by remember { mutableStateOf("") }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -49,6 +54,15 @@ fun LibraryScreen(
             uri?.let { viewModel.importTrack(it) }
         }
     )
+
+    // A whole folder, walked recursively — a music library is a folder of
+    // folders, so importing only the top level would usually find nothing.
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+        onResult = { uri: Uri? -> uri?.let { viewModel.importFolder(it) } },
+    )
+
+    val backgroundAnalysis by viewModel.backgroundAnalysis.collectAsState()
 
     Column(
         modifier = modifier
@@ -70,7 +84,63 @@ fun LibraryScreen(
             ) {
                 Icon(Icons.Default.AddCircle, contentDescription = "Import File", tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Import Local File", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                Text("File", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+            }
+
+            Button(
+                onClick = { folderPickerLauncher.launch(null) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E7490)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Import Folder", tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Folder", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+            }
+        }
+
+        // The background run, mirrored from the same state its notification
+        // shows, so the two can never disagree.
+        if (backgroundAnalysis.total > 0) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF111827))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = (if (backgroundAnalysis.paused) "PAUSED " else "ANALYSING ") +
+                        "${backgroundAnalysis.done}/${backgroundAnalysis.total}" +
+                        (if (backgroundAnalysis.current.isNotEmpty()) " — ${backgroundAnalysis.current}" else ""),
+                    color = Color(0xFF81E6D9),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+                LinearProgressIndicator(
+                    progress = { backgroundAnalysis.fraction },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    color = Color.Cyan,
+                    trackColor = Color(0xFF27272A),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (backgroundAnalysis.paused) viewModel.resumeBackgroundAnalysis()
+                            else viewModel.pauseBackgroundAnalysis()
+                        },
+                    ) {
+                        Text(
+                            if (backgroundAnalysis.paused) "RESUME" else "PAUSE",
+                            color = Color(0xFF22D3EE),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+                    TextButton(onClick = { viewModel.stopBackgroundAnalysis() }) {
+                        Text("STOP", color = Color(0xFF9CA3AF), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
 
@@ -98,11 +168,84 @@ fun LibraryScreen(
             )
 
             Button(
-                onClick = { viewModel.analysePending() },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan),
+                onClick = {
+                    if (analysisProgress != null) viewModel.cancelAnalysis() else viewModel.analysePending()
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (analysisProgress != null) Color(0xFFDC2626) else Color.Cyan,
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Analyse new", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 11.sp)
+                Text(
+                    if (analysisProgress != null) "Stop" else "Analyse new",
+                    color = if (analysisProgress != null) Color.White else Color.Black,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        // Analysis is an FFT pass over each whole track and takes real seconds.
+        // Without this the button was indistinguishable from a dead one for the
+        // length of the run.
+        analysisProgress?.let { progress ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Analysing ${progress.done + 1}/${progress.total}: ${progress.current}",
+                color = Color(0xFF81E6D9),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+            LinearProgressIndicator(
+                progress = { progress.fraction },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                color = Color.Cyan,
+                trackColor = Color(0xFF27272A),
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Import by link. There was previously no way to paste anything at all:
+        // LinkParser existed but was called from nowhere, so a playlist could
+        // not be imported by any route.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = linkInput,
+                onValueChange = { linkInput = it },
+                placeholder = {
+                    Text(
+                        "Playlist link, .m3u, or a pasted tracklist",
+                        color = Color.Gray,
+                        fontSize = 11.sp,
+                    )
+                },
+                singleLine = false,
+                maxLines = 3,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF18181B)),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF7C3AED),
+                    unfocusedBorderColor = Color(0xFF27272A),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                ),
+            )
+            Button(
+                onClick = {
+                    viewModel.importFromLink(linkInput)
+                    linkInput = ""
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Import", color = Color.White, fontWeight = FontWeight.Black, fontSize = 11.sp)
             }
         }
 
@@ -128,6 +271,47 @@ fun LibraryScreen(
                 modifier = Modifier.weight(1f)
             ) {
                 Text("AUTOMATCHIC MIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+        }
+
+        // Planning and performing are separate actions: the plan is worth seeing
+        // before it is committed to, and it was previously the only half that
+        // existed.
+        Spacer(Modifier.height(6.dp))
+        Button(
+            onClick = {
+                if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                if (isAutoMixing) "STOP THE MIX" else "PLAY THE MIX",
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+            )
+        }
+
+        nowPlaying?.let { current ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "NOW ${current.index + 1}/${current.total} — ${current.step.track.title}" +
+                    (current.step.transition?.let { " · ${it.overallScore}% in" } ?: ""),
+                color = Color(0xFF6EE7B7),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            if (transitionProgress > 0f) {
+                LinearProgressIndicator(
+                    progress = { transitionProgress },
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    color = Color(0xFF059669),
+                    trackColor = Color(0xFF27272A),
+                )
             }
         }
 

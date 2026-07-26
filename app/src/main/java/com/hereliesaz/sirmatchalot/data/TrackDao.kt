@@ -8,6 +8,15 @@ interface TrackDao {
     @Query("SELECT * FROM tracks")
     fun getAllTracksFlow(): Flow<List<Track>>
 
+    /**
+     * Every track, once.
+     *
+     * The flow above is what the UI observes; a background run needs a snapshot
+     * it can iterate without the list changing underneath it mid-pass.
+     */
+    @Query("SELECT * FROM tracks")
+    suspend fun getAllTracks(): List<Track>
+
     @Query("SELECT * FROM tracks WHERE id = :id LIMIT 1")
     suspend fun getTrackById(id: String): Track?
 

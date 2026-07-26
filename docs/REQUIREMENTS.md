@@ -57,7 +57,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C10 | Cue markers visible on the ring | planned (phase 5) |
 | C11 | The platter is the feature — not inside a card, not on a grey panel | done |
 | C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |
-| C13 | Song list entries are draggable onto the platter | partial — tapping a row loads it; drag-to-place not implemented |
+| C13 | Song list entries are draggable onto the platter | **done** — long-press a card in the strip to lift it, drag onto the circle, and release. The ring under the finger picks the deck (outside A, inside B) and the angle picks the position: angle is time, so the fraction dropped at is the frame the clip starts on. A target marker shows both before release. Long-press rather than immediate drag, or the strip would stop scrolling |
 | C14 | No A/B buttons and no drag handle on song rows | done |
 | C15 | Background is an out-of-focus rave light show, genuinely driven by the audio, not a strobe | planned (phase 6) |
 
@@ -70,7 +70,7 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| D1 | All single-finger gestures manipulate the audio clips themselves | partial — recognised as `CLIP_DRAG`, but the clip operations it should drive are phase 5 |
+| D1 | All single-finger gestures manipulate the audio clips themselves | **done** — a single finger starting on a clip drags that clip's placement around the circle, across decks, or off the platter to remove it |
 | D2 | 2-finger horizontal = crossfader A to B | done |
 | D3 | 2-finger vertical = smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | done (`ScratchModel`, continuity tested) |
 | D4 | 2-finger rotate = volume | done |
@@ -99,16 +99,25 @@ Prompt 75 replaced it with D1–D6 below.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| F1 | Local audio files supported | done — imported and measured |
-| F2 | Any music service whose link resolves to a track or playlist | planned (phase 3) |
-| F3 | A playlist link imports every track in it, not one | planned (phase 3) |
-| F4 | Long imports run in the background with a progress notification, pausable and resumable | planned (phase 3) |
+| F1 | Local audio files supported | done — a single file, or a whole folder walked recursively (`importFolder`, `data/AudioFileFilter`). A music library is a folder of folders, so the walk descends; it is iterative with a visited set, so a deep or cyclic tree terminates rather than overflowing the stack |
+| F2 | Any music service whose link resolves to a track or playlist | partial — `data/PlaylistParser` reads M3U/M3U8, XSPF, Atom and RSS, plus pasted link lists and tracklists, and `importFromLink` fetches a link and expands it. Anything serving a real audio file (podcast enclosures, direct links, self-hosted, purchased downloads) imports playable. **YouTube and Spotify give song lists, not audio**, and this app deliberately does not extract audio from them — see the note below the table |
+| F3 | A playlist link imports every track in it, not one | **done** — a playlist becomes one library entry per song. Entries with no playable location are kept, named, with a null `sourceUri`, rather than dropped or given invented audio |
+| F4 | Long imports run in the background with a progress notification, pausable and resumable | **done** — `analysis/AnalysisService` is a foreground service with a progress notification carrying Pause/Resume/Stop actions. It owns its own database handle and analyser rather than reaching into the ViewModel, because it outlives it by design; progress travels back through `AnalysisProgressBus` so the notification and the library screen show the same figures. Pause takes effect *between* tracks, so resuming does not repeat work already paid for |
 | F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
-| F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | partial — running order, transitions and per-step alignments are planned (`MixPlanner.automatchicMix`); executing the plan automatically is still to do |
+| F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | **done** — `MixPlanner.automatchicMix` decides the running order and per-step corrections; `domain/MixDirector` performs it, deciding when each transition starts (one crossfade before the outgoing track ends), how long it lasts (16 bars of the outgoing tempo, capped at a third of the track), and where the crossfader sits at every instant. It emits commands rather than calling the engine, so the timing is a pure function of elapsed time and is fully unit-tested |
 | F8 | Auto beat sync, auto pitch, auto stretch, harmonize | **done** — `syncToDeckA` applies rate and phase through the engine and *renders* the pitch shift into the clip via `PcmBuffer.pitchShifted`, combining the harmonic interval with a keylock correction of `-12*log2(tempoRatio)` so a tempo match does not drag the key with it. Keylock is toggleable, because off is the turntable behaviour the scratch gestures depend on |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
+
+**On YouTube and Spotify.** Their terms prohibit downloading audio, and Google
+Play's developer policy specifically bans apps that facilitate it — a listing
+that does so is removable, which matters because the store is the monetisation
+channel. So a YouTube playlist link is read through the Atom feed YouTube
+publishes for it (`youtube.com/feeds/videos.xml?playlist_id=…`, keyless and
+documented), which yields the playlist's **songs**. Those arrive as named
+library entries with no audio, to be pointed at files the user holds or at
+Azphalt store packs. The app names what you asked for; it does not take it.
 
 ## G. Sampler and looper
 

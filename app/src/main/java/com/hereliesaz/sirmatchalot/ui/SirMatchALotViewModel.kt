@@ -3,6 +3,7 @@ package com.hereliesaz.sirmatchalot.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Intent
 import android.net.Uri
 import com.hereliesaz.sirmatchalot.analysis.TrackAnalyzer
 import com.hereliesaz.sirmatchalot.audio.AudioDecoder
@@ -12,10 +13,17 @@ import com.hereliesaz.sirmatchalot.audio.Clip
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
+import com.hereliesaz.sirmatchalot.data.AnalysisQueue
 import com.hereliesaz.sirmatchalot.data.AppDatabase
+import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
+import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.BeatSync
+import com.hereliesaz.sirmatchalot.domain.DeckCapacity
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
+import com.hereliesaz.sirmatchalot.domain.MixCommand
+import com.hereliesaz.sirmatchalot.domain.MixDeck
+import com.hereliesaz.sirmatchalot.domain.MixDirector
 import com.hereliesaz.sirmatchalot.domain.MixPlan
 import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
@@ -26,11 +34,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ln
 import org.json.JSONObject
+
+private const val MAX_FOLDER_IMPORT = 5_000
+
+/** Stretch limits. Beyond these WSOLA stops sounding like the music it started as. */
+private const val MIN_CLIP_SCALE = 0.25
+private const val MAX_CLIP_SCALE = 4.0
 
 class SirMatchALotViewModel(application: Application) : AndroidViewModel(application), SyncClient.SyncListener {
 
@@ -51,8 +66,29 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _platterState = MutableStateFlow(PlatterState())
     val platterState: StateFlow<PlatterState> = _platterState
 
-    /** Decoded audio per track id, so a clip is decoded once and reused. */
-    private val decoded = mutableMapOf<String, com.hereliesaz.sirmatchalot.audio.PcmBuffer>()
+    /**
+     * Decoded audio per track id, so a clip is decoded once and reused.
+     *
+     * Bounded. The plain map this replaces was never emptied, so every track
+     * ever loaded stayed in memory as full PCM — about 58 MB per five-minute
+     * stereo track — until the ViewModel died.
+     */
+    private val decoded = com.hereliesaz.sirmatchalot.audio.DecodedCache()
+    /**
+     * The track that set the session's tempo and key.
+     *
+     * The first thing put on the platter sets the tone, and everything after
+     * conforms to it: stretched to its BPM and shifted to its key. Without a
+     * fixed reference, "match the other deck" means whatever happens to be
+     * loaded at the time, so the same two tracks align differently depending on
+     * the order they went on — and a circle whose clips are at different tempos
+     * has no coherent bar grid to snap to.
+     *
+     * Cleared with the decks.
+     */
+    private val _reference = MutableStateFlow<Track?>(null)
+    val reference: StateFlow<Track?> = _reference
+
     private val peaksCache = mutableMapOf<String, PeakEnvelope>()
     private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
@@ -84,8 +120,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * could be "on Deck A" in two incompatible senses at once: as a clip on the
      * engine's timeline, and as an independent player with its own clock that
      * the mixer, crossfader, EQ and scratch could not touch.
+     *
+     * @param startSilent load the audio but neither start the deck nor beat-match
+     *   it. Used when a [MixDirector] is driving: it decides when the track
+     *   enters and applies the alignment its plan already computed, so a load
+     *   that started playback or aligned on its own would fight it.
      */
-    fun loadOntoDeck(track: Track, deck: PlatterGeometry.Deck) {
+    fun loadOntoDeck(
+        track: Track,
+        deck: PlatterGeometry.Deck,
+        startSilent: Boolean = false,
+        atFraction: Float? = null,
+    ) {
         val onDeck = if (deck == PlatterGeometry.Deck.A) _loadedTracksA else _loadedTracksB
         if (onDeck.value.any { it.id == track.id }) return
 
@@ -95,7 +141,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 _feedbackMsg.value = "${track.title} has no audio file"
                 return@launch
             }
-            val pcm = decoded.getOrPut(track.id) {
+            val pcm = decoded[track.id] ?: run {
                 val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
                     _feedbackMsg.value = "Could not decode ${track.title}"
                     return@launch
@@ -108,7 +154,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     _feedbackMsg.value =
                         "Converting ${track.title} to ${audioEngine.output.sampleRate} Hz..."
                 }
-                raw.resampledTo(audioEngine.output.sampleRate)
+                val converted = raw.resampledTo(audioEngine.output.sampleRate)
+                decoded.put(track.id, converted, pinnedTrackIds())
+                if (decoded.overBudget) {
+                    _feedbackMsg.value =
+                        "Low on memory — unload a track before loading more"
+                }
+                converted
             }
             peaksCache.getOrPut(track.id) {
                 track.peaksPath
@@ -128,57 +180,169 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(pcm.toMonoFloat(), pcm.sampleRate)
             }
 
+            // The first track on the platter sets the session's tempo and key;
+            // everything after is rendered to match before it is ever heard.
+            // Conforming the audio itself, rather than setting a deck rate, is
+            // what lets several clips share one circle: a deck has one rate, so
+            // rate-matching only ever works when a deck holds one track.
+            val playable = conformToReference(track, pcm)
+
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
             val existing = engineDeck.clips
-            val startFrame = existing.maxOfOrNull { it.endFrame } ?: 0
-            engineDeck.clips = existing + Clip(
+            // A drop names a point on the circle, and angle is time — so the
+            // fraction dropped at *is* the frame the clip starts on. With an
+            // empty deck there is no circle yet: the first clip defines one, so
+            // it starts at zero and loops however it was dropped.
+            val cycle = engineDeck.cycleFrames
+            val startFrame = when {
+                existing.isEmpty() -> 0
+                atFraction != null && cycle > 0 ->
+                    // Snapped, exactly as a drag is. A drop that landed off the
+                    // grid while a drag of the same clip snapped onto it would
+                    // be two different answers to the same question.
+                    BeatSnap.snapFrame(
+                        frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
+                        framesPerBeat = sessionFramesPerBeat(),
+                        phaseFrames = sessionBeatPhaseFrames(),
+                    ).coerceIn(0, cycle)
+                else -> existing.maxOfOrNull { it.endFrame } ?: 0
+            }
+            engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
                 id = track.id,
-                buffer = pcm,
+                buffer = playable,
                 startFrame = startFrame,
                 loop = existing.isEmpty(),
             )
-            // The first track dropped starts the mix; later ones join whatever
-            // the transport is already doing.
-            if (!_isPlaying.value && audioEngine.deckA.clips.size + audioEngine.deckB.clips.size == 1) {
-                _isPlaying.value = true
-                audioEngine.deckA.playing = true
-                audioEngine.deckB.playing = true
+            if (!startSilent) {
+                // The first track dropped starts the mix; later ones join whatever
+                // the transport is already doing.
+                if (!_isPlaying.value && audioEngine.deckA.clips.size + audioEngine.deckB.clips.size == 1) {
+                    _isPlaying.value = true
+                    audioEngine.deckA.playing = true
+                    audioEngine.deckB.playing = true
+                }
+                engineDeck.playing = _isPlaying.value
             }
-            engineDeck.playing = _isPlaying.value
             onDeck.value = onDeck.value + track
             republishPlatter()
-            alignOnDrop(track, deck)
+            if (!startSilent) reportConformed(track)
             syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
         }
     }
 
     /**
-     * Beat-matches a freshly dropped track against whatever is on the other deck.
+     * Renders [pcm] to the session reference's tempo and key.
      *
-     * A track with no measured tempo is left at its own speed and said so, rather
-     * than being warped by a ratio derived from a tempo nobody measured.
+     * Stretched so its BPM matches — pitch held, so the stretch does not undo
+     * the key match — and then shifted so its key matches. Both are rendered
+     * into the buffer rather than applied as deck settings, because a deck has
+     * one rate and one playhead: rate-matching can only ever align a deck that
+     * holds a single track, and the whole point of the circle is that it holds
+     * several.
+     *
+     * The first track to arrive becomes the reference and is returned untouched.
+     * A track with no measured tempo or key is also returned untouched — there
+     * is nothing to conform it by, and inventing a ratio is what the original
+     * analysis did.
      */
-    private fun alignOnDrop(track: Track, deck: PlatterGeometry.Deck) {
-        val other = if (deck == PlatterGeometry.Deck.A) _loadedTracksB.value else _loadedTracksA.value
-        val reference = other.firstOrNull { it.bpm != null }
-        if (track.bpm == null) {
-            _feedbackMsg.value = "${track.title} has not been analysed yet"
-            return
+    private fun conformToReference(
+        track: Track,
+        pcm: com.hereliesaz.sirmatchalot.audio.PcmBuffer,
+    ): com.hereliesaz.sirmatchalot.audio.PcmBuffer {
+        val existing = _reference.value
+        if (existing == null) {
+            _reference.value = track
+            return pcm
         }
-        if (reference == null) return
+        if (existing.id == track.id) return pcm
 
-        val alignment = BeatSync.align(track, reference)
-        if (alignment == null) {
-            _feedbackMsg.value = "${track.title} will not beat-match ${reference.title}"
+        val referenceBpm = existing.bpm
+        val trackBpm = track.bpm
+        var result = pcm
+
+        if (referenceBpm != null && trackBpm != null && trackBpm > 0.0 && referenceBpm > 0.0) {
+            // To play a 140 BPM track at 120, it has to become longer.
+            val stretch = (trackBpm / referenceBpm).coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+            if (abs(stretch - 1.0) > 1e-3) result = result.timeStretched(stretch)
+        }
+
+        val alignment = BeatSync.align(track, existing)
+        val semitones = alignment?.semitoneShift ?: 0
+        if (semitones != 0) result = result.pitchShifted(semitones.toDouble())
+
+        return result
+    }
+
+    /** Says what conforming did, once the clip is on the deck. */
+    private fun reportConformed(track: Track) {
+        val existing = _reference.value
+        if (existing == null || existing.id == track.id) {
+            _feedbackMsg.value = "${track.title} sets the session — " +
+                "${track.bpmLabel()} BPM, ${track.keyLabel()}"
             return
         }
-        audioEngine.applyAlignment(
-            if (deck == PlatterGeometry.Deck.A) "A" else "B",
-            alignment.tempoRatio,
-            alignment.phaseOffsetSeconds,
+        val referenceBpm = existing.bpm
+        val trackBpm = track.bpm
+        if (trackBpm == null || referenceBpm == null) {
+            _feedbackMsg.value = "${track.title} has no measured tempo — added as it is"
+            return
+        }
+        val semitones = BeatSync.align(track, existing)?.semitoneShift ?: 0
+        _feedbackMsg.value = buildString {
+            append("${track.title} conformed to ${String.format("%.1f", referenceBpm)} BPM")
+            if (semitones != 0) append(", ${String.format("%+d", semitones)} semitones to ${existing.keyLabel()}")
+        }
+    }
+
+    /**
+     * Drops the oldest clips from [engineDeck] until [incoming] fits the circle.
+     *
+     * @return the clips that should remain, for the caller to add to.
+     */
+    private fun evictForCapacity(
+        engineDeck: com.hereliesaz.sirmatchalot.audio.Deck,
+        deck: PlatterGeometry.Deck,
+        incoming: com.hereliesaz.sirmatchalot.audio.PcmBuffer,
+    ): List<Clip> {
+        val framesPerBeat = sessionFramesPerBeat()
+        if (framesPerBeat <= 0.0) return engineDeck.clips
+
+        val sounding = clipUnderPlayhead(engineDeck)
+        val entries = engineDeck.clips.mapIndexed { index, clip ->
+            DeckCapacity.Entry(
+                id = clip.id,
+                beats = (clip.frameCount / framesPerBeat).toInt().coerceAtLeast(1),
+                addedOrder = index,
+            )
+        }
+        val incomingBeats = (incoming.frameCount / framesPerBeat).toInt().coerceAtLeast(1)
+        val protectedIds = setOfNotNull(sounding)
+
+        val evictions = DeckCapacity.evictionsFor(
+            existing = entries,
+            incoming = incomingBeats,
+            protectedIds = protectedIds,
         )
+        if (evictions.isEmpty()) return engineDeck.clips
+
         _feedbackMsg.value =
-            "Matched ${track.title} to ${String.format("%.1f", reference.bpm)} BPM"
+            "Platter full — dropped ${evictions.size} to make room"
+        for (id in evictions) {
+            _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == id }
+            _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id == id }
+            peaksCache.remove(id)
+            energyCache.remove(id)
+        }
+        decoded.trim(pinnedTrackIds())
+        return engineDeck.clips.filterNot { it.id in evictions }
+    }
+
+    /** The clip the playhead is currently inside, which must never be evicted. */
+    private fun clipUnderPlayhead(engineDeck: com.hereliesaz.sirmatchalot.audio.Deck): String? {
+        val position = engineDeck.playhead
+        return engineDeck.clips.firstOrNull { clip ->
+            clip.loop || (position >= clip.startFrame && position < clip.endFrame)
+        }?.id
     }
 
     /** Rebuilds the platter layout from the engine's clips. */
@@ -253,7 +417,152 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id in selected }
         _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id in selected }
         _selectedTrackIds.value = emptySet()
+        decoded.trim(pinnedTrackIds())
+        selected.forEach { peaksCache.remove(it); energyCache.remove(it) }
         republishPlatter()
+    }
+
+    /**
+     * Moves a clip already on a deck to a new point on the circle, and to the
+     * other deck if it was dragged across the base radius.
+     *
+     * Angle is time, so a move around the circle *is* a move in the timeline: the
+     * fraction becomes the clip's start frame. The clip keeps its decoded buffer
+     * — this is a placement change, not a reload.
+     */
+    fun moveClip(clipId: String, deck: PlatterGeometry.Deck, fraction: Float) {
+        val target = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val source = if (deck == PlatterGeometry.Deck.A) audioEngine.deckB else audioEngine.deckA
+
+        val existing = target.clips.firstOrNull { it.id == clipId }
+            ?: source.clips.firstOrNull { it.id == clipId }
+            ?: return
+
+        val cycle = target.cycleFrames.takeIf { it > 0 } ?: existing.frameCount
+        val raw = (fraction.coerceIn(0f, 1f) * cycle).toInt()
+        // Land on a beat. A finger on a five-minute revolution is tens of
+        // milliseconds out at best, which is audibly off and impossible to
+        // correct by eye.
+        val startFrame = BeatSnap.snapFrame(
+            frame = raw,
+            framesPerBeat = sessionFramesPerBeat(),
+            phaseFrames = sessionBeatPhaseFrames(),
+        )
+        if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
+
+        val moved = Clip(
+            id = existing.id,
+            buffer = existing.buffer,
+            startFrame = startFrame,
+            gain = existing.gain,
+            loop = existing.loop,
+        )
+        source.clips = source.clips.filterNot { it.id == clipId }
+        target.clips = target.clips.filterNot { it.id == clipId } + moved
+
+        // Keep the deck metadata in step, since a clip can cross decks.
+        val track = _tracks.value.firstOrNull { it.id == clipId }
+        if (track != null) {
+            if (deck == PlatterGeometry.Deck.A) {
+                _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id == clipId }
+                if (_loadedTracksA.value.none { it.id == clipId }) {
+                    _loadedTracksA.value = _loadedTracksA.value + track
+                }
+            } else {
+                _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == clipId }
+                if (_loadedTracksB.value.none { it.id == clipId }) {
+                    _loadedTracksB.value = _loadedTracksB.value + track
+                }
+            }
+        }
+        republishPlatter()
+    }
+
+    /**
+     * Frames per beat for the whole platter.
+     *
+     * One grid, not one per deck, because every clip is conformed to the session
+     * reference's tempo when it loads. Reading a deck's *own* first track
+     * instead — as this did before conforming existed — gives the grid of a
+     * tempo nothing on the platter is actually playing at: a 140 BPM track
+     * stretched to a 120 BPM session would be snapped to 140 BPM beat lines,
+     * which land nowhere near its beats.
+     *
+     * Falls back to whatever is loaded when no reference has been set, which is
+     * the state a session is in before its first track finishes loading.
+     */
+    private fun sessionFramesPerBeat(): Double {
+        val bpm = _reference.value?.bpm
+            ?: (_loadedTracksA.value + _loadedTracksB.value).firstNotNullOfOrNull { it.bpm }
+        return BeatSnap.framesPerBeat(bpm, audioEngine.output.sampleRate)
+    }
+
+    /**
+     * Where the platter's grid starts, so beat lines sit on the music rather
+     * than on frame zero.
+     *
+     * The reference track is the one clip that is never stretched, so its
+     * measured first beat is the grid's phase, and every conformed clip's beats
+     * line up with it by construction.
+     */
+    private fun sessionBeatPhaseFrames(): Double {
+        val first = _reference.value?.firstBeatSeconds
+            ?: (_loadedTracksA.value + _loadedTracksB.value)
+                .firstOrNull { it.bpm != null }?.firstBeatSeconds
+        return (first ?: 0.0) * audioEngine.output.sampleRate
+    }
+
+    /**
+     * Stretches a clip by [ratio], changing its tempo without moving its pitch.
+     *
+     * A ratio above 1 makes the clip longer and slower; below 1, shorter and
+     * faster. Pitch is held, which is the whole difference between this and
+     * changing the deck's rate — stretching a clip to fit a tempo must not move
+     * its key, or a harmonic match made a moment ago stops being one.
+     *
+     * The ratio is snapped so the result is a whole number of beats: the reason
+     * to stretch a clip at all is to make it line up, and 3.97 bars does not.
+     *
+     * Rendered from the pristine decoded buffer rather than from whatever is on
+     * the deck, so repeated pinches do not compound the ratio or the smearing
+     * WSOLA leaves on transients. Applied once, on release — re-rendering a
+     * whole track on every frame of a pinch is not affordable.
+     */
+    fun scaleClip(clipId: String, deck: PlatterGeometry.Deck, ratio: Double) {
+        if (ratio <= 0.0 || abs(ratio - 1.0) < 1e-3) return
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val existing = engineDeck.clips.firstOrNull { it.id == clipId } ?: return
+        val pristine = decoded[clipId] ?: existing.buffer
+
+        val framesPerBeat = sessionFramesPerBeat()
+        val snapped = BeatSnap.snapRatio(pristine.frameCount, ratio, framesPerBeat)
+            .coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+
+        viewModelScope.launch(Dispatchers.Default) {
+            _feedbackMsg.value = "Stretching to ${String.format("%.2fx", snapped)}..."
+            val stretched = pristine.timeStretched(snapped)
+            val current = engineDeck.clips.firstOrNull { it.id == clipId } ?: return@launch
+            engineDeck.clips = engineDeck.clips.map { clip ->
+                if (clip.id != clipId) {
+                    clip
+                } else {
+                    Clip(
+                        id = clip.id,
+                        buffer = stretched,
+                        startFrame = current.startFrame,
+                        gain = clip.gain,
+                        loop = clip.loop,
+                    )
+                }
+            }
+            republishPlatter()
+            val track = _tracks.value.firstOrNull { it.id == clipId }
+            val newBpm = track?.bpm?.let { it / snapped }
+            _feedbackMsg.value = buildString {
+                append("Stretched ${String.format("%.2fx", snapped)}")
+                if (newBpm != null) append(" — now ${String.format("%.1f", newBpm)} BPM, same key")
+            }
+        }
     }
 
     /** Empties both decks — the clips and the record of what is on them. */
@@ -263,6 +572,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _loadedTracksA.value = emptyList()
         _loadedTracksB.value = emptyList()
         _selectedTrackIds.value = emptySet()
+        decoded.trim(pinned = emptySet())
+        // A new session gets a new reference; the old one no longer sets a tone
+        // for anything.
+        _reference.value = null
         republishPlatter()
     }
 
@@ -435,6 +748,126 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             else ->
                 "Planned ${plan.steps.size} tracks (${plan.skipped.size} not analysed), " +
                     "${plan.averageScore}% average transition"
+        }
+    }
+
+    // --- Performing the plan ---
+
+    private val _mixDirector = MutableStateFlow<MixDirector?>(null)
+
+    /** True while the app is playing a planned mix by itself. */
+    val isAutoMixing: StateFlow<Boolean> =
+        _mixDirector.map { it != null }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private val _nowPlaying = MutableStateFlow<MixCommand.NowPlaying?>(null)
+    val nowPlaying: StateFlow<MixCommand.NowPlaying?> = _nowPlaying
+
+    /** 0..1 through the current transition, for the UI to show a fade in progress. */
+    private val _transitionProgress = MutableStateFlow(0f)
+    val transitionProgress: StateFlow<Float> = _transitionProgress
+
+    private var autoMixJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Performs the planned mix — the half of "Automatchic Mix" that did not exist.
+     *
+     * `MixPlanner` decided *what* to play and computed the corrections for each
+     * transition; the plan was then displayed and never performed. `MixDirector`
+     * decides *when*, and this applies what it asks for.
+     *
+     * The director is driven by a wall-clock delta rather than by a deck playhead,
+     * because a deck timeline is circular and wraps. The tick interval is not
+     * assumed to be exact — the elapsed time between iterations is measured and
+     * passed in, so a stalled frame does not desynchronise the set.
+     */
+    fun startAutomatchicMix() {
+        val plan = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
+        if (plan.steps.isEmpty()) {
+            _feedbackMsg.value = "No analysed tracks to mix"
+            return
+        }
+        stopAutomatchicMix()
+        clearDecks()
+
+        val director = MixDirector(plan)
+        _mixDirector.value = director
+        apply(director.start())
+
+        autoMixJob = viewModelScope.launch {
+            var last = System.nanoTime()
+            while (!director.finished) {
+                delay(50)
+                val now = System.nanoTime()
+                val delta = (now - last) / 1_000_000_000.0
+                last = now
+                apply(director.advance(delta))
+                _transitionProgress.value = director.transitionProgress.toFloat()
+            }
+            _mixDirector.value = null
+            _transitionProgress.value = 0f
+            _feedbackMsg.value = "Mix finished — ${plan.steps.size} tracks"
+        }
+    }
+
+    /** Stops performing a mix, leaving whatever is loaded where it is. */
+    fun stopAutomatchicMix() {
+        autoMixJob?.cancel()
+        autoMixJob = null
+        _mixDirector.value = null
+        _transitionProgress.value = 0f
+    }
+
+    /** Carries out what the director asked for. */
+    private fun apply(commands: List<MixCommand>) {
+        for (command in commands) when (command) {
+            is MixCommand.Preload -> loadOntoDeck(
+                command.track,
+                if (command.deck == MixDeck.A) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B,
+                startSilent = true,
+            )
+
+            is MixCommand.Start -> {
+                val name = if (command.deck == MixDeck.A) "A" else "B"
+                val engineDeck = deckNamed(name)
+                // Enter from the top of the track, not from wherever the deck's
+                // playhead happened to be left.
+                engineDeck.playhead = 0.0
+                engineDeck.playing = true
+                _isPlaying.value = true
+
+                // Clips are conformed to the session reference at load, so they
+                // already share its tempo and key. Applying the planner's
+                // alignment on top would correct a difference that has already
+                // been rendered away — a track would be stretched twice and
+                // shifted twice. Only phase is still worth applying, and only
+                // when the clip was never conformed.
+                command.alignment?.let { alignment ->
+                    if (_reference.value == null) {
+                        audioEngine.applyAlignment(name, alignment.tempoRatio, alignment.phaseOffsetSeconds)
+                    } else {
+                        audioEngine.applyAlignment(name, 1.0, alignment.phaseOffsetSeconds)
+                    }
+                }
+            }
+
+            is MixCommand.Crossfade -> applyCrossfade(((command.position * 200f) - 100f).toInt())
+
+            is MixCommand.Retire -> {
+                val name = if (command.deck == MixDeck.A) "A" else "B"
+                deckNamed(name).playing = false
+                removeTrackFromDecks(command.track.id)
+            }
+
+            is MixCommand.NowPlaying -> {
+                _nowPlaying.value = command
+                _feedbackMsg.value =
+                    "${command.index + 1}/${command.total}: ${command.step.track.title}"
+            }
+
+            MixCommand.Finished -> {
+                _mixDirector.value = null
+                _transitionProgress.value = 0f
+            }
         }
     }
 
@@ -641,6 +1074,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /** Library entry point for Deck B. */
     fun addTrackToDeckB(track: Track) = loadOntoDeck(track, PlatterGeometry.Deck.B)
 
+    /**
+     * Ids whose decoded audio the render thread may still be reading.
+     *
+     * Evicting one of these would not stop playback — the clip holds its own
+     * reference — but it would mean the next load decodes a second copy, so the
+     * cache would cost memory instead of saving it.
+     */
+    private fun pinnedTrackIds(): Set<String> =
+        (audioEngine.deckA.clips + audioEngine.deckB.clips).map { it.id }.toSet()
+
     /** Takes [trackId] off whichever deck holds it. */
     fun removeTrackFromDecks(trackId: String) {
         _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == trackId }
@@ -648,6 +1091,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         audioEngine.deckA.clips = audioEngine.deckA.clips.filterNot { it.id == trackId }
         audioEngine.deckB.clips = audioEngine.deckB.clips.filterNot { it.id == trackId }
         _selectedTrackIds.value = _selectedTrackIds.value - trackId
+        // Release the audio as the track leaves, so a long mix does not
+        // accumulate every track it has already played.
+        decoded.trim(pinnedTrackIds())
+        peaksCache.remove(trackId)
+        energyCache.remove(trackId)
         republishPlatter()
     }
 
@@ -753,13 +1201,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * A track whose tempo or key could not be determined keeps nulls for those
      * columns; it is not given a plausible-looking substitute.
      */
-    suspend fun analyseTrack(track: Track) {
-        val source = track.sourceUri ?: return
+    suspend fun analyseTrack(track: Track): Boolean {
+        val source = track.sourceUri
+        if (source.isNullOrBlank()) {
+            // Previously a bare `?: return`. A track with no audio is a normal
+            // state now that a playlist can name songs the library does not
+            // hold, so it needs saying rather than swallowing.
+            _feedbackMsg.value = "${track.title} has no audio file to analyse"
+            return false
+        }
         try {
             val decoded = AudioDecoder.decode(getApplication(), Uri.parse(source))
             if (decoded == null) {
                 _feedbackMsg.value = "Could not decode ${track.title}"
-                return
+                return false
             }
 
             val analysis = analyzer.analyse(decoded.pcm)
@@ -803,16 +1258,327 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 append(", ")
                 append(analysis.camelotKey ?: "key not found")
             }
+            return true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Cancellation is the user stopping the run, not a failure of this
+            // track; let it propagate so the loop above unwinds.
+            throw e
         } catch (e: Exception) {
             _feedbackMsg.value = "Analysis failed for ${track.title}: ${e.message}"
+            return false
         }
     }
 
-    /** Re-measures every track whose stored analysis predates the current analyser. */
-    fun analysePending() {
+    /**
+     * Imports every audio file under [treeUri], recursively.
+     *
+     * Walks the document tree rather than taking a directory listing, because a
+     * music folder is almost always a folder of folders — artist, then album —
+     * and importing only the top level would find nothing at all in the usual
+     * layout.
+     *
+     * Files are added unanalysed and the background service is started once at
+     * the end, rather than analysing each file as it is found: a folder can hold
+     * hundreds of tracks, and measuring them inline would block the import for
+     * as long as the analysis takes.
+     */
+    fun importFolder(treeUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            _tracks.value.filterNot { it.isAnalysed }.forEach { analyseTrack(it) }
+            _feedbackMsg.value = "Scanning folder..."
+            val resolver = getApplication<Application>().contentResolver
+            runCatching {
+                resolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+
+            val found = ArrayList<Pair<Uri, String>>()
+            runCatching { walk(treeUri, treeUri, found) }
+                .onFailure {
+                    _feedbackMsg.value = "Could not read that folder"
+                    return@launch
+                }
+
+            if (found.isEmpty()) {
+                _feedbackMsg.value = "No audio files in that folder"
+                return@launch
+            }
+
+            val existing = _tracks.value.mapNotNull { it.sourceUri }.toHashSet()
+            var added = 0
+            for ((uri, name) in found) {
+                val source = uri.toString()
+                if (source in existing) continue
+                val parsed = com.hereliesaz.sirmatchalot.data.LinkParser.parseFileName(name)
+                trackDao.insertTrack(
+                    Track(title = parsed.first, artist = parsed.second, sourceUri = source),
+                )
+                added++
+            }
+
+            _feedbackMsg.value = when (added) {
+                0 -> "All ${found.size} files were already in the library"
+                else -> "Added $added of ${found.size} files — analysing in the background"
+            }
+            if (added > 0) startBackgroundAnalysis()
         }
+    }
+
+    /**
+     * Collects audio documents under [folder] into [into], descending into
+     * subfolders.
+     *
+     * Iterative rather than recursive: a deep or symlink-looped tree would
+     * otherwise be a stack overflow, and the visited set makes a provider that
+     * reports a cycle terminate instead of spinning.
+     */
+    private fun walk(treeUri: Uri, folder: Uri, into: MutableList<Pair<Uri, String>>) {
+        val resolver = getApplication<Application>().contentResolver
+        val visited = HashSet<String>()
+        val pending = ArrayDeque<Uri>()
+        pending.add(folder)
+
+        while (pending.isNotEmpty() && into.size < MAX_FOLDER_IMPORT) {
+            val current = pending.removeFirst()
+            val documentId = runCatching {
+                android.provider.DocumentsContract.getDocumentId(current)
+            }.getOrNull() ?: runCatching {
+                android.provider.DocumentsContract.getTreeDocumentId(current)
+            }.getOrNull() ?: continue
+            if (!visited.add(documentId)) continue
+
+            val children = android.provider.DocumentsContract
+                .buildChildDocumentsUriUsingTree(treeUri, documentId)
+            resolver.query(
+                children,
+                arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+                ),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val childId = cursor.getString(0)
+                    val name = cursor.getString(1)
+                    val mime = cursor.getString(2)
+                    val childUri = android.provider.DocumentsContract
+                        .buildDocumentUriUsingTree(treeUri, childId)
+                    when {
+                        com.hereliesaz.sirmatchalot.data.AudioFileFilter.isDirectory(mime) ->
+                            pending.add(childUri)
+                        com.hereliesaz.sirmatchalot.data.AudioFileFilter.isAudio(mime, name) ->
+                            into.add(childUri to name)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Hands analysis to the background service.
+     *
+     * Analysis of a folder runs for minutes, and doing it in the ViewModel meant
+     * it stopped the moment the app was backgrounded — which is exactly when
+     * someone would leave it running.
+     */
+    fun startBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.start(getApplication())
+    }
+
+    fun pauseBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_PAUSE,
+        )
+    }
+
+    fun resumeBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_RESUME,
+        )
+    }
+
+    fun stopBackgroundAnalysis() {
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.send(
+            getApplication(),
+            com.hereliesaz.sirmatchalot.analysis.AnalysisService.ACTION_STOP,
+        )
+    }
+
+    /** Progress of the background run, shared with its notification. */
+    val backgroundAnalysis: StateFlow<com.hereliesaz.sirmatchalot.analysis.AnalysisState> =
+        com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus.state
+
+    /**
+     * Imports whatever [input] refers to: a playlist, a track listing, or a
+     * direct audio link.
+     *
+     * A playlist becomes **one library entry per song**, which is the whole
+     * point — the previous behaviour was to treat an imported playlist as a
+     * single track, and before that there was no link import at all
+     * ([com.hereliesaz.sirmatchalot.data.LinkParser] existed but was called from
+     * nowhere).
+     *
+     * Entries that carry a playable location are analysed straight away.
+     * Entries that only *name* a song — everything a YouTube or Spotify listing
+     * gives you — are still added, with no `sourceUri`, so the running order is
+     * preserved and each can be pointed at a file later. They are not given
+     * invented audio, and they are not silently dropped.
+     */
+    fun importFromLink(input: String) {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) {
+            _feedbackMsg.value = "Paste a playlist link, a track listing, or an audio link"
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _feedbackMsg.value = "Reading..."
+            val document = when {
+                // Not a URL at all: a pasted tracklist is itself the document.
+                !trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true) -> trimmed
+                else -> fetchPlaylistDocument(trimmed) ?: run {
+                    _feedbackMsg.value = "Could not read that link"
+                    return@launch
+                }
+            }
+
+            val entries = PlaylistParser.parse(document)
+            if (entries.isEmpty()) {
+                _feedbackMsg.value = "Nothing recognisable as a playlist there"
+                return@launch
+            }
+
+            val existing = _tracks.value
+            var added = 0
+            var withAudio = 0
+            for (entry in entries) {
+                val duplicate = existing.any { track ->
+                    (entry.sourceUri != null && track.sourceUri == entry.sourceUri) ||
+                        (track.title.equals(entry.title, ignoreCase = true) &&
+                            track.artist.equals(entry.artist ?: "", ignoreCase = true))
+                }
+                if (duplicate) continue
+
+                trackDao.insertTrack(
+                    Track(
+                        title = entry.title,
+                        artist = entry.artist ?: "Unknown Artist",
+                        sourceUri = entry.sourceUri,
+                        durationMs = ((entry.durationSeconds ?: 0.0) * 1000).toLong(),
+                    ),
+                )
+                added++
+                if (entry.hasAudio) withAudio++
+            }
+
+            _feedbackMsg.value = buildString {
+                append("Imported $added of ${entries.size} ${if (entries.size == 1) "song" else "songs"}")
+                val named = added - withAudio
+                if (named > 0) append(" — $named named only, with no audio file yet")
+            }
+            if (withAudio > 0) analysePending()
+        }
+    }
+
+    /**
+     * Fetches a playlist document.
+     *
+     * A YouTube playlist URL is rewritten to the Atom feed YouTube publishes for
+     * it, which lists the playlist's videos without an API key. That gives the
+     * songs; it does not give audio, and this app deliberately does not attempt
+     * to extract audio from YouTube — doing so breaches their terms and Google
+     * Play's policy on such apps.
+     */
+    private fun fetchPlaylistDocument(url: String): String? {
+        val playlistId = Regex("[?&]list=([a-zA-Z0-9_-]+)").find(url)?.groupValues?.get(1)
+        val target = if (playlistId != null) {
+            "https://www.youtube.com/feeds/videos.xml?playlist_id=$playlistId"
+        } else {
+            url
+        }
+        return runCatching {
+            val connection = java.net.URL(target).openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 15_000
+            connection.setRequestProperty("User-Agent", "SirMatchALot")
+            connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+        }.getOrNull()
+    }
+
+    /** Re-measures every track whose stored analysis predates the current analyser. */
+    /**
+     * Progress through the current analysis run, or null when idle.
+     *
+     * Analysing a full track is an FFT pass over the whole file and takes real
+     * seconds. Without something visible changing, the button was
+     * indistinguishable from a dead one for the entire run.
+     */
+    private val _analysisProgress = MutableStateFlow<AnalysisProgress?>(null)
+    val analysisProgress: StateFlow<AnalysisProgress?> = _analysisProgress
+
+    /** @param done tracks finished so far, out of [total]. */
+    data class AnalysisProgress(val done: Int, val total: Int, val current: String) {
+        val fraction: Float get() = if (total <= 0) 0f else done.toFloat() / total
+    }
+
+    private var analysisJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Measures every track that has audio and has not been measured yet.
+     *
+     * Reports something in *every* case. The previous version reported only from
+     * inside a successful per-track analysis, so an empty library, a fully
+     * analysed one, and one full of entries with no audio file were all silent —
+     * which is how "pressing analyse does nothing" came about. Three of those
+     * four outcomes were doing exactly nothing, correctly, and saying so.
+     */
+    fun analysePending(rescan: Boolean = false) {
+        if (analysisJob?.isActive == true) {
+            _feedbackMsg.value = "Already analysing — let it finish"
+            return
+        }
+        val plan = if (rescan) {
+            AnalysisQueue.planFullRescan(_tracks.value)
+        } else {
+            AnalysisQueue.plan(_tracks.value)
+        }
+        if (!plan.hasWork) {
+            _feedbackMsg.value = plan.idleMessage()
+            return
+        }
+
+        _feedbackMsg.value = plan.startMessage()
+        analysisJob = viewModelScope.launch(Dispatchers.IO) {
+            var done = 0
+            var failed = 0
+            for (track in plan.toAnalyse) {
+                _analysisProgress.value = AnalysisProgress(done, plan.toAnalyse.size, track.title)
+                if (!analyseTrack(track)) failed++
+                done++
+            }
+            _analysisProgress.value = null
+            _feedbackMsg.value = buildString {
+                append("Analysed ${done - failed} of ${plan.toAnalyse.size}")
+                if (failed > 0) append(", $failed could not be decoded")
+                if (plan.missingAudio.isNotEmpty()) {
+                    append("; ${plan.missingAudio.size} have no audio file")
+                }
+            }
+        }
+    }
+
+    /** Stops an analysis run in progress. */
+    fun cancelAnalysis() {
+        analysisJob?.cancel()
+        analysisJob = null
+        _analysisProgress.value = null
+        _feedbackMsg.value = "Analysis stopped"
     }
 
     fun deleteTrack(track: Track) {
@@ -887,6 +1653,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     override fun onCleared() {
         super.onCleared()
         audioEngine.release()
+        decoded.clear()
         syncClient.disconnect()
     }
 }

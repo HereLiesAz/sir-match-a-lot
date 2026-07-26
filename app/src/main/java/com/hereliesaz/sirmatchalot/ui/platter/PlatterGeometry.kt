@@ -88,6 +88,50 @@ object PlatterGeometry {
     enum class Deck { A, B }
 
     /**
+     * Half-width of the band around the base radius that counts as "on the
+     * circle", as a multiple of the base radius.
+     *
+     * A drag has to be able to leave the platter to delete a clip, so there must
+     * be a definite outside. Without a band, every point on screen belongs to
+     * one deck or the other and nothing can ever be dragged off.
+     */
+    const val RING_BAND = 0.85f
+
+    /** True when [radius] is close enough to the rings to count as on the platter. */
+    fun isOnRing(radius: Float, baseRadius: Float): Boolean {
+        if (baseRadius <= 0f) return false
+        val ratio = radius / baseRadius
+        return ratio in (1f - RING_BAND)..(1f + RING_BAND)
+    }
+
+    /**
+     * Which clip covers [fraction], or null.
+     *
+     * Spans wrap: a clip starting at 0.9 with a span of 0.2 covers 0.95 and
+     * 0.05 alike, because the timeline is a circle and a clip that runs past the
+     * top does not stop existing there.
+     *
+     * Later clips win where they overlap, matching the draw order.
+     */
+    fun clipAt(
+        clips: List<com.hereliesaz.sirmatchalot.ui.platter.PlatterClip>,
+        fraction: Float,
+    ): com.hereliesaz.sirmatchalot.ui.platter.PlatterClip? {
+        val target = wrapFraction(fraction)
+        return clips.lastOrNull { clip ->
+            if (clip.spanFraction <= 0f) {
+                false
+            } else if (clip.spanFraction >= 1f) {
+                true
+            } else {
+                val start = wrapFraction(clip.startFraction)
+                val offset = wrapFraction(target - start)
+                offset < clip.spanFraction
+            }
+        }
+    }
+
+    /**
      * Shapes a raw peak into a drawn ray length.
      *
      * The reference images this is built against share one property: a few

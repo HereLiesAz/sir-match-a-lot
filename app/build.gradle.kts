@@ -168,6 +168,10 @@ dependencies {
     // Unit tests
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // A real SQLite engine on the JVM. Migration SQL is only validated when it
+    // is compiled by SQLite; without this, a syntax error in a migration ships
+    // and first appears on an upgrading user's device at launch.
+    testImplementation(libs.sqlite.jdbc)
 
     // Instrumented tests
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
