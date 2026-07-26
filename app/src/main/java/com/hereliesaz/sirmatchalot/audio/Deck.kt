@@ -65,6 +65,16 @@ class Deck(
     val cycleFrames: Int
         get() = clips.maxOfOrNull { it.endFrame } ?: 0
 
+    /**
+     * True when this deck can produce sound: running, with material on it.
+     *
+     * Exactly the condition [render] checks before doing any work, exposed so
+     * the output can tell whether the whole graph is idle and stand down. Kept
+     * next to that check rather than reconstructed elsewhere, so the two cannot
+     * drift apart and leave the output running for a deck that renders nothing.
+     */
+    val isSounding: Boolean get() = playing && clips.isNotEmpty() && cycleFrames > 0
+
     /** Current position on the timeline, in frames. */
     @Volatile
     var playhead: Double = 0.0

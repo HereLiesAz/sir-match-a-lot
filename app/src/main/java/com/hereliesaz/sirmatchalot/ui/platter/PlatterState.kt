@@ -68,7 +68,10 @@ data class PlatterMarker(
  *   audio engine's playhead, not from a wall-clock animation.
  * @param outputLevel live metered level, 0..1. Drives waveform size and glow, so
  *   the ring reacts to the music rather than to a free-running oscillator.
- * @param isPlaying whether transport is running.
+ * @param isPlaying whether either deck is actually sounding — running, with
+ *   material on it. Not merely whether the transport is marked as running: this
+ *   is what decides whether the platter animates, and a deck left playing with
+ *   an empty timeline would hold the frame clock open for a still image.
  */
 data class PlatterState(
     val deckA: List<PlatterClip> = emptyList(),

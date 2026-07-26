@@ -182,12 +182,112 @@ class DecodedCacheTest {
     }
 
     @Test
-    fun `the default budget is a sane fraction of the heap`() {
-        val bytes = DecodedCache.defaultBudgetBytes()
-        // Enough for two five-minute 16-bit stereo tracks at 48 kHz, and not
-        // more than the heap it has to live inside.
-        assertTrue("budget $bytes is too small", bytes >= 2L * 5 * 60 * 48_000 * 2 * 2)
-        assertTrue("budget $bytes exceeds the heap", bytes <= Runtime.getRuntime().maxMemory())
+    fun `the default budget is a third of the heap`() {
+        val heap = Runtime.getRuntime().maxMemory()
+        assertEquals(heap / 3, DecodedCache.defaultBudgetBytes())
+    }
+
+    // --- The budget the heap can actually afford ---
+
+    @Test
+    fun `a small heap gets the fraction and not a fixed floor`() {
+        // The bug: `(heap / 3).coerceAtLeast(MINIMUM_BYTES)`, where the floor
+        // was two five-minute tracks — 115 MB. On a 256 MB heap the third is
+        // 85 MB, so the floor won, and the cache ceiling on exactly the devices
+        // that cannot afford it was set to 45% of the entire heap. The decoder
+        // still needs a whole-track accumulation buffer and a converted copy
+        // underneath that. The mechanism meant to prevent OutOfMemoryError was
+        // itself a cause of one.
+        val smallHeap = 256L * 1024 * 1024
+        assertEquals(smallHeap / 3, DecodedCache.budgetFor(smallHeap, divisor = 3))
+    }
+
+    @Test
+    fun `the budget scales with the heap at every setting`() {
+        val small = 256L * 1024 * 1024
+        val large = 1024L * 1024 * 1024
+        for (divisor in listOf(2, 3, 6)) {
+            assertTrue(
+                "divisor $divisor did not scale with the heap",
+                DecodedCache.budgetFor(large, divisor) > DecodedCache.budgetFor(small, divisor),
+            )
+            assertTrue(
+                "divisor $divisor claimed more than half the heap",
+                DecodedCache.budgetFor(small, divisor) <= small / 2,
+            )
+        }
+    }
+
+    @Test
+    fun `a tiny heap still yields a positive budget rather than zero`() {
+        val budget = DecodedCache.budgetFor(heapBytes = 4L * 1024 * 1024, divisor = 6)
+        assertTrue("budget must be positive", budget > 0)
+    }
+
+    @Test
+    fun `a budget too small to hold anything still cannot break playback`() {
+        // The consequence of having no floor, stated as a test: a cache smaller
+        // than one track stops saving re-decodes, and that is all it does. What
+        // a deck is reading is pinned, so it survives regardless.
+        val cache = DecodedCache(maxBytes = 1)
+        cache.put("playing", mono(1_000), pinned = setOf("playing"))
+        assertNotNull(cache["playing"])
+        assertTrue(cache.overBudget)
+    }
+
+    // --- Admission, before the allocator gets a say ---
+
+    @Test
+    fun `an entry that fits once the evictable is gone is admitted`() {
+        val cache = DecodedCache(maxBytes = 6_000)
+        cache.put("old", mono(1_000))
+        cache.put("playing", mono(1_000))
+
+        // 4000 bytes will not fit alongside both, but "old" can go.
+        assertTrue(cache.canAdmit(4_000, pinned = setOf("playing")))
+    }
+
+    @Test
+    fun `an entry larger than everything unpinnable can free is refused`() {
+        val cache = DecodedCache(maxBytes = 6_000)
+        cache.put("playing", mono(2_000))
+
+        // 4000 held by the playing clip, which cannot be dropped; a 4000-byte
+        // arrival would take the total to 8000 against a 6000 budget.
+        assertFalse(cache.canAdmit(4_000, pinned = setOf("playing")))
+    }
+
+    @Test
+    fun `an empty cache admits anything inside the budget and nothing beyond it`() {
+        val cache = DecodedCache(maxBytes = 6_000)
+        assertTrue(cache.canAdmit(6_000, pinned = emptySet()))
+        assertFalse(cache.canAdmit(6_001, pinned = emptySet()))
+    }
+
+    // --- Moving the ceiling ---
+
+    @Test
+    fun `lowering the budget evicts down to it`() {
+        val cache = DecodedCache(maxBytes = 8_000)
+        cache.put("a", mono(1_000))
+        cache.put("b", mono(1_000))
+        cache.put("c", mono(1_000))
+        assertEquals(6_000L, cache.heldBytes)
+
+        cache.setBudget(2_000, pinned = emptySet())
+        assertEquals(2_000L, cache.maxBytes)
+        assertTrue("nothing was evicted: ${cache.heldBytes}", cache.heldBytes <= 2_000)
+        assertNotNull("the most recent should be what survives", cache["c"])
+    }
+
+    @Test
+    fun `lowering the budget still refuses to drop what is playing`() {
+        val cache = DecodedCache(maxBytes = 8_000)
+        cache.put("playing", mono(2_000))
+        cache.setBudget(1_000, pinned = setOf("playing"))
+
+        assertNotNull(cache["playing"])
+        assertTrue("being over budget was not reported", cache.overBudget)
     }
 
     // --- Depth ---

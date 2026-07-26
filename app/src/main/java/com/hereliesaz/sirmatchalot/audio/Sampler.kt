@@ -101,6 +101,15 @@ class Sampler(
 
     val isRecording: Boolean get() = recordingPad >= 0
 
+    /**
+     * True when a pad is playing or a take is being captured.
+     *
+     * Recording counts: the capture reads the master bus, so the graph has to
+     * keep running even if every pad is silent, or a take would come back with a
+     * hole in it.
+     */
+    val isActive: Boolean get() = isRecording || pads.any { it.isPlaying }
+
     /** How much of the capture ceiling the current take has used, 0..1. */
     fun recordProgress(): Float =
         if (captureLeft.isEmpty()) 0f else captureLength.toFloat() / captureLeft.size

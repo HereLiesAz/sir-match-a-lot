@@ -198,6 +198,47 @@ Playlists expand to *all* their tracks. Local files and any service whose link
 resolves to audio the platform can decode; a link that cannot be resolved to
 audio is reported as such rather than silently becoming a fake track.
 
+## Spending memory and power
+
+Two costs are proportional to the *whole* of a track rather than to anything the
+user did, and both of them showed up in the field: an `OutOfMemoryError` on a
+256 MB heap, and a battery draw larger than everything else on the device
+combined. Neither has a fix that is right for every phone, so the levers are in
+`data/EngineSettings` and the defaults are the safe end of each.
+
+**Sample rate is the only lever that changes the arithmetic.** A decoded track
+costs `rate × channels × depth` bytes a second and nothing else, and every stage
+of the render graph is per sample. Halving the rate halves both, exactly.
+`SampleRateOption` therefore offers the device's native rate — the default, and
+the only one where AudioFlinger does no resampling of its own — plus four lower
+ones, labelled with what a minute of stereo costs at each. Changing it rebuilds
+`AudioEngine` and clears the decks, because every decoded buffer, every clip
+start frame and the whole beat grid are counted in frames of the old rate.
+
+**Nothing decodes on hope.** `AudioDecoder.probe` reads a container's duration,
+rate and channel count without decoding, so `DecodedCache.canAdmit` can refuse a
+track that will not fit *before* the decoder is holding a whole-track
+accumulation buffer. The answer is a sentence naming the setting that would let
+it fit, rather than a stack trace. `OutOfMemoryError` is caught at the load and
+analysis boundaries — the only two places where it is both expected and
+recoverable — and drops the caches rather than the process.
+
+**The audio thread stands down.** The render graph used to mix, filter, limit
+and meter silence continuously from the moment the app opened, with `AudioTrack`
+holding the output path open the whole time. `AudioEngine.isIdle` is structural
+— are any decks sounding, any pads playing, any take recording — never a level
+measurement, because a track playing a quiet passage must keep the output open
+or the next beat arrives a stand-down late. After about a second of idle blocks
+the track pauses and the thread parks; it wakes on a 20 ms poll, or immediately
+when something that is about to make a sound says so.
+
+**Nothing redraws for nobody.** The platter state publishes only while a screen
+is in front of someone, at the chosen refresh rate rather than at 60 Hz; the
+platter's frame clock parks entirely when nothing is playing, no finger is down
+and no gesture label is still fading; and the light show — six full-screen
+additive blooms, the most expensive thing drawn — is not composed at all when it
+is off or when the room is dark.
+
 ## Delivery phases
 
 - **1 — DSP foundation.** `dsp/` in full, with unit tests: FFT against a known

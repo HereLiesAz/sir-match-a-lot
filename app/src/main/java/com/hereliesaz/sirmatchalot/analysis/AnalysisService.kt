@@ -163,6 +163,13 @@ class AnalysisService : Service() {
             true
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (e: OutOfMemoryError) {
+            // One track too large for this device must not end a run of two
+            // hundred. Decoding holds the whole file as PCM, so an hour-long
+            // hi-res set is easily larger than the heap — and it is counted as a
+            // failure, reported in the notification, and the loop moves on.
+            System.gc()
+            false
         } catch (e: Exception) {
             false
         }

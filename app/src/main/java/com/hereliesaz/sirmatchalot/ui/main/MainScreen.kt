@@ -61,6 +61,17 @@ fun MainScreen(
     val roomCode by viewModel.roomCode.collectAsState()
 
     var showSyncDialog by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    val settings by viewModel.settings.collectAsState()
+    val engineGeneration by viewModel.engineGeneration.collectAsState()
+
+    // Nothing on this screen is worth a wake-up when the screen is not in front
+    // of anyone. The ViewModel's publishing loop runs off this, and used to run
+    // regardless — sixty-two times a second, for the life of the process.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        viewModel.setUiActive(true)
+        onPauseOrDispose { viewModel.setUiActive(false) }
+    }
     var inputIp by remember { mutableStateOf("192.168.1.100") }
     var inputCode by remember { mutableStateOf("ROOM") }
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -93,6 +104,22 @@ fun MainScreen(
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
+
+                        // Where the memory and battery levers live. Reachable
+                        // from every tab and every role, because running out of
+                        // heap is not something that waits for a convenient
+                        // screen to be open.
+                        IconButton(
+                            onClick = { showSettings = true },
+                            modifier = Modifier.size(26.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                tint = Color(0xFF9CA3AF),
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
 
                         // Wireless Sync Link Indicator
                         Button(
@@ -265,11 +292,41 @@ fun MainScreen(
                         state = platterState,
                         tracks = tracks,
                         actions = rememberPlatterActions(viewModel),
+                        lightShow = settings.lightShow,
                     )
                 }
-                DjTab.PERFORMANCE -> SamplerScreen(viewModel = viewModel)
+                // Keyed on the engine generation: the pad grid holds the
+                // sampler itself, and changing the sample rate builds a new
+                // engine with new pads. Without this the grid would keep
+                // driving a released one.
+                DjTab.PERFORMANCE -> key(engineGeneration) {
+                    SamplerScreen(viewModel = viewModel)
+                }
             }
         }
+    }
+
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            containerColor = Color(0xFF18181B),
+            title = {
+                Text(
+                    "Settings",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
+            },
+            text = {
+                com.hereliesaz.sirmatchalot.ui.SettingsScreen(viewModel = viewModel)
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettings = false }) {
+                    Text("Done", color = Color(0xFF22D3EE), fontWeight = FontWeight.Bold)
+                }
+            },
+        )
     }
 
     // Sync Dialog

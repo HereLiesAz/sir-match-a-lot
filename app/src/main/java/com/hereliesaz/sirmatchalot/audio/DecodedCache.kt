@@ -35,9 +35,45 @@ package com.hereliesaz.sirmatchalot.audio
  */
 class DecodedCache(
     /** Ceiling on total sample bytes held, summed across channels. */
-    private val maxBytes: Long = defaultBudgetBytes(),
+    maxBytes: Long = defaultBudgetBytes(),
 ) {
     private val entries = LinkedHashMap<String, PcmBuffer>()
+
+    /**
+     * The current ceiling, which the user can move.
+     *
+     * Lowering it does not evict on its own — [trim] does, and it needs to know
+     * what is pinned — so a caller that changes this should trim straight after.
+     */
+    var maxBytes: Long = maxBytes
+        private set
+
+    /** Moves the ceiling and evicts down to it, keeping [pinned] whatever happens. */
+    fun setBudget(bytes: Long, pinned: Set<String>) {
+        maxBytes = bytes.coerceAtLeast(1)
+        trim(pinned)
+    }
+
+    /**
+     * Whether [bytes] more would fit once everything evictable is gone.
+     *
+     * The point of asking *before* decoding is that by the time the allocator
+     * answers, the answer is an `OutOfMemoryError` — and the decoder is holding
+     * a whole track's accumulation buffers when it arrives. This lets a caller
+     * decline a track it cannot hold and say so, which is a message rather than
+     * a crash.
+     *
+     * Peak load is roughly twice the finished size: the raw decode and the
+     * rate-converted copy are both live for the moment of the conversion. That
+     * is the caller's business to allow for, not this method's, since only the
+     * caller knows whether a conversion is coming.
+     */
+    fun canAdmit(bytes: Long, pinned: Set<String>): Boolean {
+        val unavoidable = entries.entries
+            .filter { it.key in pinned }
+            .sumOf { it.value.byteCount }
+        return unavoidable + bytes <= maxBytes
+    }
 
     /** Total sample bytes held, counting each channel at its own depth. */
     var heldBytes: Long = 0
@@ -112,17 +148,40 @@ class DecodedCache(
          * A third of the heap. The rest has to cover the decoder's accumulation
          * buffers, the conversion intermediates, and Compose.
          */
-        fun defaultBudgetBytes(): Long {
-            val heapBytes = Runtime.getRuntime().maxMemory()
-            return (heapBytes / 3).coerceAtLeast(MINIMUM_BYTES)
-        }
+        fun defaultBudgetBytes(): Long = budgetFor(Runtime.getRuntime().maxMemory(), divisor = 3)
 
         /**
-         * Enough for roughly two five-minute 16-bit stereo tracks, whatever the
-         * heap says. A pair of hi-res tracks is twice that and will not fit —
-         * which is the honest answer on a small device, and `overBudget` is how
-         * a caller learns it before the allocator does.
+         * A budget of `heapBytes / divisor`, and nothing else.
+         *
+         * The fraction is the whole contract, which is what this being a
+         * function is for. The previous version was
+         * `(heap / 3).coerceAtLeast(MINIMUM_BYTES)`, with a floor of two
+         * five-minute tracks — 115 MB. On a device whose heap tops out at
+         * 256 MB the third is 85 MB, so the *floor won*, and the cache ceiling
+         * on precisely the devices that cannot afford it was raised to 45% of
+         * the entire heap. The decoder still needs room to work underneath that:
+         * a whole-track accumulation buffer, a rate-converted copy, and often a
+         * stretched or shifted one. A floor set without reference to the heap
+         * turned the mechanism that exists to prevent `OutOfMemoryError` into a
+         * reason for one.
+         *
+         * There is no floor now. Every offered divisor is 6 or less, so the
+         * budget is never below a sixth of the heap; and a buffer a deck is
+         * actually reading is pinned, so it survives however small the budget
+         * gets. A small budget makes the cache stop *saving* re-decodes. It
+         * cannot make playback wrong, and it cannot run the heap out.
          */
-        private const val MINIMUM_BYTES = 2L * 5 * 60 * 48_000 * 2 * 2
+        fun budgetFor(heapBytes: Long, divisor: Int): Long =
+            (heapBytes / divisor.coerceAtLeast(1)).coerceAtLeast(1)
+
+        /**
+         * Roughly one five-minute 16-bit stereo track at 48 kHz.
+         *
+         * Not a floor — see [budgetFor] — but the scale that makes [overBudget]
+         * legible: a budget below this can hold nothing that is not already
+         * pinned, and a device whose heap cannot spare this much is one where
+         * two tracks on the platter at once is genuinely too many.
+         */
+        const val ONE_TRACK_BYTES = 5L * 60 * 48_000 * 2 * 2
     }
 }

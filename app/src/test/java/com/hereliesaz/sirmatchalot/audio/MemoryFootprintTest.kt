@@ -178,4 +178,45 @@ class MemoryFootprintTest {
         assertEquals(1, converted.channelCount)
         assertSame(converted.channel(0), converted.channel(1))
     }
+
+    // --- Knowing the cost before paying it ---
+
+    @Test
+    fun `a probe estimates what a track will cost at the engine's rate`() {
+        // Five minutes of stereo. The point of the estimate is to be able to
+        // refuse a track before the decoder is holding it, so it has to be
+        // close enough to decide on.
+        val probe = AudioDecoder.AudioProbe(
+            durationSeconds = 300.0,
+            sampleRate = 44_100,
+            channelCount = 2,
+        )
+        assertEquals(300L * 48_000 * 2 * 2, probe.decodedBytes(atRate = 48_000))
+        assertEquals(300L * 22_050 * 2 * 2, probe.decodedBytes(atRate = 22_050))
+    }
+
+    @Test
+    fun `halving the engine rate halves the estimate`() {
+        // This is the arithmetic the sample-rate setting rests on. If it stops
+        // holding, the advice the app gives on running out of memory — choose a
+        // lower rate — stops being true.
+        val probe = AudioDecoder.AudioProbe(600.0, 44_100, 2)
+        assertEquals(probe.decodedBytes(48_000) / 2, probe.decodedBytes(24_000))
+    }
+
+    @Test
+    fun `a mono source is estimated at half a stereo one`() {
+        val stereo = AudioDecoder.AudioProbe(120.0, 44_100, 2)
+        val mono = AudioDecoder.AudioProbe(120.0, 44_100, 1)
+        assertEquals(stereo.decodedBytes(44_100) / 2, mono.decodedBytes(44_100))
+    }
+
+    @Test
+    fun `a container that declares no duration estimates nothing`() {
+        // Zero rather than a guess, so the caller can tell it learned nothing
+        // and let the decode proceed rather than refusing a track on invented
+        // arithmetic.
+        val probe = AudioDecoder.AudioProbe(0.0, 44_100, 2)
+        assertEquals(0L, probe.decodedBytes(48_000))
+    }
 }
