@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -64,6 +65,7 @@ fun SamplerScreen(
     // keep the grid in step without making every pad a snapshot state holder.
     var revision by remember { mutableIntStateOf(0) }
     var recordProgress by remember { mutableStateOf(0f) }
+    val harvestProgress by viewModel.harvestProgress.collectAsState()
     val filterPosition by viewModel.filterPosition.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -115,6 +117,74 @@ fun SamplerScreen(
                 shape = RoundedCornerShape(10.dp),
             ) {
                 Text("CLEAR", color = Color(0xFF9CA3AF), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+            }
+        }
+
+        // The loop maker across the whole playlist, rather than one track.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = {
+                    if (harvestProgress != null) viewModel.cancelHarvest()
+                    else viewModel.harvestLoopsFromPlaylist()
+                    revision++
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (harvestProgress != null) Color(0xFFDC2626) else Color(0xFF0E7490),
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(
+                    harvestProgress?.let { (done, total) -> "STOP — SCANNING $done/$total" }
+                        ?: "FILL FROM PLAYLIST",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+
+        // A pad bank can occupy a deck slot, shown as loops on the circle the
+        // same way songs are.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Loops on the platter:",
+                color = Color(0xFF9CA3AF),
+                fontSize = 10.sp,
+                modifier = Modifier.weight(1f),
+            )
+            listOf(
+                PlatterGeometry.Deck.A to "→ DECK A",
+                PlatterGeometry.Deck.B to "→ DECK B",
+            ).forEach { (deck, label) ->
+                Button(
+                    onClick = { viewModel.placePadsOnDeck(deck); revision++ },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF27272A)),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+                }
+            }
+            Button(
+                onClick = {
+                    viewModel.removePadsFromDeck(PlatterGeometry.Deck.A)
+                    viewModel.removePadsFromDeck(PlatterGeometry.Deck.B)
+                    revision++
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF27272A)),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text("OFF", color = Color(0xFF9CA3AF), fontWeight = FontWeight.Bold, fontSize = 9.sp)
             }
         }
 

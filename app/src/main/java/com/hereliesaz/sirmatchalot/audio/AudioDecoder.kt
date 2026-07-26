@@ -114,7 +114,12 @@ object AudioDecoder {
             sampleRate
         }
 
-        var planar = Array(channelCount) { ShortArray(initialFrames) }
+        // Two accumulators, exactly one live. Which one is decided by the
+        // codec's reported encoding at INFO_OUTPUT_FORMAT_CHANGED, which always
+        // arrives before any audio does — so nothing is ever accumulated at the
+        // wrong depth and then converted.
+        var planar: Array<ShortArray>? = Array(channelCount) { ShortArray(initialFrames) }
+        var planarFloat: Array<FloatArray>? = null
         var frames = 0
 
         codec.configure(inputFormat, null, null, 0)
@@ -149,9 +154,30 @@ object AudioDecoder {
                         channelCount = output.getInteger(MediaFormat.KEY_CHANNEL_COUNT, channelCount)
                         sampleRate = output.getInteger(MediaFormat.KEY_SAMPLE_RATE, sampleRate)
                         pcmEncoding = AudioFormatEncoding.of(output)
-                        if (planar.size != channelCount) {
+
+                        // A source the codec reports as float carries more than
+                        // 16 bits. Narrowing it here would discard a hi-res
+                        // master's extra depth before playback had begun, which
+                        // is the whole thing B14 exists to stop.
+                        if (pcmEncoding == AudioFormatEncoding.PCM_FLOAT && planarFloat == null) {
+                            val capacity = planar?.get(0)?.size ?: initialFrames
+                            planarFloat = Array(channelCount) { FloatArray(capacity) }
+                            // Released immediately: holding both accumulators
+                            // for a whole track is exactly the shape that ran
+                            // the heap out before.
+                            planar = null
+                        }
+
+                        val existing = planar
+                        if (existing != null && existing.size != channelCount) {
                             planar = Array(channelCount) { channel ->
-                                planar.getOrNull(channel) ?: ShortArray(planar[0].size)
+                                existing.getOrNull(channel) ?: ShortArray(existing[0].size)
+                            }
+                        }
+                        val existingFloat = planarFloat
+                        if (existingFloat != null && existingFloat.size != channelCount) {
+                            planarFloat = Array(channelCount) { channel ->
+                                existingFloat.getOrNull(channel) ?: FloatArray(existingFloat[0].size)
                             }
                         }
                     }
@@ -164,8 +190,18 @@ object AudioDecoder {
                             buffer.position(info.offset)
                             buffer.limit(info.offset + info.size)
                             val produced = framesIn(info.size, channelCount, pcmEncoding)
-                            planar = ensureCapacity(planar, frames + produced)
-                            appendFrames(buffer, planar, frames, produced, channelCount, pcmEncoding)
+                            val floatTarget = planarFloat
+                            if (floatTarget != null) {
+                                planarFloat = ensureFloatCapacity(floatTarget, frames + produced)
+                                appendFloatFrames(
+                                    buffer, planarFloat!!, frames, produced, channelCount,
+                                )
+                            } else {
+                                planar = ensureCapacity(planar!!, frames + produced)
+                                appendFrames(
+                                    buffer, planar!!, frames, produced, channelCount, pcmEncoding,
+                                )
+                            }
                             frames += produced
                         }
                         codec.releaseOutputBuffer(index, false)
@@ -181,15 +217,28 @@ object AudioDecoder {
 
         if (frames == 0) return@withContext null
 
-        val exact = PcmBuffer(
-            // copyOf is what trims the over-allocated tail; when the estimate
-            // landed exactly there is nothing to trim and the copy would be a
-            // whole extra track in memory for no change.
-            channels = Array(channelCount) {
-                if (planar[it].size == frames) planar[it] else planar[it].copyOf(frames)
-            },
-            sampleRate = sampleRate,
-        )
+        // copyOf is what trims the over-allocated tail; when the estimate
+        // landed exactly there is nothing to trim and the copy would be a whole
+        // extra track in memory for no change.
+        val floatResult = planarFloat
+        val exact = if (floatResult != null) {
+            PcmBuffer.float(
+                channels = Array(channelCount) {
+                    if (floatResult[it].size == frames) floatResult[it]
+                    else floatResult[it].copyOf(frames)
+                },
+                sampleRate = sampleRate,
+            )
+        } else {
+            val shortResult = planar!!
+            PcmBuffer(
+                channels = Array(channelCount) {
+                    if (shortResult[it].size == frames) shortResult[it]
+                    else shortResult[it].copyOf(frames)
+                },
+                sampleRate = sampleRate,
+            )
+        }
 
         if (!trimSilence) {
             return@withContext DecodedAudio(exact, frames, 0)
@@ -260,6 +309,44 @@ object AudioDecoder {
      * memory at the precise moment the heap is fullest, which is what threw
      * OutOfMemoryError on a 256 MB device.
      */
+    /** [ensureCapacity] for the float accumulator, with the same two rules. */
+    private fun ensureFloatCapacity(planar: Array<FloatArray>, required: Int): Array<FloatArray> {
+        if (planar[0].size >= required) return planar
+        var capacity = planar[0].size.coerceAtLeast(1024)
+        while (capacity < required) capacity += capacity / 2 + 1
+        for (channel in planar.indices) {
+            planar[channel] = planar[channel].copyOf(capacity)
+        }
+        return planar
+    }
+
+    /**
+     * De-interleaves float output into [planar] at [offset].
+     *
+     * Only ever called for `ENCODING_PCM_FLOAT`, so there is no encoding branch:
+     * the codec emits normalised floats and they are stored as they arrive. No
+     * scaling, no clamping — a hi-res master can legitimately exceed full scale
+     * between samples, and the limiter at the end of the chain is where that
+     * belongs. Clamping here would bake the clipping in permanently.
+     */
+    @VisibleForTesting
+    fun appendFloatFrames(
+        buffer: ByteBuffer,
+        planar: Array<FloatArray>,
+        offset: Int,
+        frameCount: Int,
+        channelCount: Int,
+    ) {
+        buffer.order(ByteOrder.nativeOrder())
+        val floats = buffer.asFloatBuffer()
+        for (frame in 0 until frameCount) {
+            for (channel in 0 until channelCount) {
+                val value = floats.get()
+                if (channel < planar.size) planar[channel][offset + frame] = value
+            }
+        }
+    }
+
     private fun ensureCapacity(planar: Array<ShortArray>, required: Int): Array<ShortArray> {
         if (planar[0].size >= required) return planar
         var capacity = planar[0].size.coerceAtLeast(1024)

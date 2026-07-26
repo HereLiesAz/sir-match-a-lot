@@ -42,6 +42,9 @@ data class PointOfInterest(
         BUILD("Build"),
         /** A local high point. */
         PEAK("Peak"),
+
+        /** Something starts singing. See [VocalDetector]. */
+        VOCAL("Vocal"),
     }
 }
 

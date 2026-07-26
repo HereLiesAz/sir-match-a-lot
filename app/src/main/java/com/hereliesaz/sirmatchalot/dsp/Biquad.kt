@@ -99,6 +99,29 @@ data class BiquadCoefficients(
             )
         }
 
+        /**
+         * Constant-peak-gain bandpass — unity at the centre frequency, RBJ's
+         * second bandpass form.
+         *
+         * Added for formant synthesis, where a resonator has to have a known
+         * gain at its centre: a formant's amplitude is part of what makes a
+         * vowel that vowel, so a filter whose peak gain drifted with Q would
+         * change the vowel every time the bandwidth changed.
+         */
+        fun bandPass(frequency: Double, sampleRate: Int, q: Double = 1.0): BiquadCoefficients {
+            val w0 = 2.0 * Math.PI * frequency / sampleRate
+            val cosW = cos(w0)
+            val alpha = sin(w0) / (2.0 * q)
+            return normalise(
+                b0 = alpha,
+                b1 = 0.0,
+                b2 = -alpha,
+                a0 = 1 + alpha,
+                a1 = -2 * cosW,
+                a2 = 1 - alpha,
+            )
+        }
+
         fun highPass(frequency: Double, sampleRate: Int, q: Double = 0.7071): BiquadCoefficients {
             val w0 = 2.0 * Math.PI * frequency / sampleRate
             val cosW = cos(w0)

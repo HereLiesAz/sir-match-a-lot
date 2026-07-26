@@ -110,20 +110,35 @@ scratching work. Cheap interpolation remains correct for extreme scratch, where
 the artefact is part of the effect. The gap is now confined to intentional large
 pitch shifts rather than affecting all playback.
 
-### 2. Source storage is 16-bit
+### 2. Source storage is 16-bit — **fixed**
 
-`PcmBuffer` stores planar `ShortArray`. For 16-bit sources — CD rips, most
-lossy-decoded material — this is lossless. For 24-bit FLAC or any hi-res source
-it discards real information before playback begins.
+`PcmBuffer` now carries the decoder's native depth. A 16-bit source is stored as
+planar `ShortArray`, which for a CD rip or anything lossy-decoded is *lossless* —
+the source holds no more than that, so float storage would cost twice the memory
+for information that is not there. A source `MediaCodec` reports as
+`ENCODING_PCM_FLOAT` is stored as planar `FloatArray` and stays float through
+every operation: slicing, sample-rate conversion, time-stretching and pitch
+shifting all preserve it.
 
-The reason is memory: a five-minute stereo track is 26 MB as `Short` and 53 MB as
-`Float`, and two decks hold several clips each. But that is a budgeting problem,
-not a justification for throwing away bits an audiophile source actually carries.
+The two storages are exclusive — a buffer holds one or the other, never both —
+and asking a float buffer for its 16-bit arrays throws rather than quietly
+quantising a whole track at a call site that looks free.
 
-**Fix:** carry the decoder's native depth. Keep 16-bit storage when the source is
-16-bit, and a float path when `MediaCodec` reports `ENCODING_PCM_FLOAT` or
-24-bit. The `Deck` render loop branches once per clip per block, not per sample,
-so the cost is negligible.
+The render loops branch **once per clip per block**, as predicted: `Deck` and
+`Sampler` resolve the depth outside the sample loop and read from the matching
+array, so there is no per-sample conversion and no widened copy of a 16-bit
+track.
+
+Measured: a tone at a quarter of a 16-bit LSB survives a float buffer, and
+survives a 96 kHz → 48 kHz conversion. Through 16-bit storage the same tone is
+exactly zero.
+
+**Consequence, recorded:** `DecodedCache` counts **bytes**, not frames. Counting
+frames would have made the cache believe a float track was half its real size,
+which would have turned the budget that exists to prevent `OutOfMemoryError` into
+one that permits twice the audio it means to. A pair of five-minute hi-res stereo
+tracks is about 230 MB and will not fit alongside much else on a 256 MB heap;
+`overBudget` reports that before the allocator does.
 
 ### 3. Time-stretch quality — and where NDK genuinely earns its cost
 

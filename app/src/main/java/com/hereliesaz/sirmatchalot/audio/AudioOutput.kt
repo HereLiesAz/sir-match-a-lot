@@ -247,19 +247,57 @@ class AudioEngine(
     @Volatile
     var onReverseThreshold: (() -> Unit)? = null
 
+    /**
+     * The voice that answers a long backward scratch.
+     *
+     * Synthesised rather than shipped as a file: requirement F9 says no built-in
+     * audio clips, and a bundled growl.ogg is a built-in audio clip whatever is
+     * on it. See [com.hereliesaz.sirmatchalot.dsp.GrowlVoice].
+     */
+    val growl = OneShotVoice()
+
+    /**
+     * Band levels for the background light show.
+     *
+     * Three bands rather than one number, because one number makes everything
+     * on screen pulse together — which is precisely what a strobe looks like,
+     * and precisely what C15 says the background must not be.
+     */
+    val spectrum = SpectrumMeter(sampleRate = output.sampleRate)
+
     private val scratch = ScratchModel()
     private var started = false
 
     fun start() {
         if (started) return
         started = true
+
+        // Synthesised off the audio thread, once. It is a couple of seconds of
+        // formant synthesis — milliseconds of work, but not work the render
+        // callback can be asked to wait for even once.
+        if (!growl.isLoaded) {
+            Thread({
+                growl.load(
+                    com.hereliesaz.sirmatchalot.dsp.GrowlVoice(sampleRate = output.sampleRate)
+                        .render(),
+                )
+            }, "SirMatchALot-Growl").apply { isDaemon = true }.start()
+        }
+
         output.start { buffer, frames ->
             mixer.render(buffer, frames)
             // Capture the deck mix before the pads are added, so re-triggering a
             // recorded pad while recording cannot feed back on itself.
             sampler.captureFromMaster(buffer, frames)
             sampler.render(buffer, frames)
+            growl.render(buffer, frames)
+            // Measured last, so the lights follow everything a listener hears —
+            // decks, pads and all — rather than only the deck mix.
+            spectrum.measure(buffer, frames)
             if (scratch.accountForRenderedFrames(frames)) {
+                // Triggered here rather than by the listener, so the sound
+                // happens even if nothing is listening for the message.
+                growl.trigger()
                 onReverseThreshold?.invoke()
             }
         }

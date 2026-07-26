@@ -180,20 +180,38 @@ class Sampler(
             var position = pad.playhead
             if (position < 0.0) continue
 
-            val left = buffer.channel(0)
-            val right = buffer.channel(1)
             val gain = pad.gain
             val length = buffer.frameCount
 
-            for (i in 0 until frames) {
-                if (position >= length) {
-                    if (!pad.loop) { position = SamplerPad.IDLE; break }
-                    position -= length
+            // Resolved once per pad per block, not per sample: a pad sliced from
+            // a hi-res track keeps that track's depth, and reading it through a
+            // 16-bit view would quantise the loop every time it played.
+            if (buffer.isFloat) {
+                val left = buffer.floatChannel(0)
+                val right = buffer.floatChannel(1)
+                for (i in 0 until frames) {
+                    if (position >= length) {
+                        if (!pad.loop) { position = SamplerPad.IDLE; break }
+                        position -= length
+                    }
+                    val base = i * Deck.CHANNELS
+                    out[base] += Resampler.read(left, position) * gain
+                    out[base + 1] += Resampler.read(right, position) * gain
+                    position += 1.0
                 }
-                val base = i * Deck.CHANNELS
-                out[base] += Resampler.read(left, position) * gain
-                out[base + 1] += Resampler.read(right, position) * gain
-                position += 1.0
+            } else {
+                val left = buffer.channel(0)
+                val right = buffer.channel(1)
+                for (i in 0 until frames) {
+                    if (position >= length) {
+                        if (!pad.loop) { position = SamplerPad.IDLE; break }
+                        position -= length
+                    }
+                    val base = i * Deck.CHANNELS
+                    out[base] += Resampler.read(left, position) * gain
+                    out[base + 1] += Resampler.read(right, position) * gain
+                    position += 1.0
+                }
             }
             pad.advanceTo(position)
         }
