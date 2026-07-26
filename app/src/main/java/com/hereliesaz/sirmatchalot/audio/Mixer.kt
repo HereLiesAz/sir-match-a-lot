@@ -194,6 +194,17 @@ class Mixer(
         )
     }
 
+    /**
+     * Declares the bus silent without touching the decks.
+     *
+     * Called when the audio thread stands down: the last measured level would
+     * otherwise stay published forever, and everything drawn from it — the
+     * waveform glow, the light show — would freeze lit over silence.
+     */
+    fun markSilent() {
+        level = OutputLevel.SILENT
+    }
+
     fun reset() {
         deckA.reset()
         deckB.reset()

@@ -44,9 +44,76 @@ data class DecodedAudio(
  * - It discarded the PCM, keeping only peaks — forcing a second decode for
  *   playback and a third for analysis. Now one decode serves all three.
  */
+/**
+ * [MediaFormat.getInteger] with a default, on every version this app supports.
+ *
+ * The two-argument `getInteger` was added in API 29, and this app's `minSdk` is
+ * 24 — so calling it directly is a `NoSuchMethodError` on Android 7 through 9,
+ * thrown the first time anything is decoded. Since decoding is how audio gets
+ * into the app at all, that is the whole app, not one feature.
+ */
+private fun MediaFormat.intOr(key: String, fallback: Int): Int =
+    if (containsKey(key)) runCatching { getInteger(key) }.getOrDefault(fallback) else fallback
+
 object AudioDecoder {
 
     private const val TIMEOUT_US = 10_000L
+
+    /**
+     * What a container says about its audio, without decoding any of it.
+     *
+     * @param durationSeconds as declared by the container; approximate, and zero
+     *   when it declares nothing.
+     */
+    data class AudioProbe(
+        val durationSeconds: Double,
+        val sampleRate: Int,
+        val channelCount: Int,
+    ) {
+        /**
+         * Heap the decoded audio will occupy at [atRate].
+         *
+         * Assumes 16-bit storage, which is what everything but a hi-res source
+         * decodes to. A float source costs twice this — so a caller using it as
+         * an admission test is being optimistic, and should leave headroom.
+         */
+        fun decodedBytes(atRate: Int, bytesPerSample: Int = 2): Long =
+            (durationSeconds * atRate).toLong() *
+                channelCount.coerceAtLeast(1) * bytesPerSample
+    }
+
+    /**
+     * Reads [uri]'s audio format without decoding it.
+     *
+     * The point is to be able to refuse a track *before* committing to holding
+     * it. Asking the allocator instead means finding out by `OutOfMemoryError`,
+     * thrown at the worst possible moment — while the decoder is holding a whole
+     * track's accumulation buffers — and an app that dies is a worse answer than
+     * one that says the track is too long to load at this sample rate.
+     *
+     * @return null when the source has no readable audio track.
+     */
+    suspend fun probe(context: Context, uri: Uri): AudioProbe? = withContext(Dispatchers.IO) {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") != true) continue
+                val durationUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrNull() ?: 0L
+                return@withContext AudioProbe(
+                    durationSeconds = durationUs / 1_000_000.0,
+                    sampleRate = format.intOr(MediaFormat.KEY_SAMPLE_RATE, 44_100),
+                    channelCount = format.intOr(MediaFormat.KEY_CHANNEL_COUNT, 2),
+                )
+            }
+            null
+        } catch (e: Exception) {
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
 
     /** Silence threshold for trimming, as a fraction of full scale. */
     const val SILENCE_THRESHOLD = 0.02f
@@ -94,8 +161,8 @@ object AudioDecoder {
         // Channel count and sample rate can change when the decoder reports its
         // real output format, so they are read from the output format below
         // rather than trusted from the container.
-        var channelCount = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
-        var sampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE, 44_100)
+        var channelCount = inputFormat.intOr(MediaFormat.KEY_CHANNEL_COUNT, 2)
+        var sampleRate = inputFormat.intOr(MediaFormat.KEY_SAMPLE_RATE, 44_100)
         var pcmEncoding = AudioFormatEncoding.PCM_16BIT
 
         // Growable planar accumulation. Sized from the container duration when
@@ -151,8 +218,8 @@ object AudioDecoder {
                 when (val index = codec.dequeueOutputBuffer(info, TIMEOUT_US)) {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val output = codec.outputFormat
-                        channelCount = output.getInteger(MediaFormat.KEY_CHANNEL_COUNT, channelCount)
-                        sampleRate = output.getInteger(MediaFormat.KEY_SAMPLE_RATE, sampleRate)
+                        channelCount = output.intOr(MediaFormat.KEY_CHANNEL_COUNT, channelCount)
+                        sampleRate = output.intOr(MediaFormat.KEY_SAMPLE_RATE, sampleRate)
                         pcmEncoding = AudioFormatEncoding.of(output)
 
                         // A source the codec reports as float carries more than

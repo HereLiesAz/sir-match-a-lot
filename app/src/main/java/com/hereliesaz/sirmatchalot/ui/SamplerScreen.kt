@@ -68,11 +68,20 @@ fun SamplerScreen(
     val harvestProgress by viewModel.harvestProgress.collectAsState()
     val filterPosition by viewModel.filterPosition.collectAsState()
 
+    // Polled, but the rate follows whether anything is moving. This bumped the
+    // revision sixteen times a second for as long as the tab was open, whether
+    // or not a single pad was doing anything — and pads spend almost all of
+    // their time doing nothing. Pads can also be
+    // filled from off-composition — a loop harvest, an auto-fill — so the idle
+    // tick still runs; it just runs seven times less often, which is the
+    // difference between a hundred needless recompositions a minute and a
+    // hundred and fifty a second's worth of them.
     LaunchedEffect(Unit) {
         while (true) {
-            delay(60)
+            val busy = sampler.isActive
             recordProgress = if (sampler.isRecording) sampler.recordProgress() else 0f
             revision++
+            delay(if (busy) ACTIVE_POLL_MILLIS else IDLE_POLL_MILLIS)
         }
     }
 
@@ -219,6 +228,10 @@ fun SamplerScreen(
                         } else {
                             sampler.trigger(pad.index)
                         }
+                        // The audio thread may be parked with nothing playing.
+                        // It would notice within a poll anyway; a pad is played
+                        // by hand, so it gets the sample it was hit on.
+                        viewModel.audioEngine.wake()
                         revision++
                     },
                     onRelease = {
@@ -370,3 +383,15 @@ private fun PadButton(
         )
     }
 }
+
+/** Poll interval while a pad is playing or a take is being captured. */
+private const val ACTIVE_POLL_MILLIS = 60L
+
+/**
+ * Poll interval while every pad is idle.
+ *
+ * Still polled rather than stopped, because pads can be filled from elsewhere —
+ * an auto-fill, a loop harvest, a remote trigger — and a grid that only updated
+ * when it was already updating would never show them arrive.
+ */
+private const val IDLE_POLL_MILLIS = 400L

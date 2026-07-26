@@ -110,6 +110,14 @@ fun PlatterScreen(
     tracks: List<Track>,
     actions: PlatterActions,
     modifier: Modifier = Modifier,
+    /**
+     * Whether to draw the room behind the platter.
+     *
+     * Six full-screen radial gradients composited additively, every frame: the
+     * most expensive thing the app draws, and the one someone playing a long set
+     * is most likely to want back as battery.
+     */
+    lightShow: Boolean = true,
 ) {
     val gestures = remember { GestureEngine() }
     val labels = remember { GestureLabels() }
@@ -173,12 +181,34 @@ fun PlatterScreen(
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
 
+    // True while fingers are on the glass. Gesture labels are created and expired
+    // by the loop below, so it has to keep running while a gesture is live even
+    // though nothing is playing.
+    var pointerActive by remember { mutableStateOf(false) }
+
     // Driven by Compose's frame clock rather than a fixed 16 ms delay loop, so
     // it stays in step with the display and pauses when the composition is not
     // being drawn. The previous implementation ran an unconditional
     // `while(true) { delay(16) }` for the screen's entire lifetime.
+    //
+    // And now it stops entirely when there is nothing to animate. The clock
+    // exists to sweep the light rig and to expire gesture labels; with the
+    // transport stopped, no fingers down and no labels left on screen, every
+    // frame it asks for redraws an image identical to the last one. That was a
+    // full-screen composite at the display's refresh rate, held for as long as
+    // the app was open on this tab — which is most of the time, since this tab
+    // is the app.
+    //
+    // `rememberUpdatedState` because this effect is keyed on `Unit` and so
+    // captures its parameters once; reading the captured `state` would pin the
+    // loop to whatever was playing at first composition.
+    val playing by androidx.compose.runtime.rememberUpdatedState(state.isPlaying)
     LaunchedEffect(Unit) {
         while (true) {
+            if (!playing && !pointerActive && visibleLabels.isEmpty()) {
+                kotlinx.coroutines.delay(IDLE_FRAME_POLL_MILLIS)
+                continue
+            }
             withFrameMillis { frameTimeMillis ->
                 elapsedMillis = frameTimeMillis
                 labels.update(
@@ -216,6 +246,9 @@ fun PlatterScreen(
                             val pointers = event.changes
                                 .filter { it.pressed }
                                 .map { Pointer(it.id.value, it.position.x, it.position.y) }
+                            // Wakes the frame loop, which is parked whenever
+                            // there is nothing moving on screen.
+                            pointerActive = pointers.isNotEmpty()
 
                             // One finger starting on a clip drags that clip's
                             // placement rather than feeding the gesture engine.
@@ -346,7 +379,13 @@ fun PlatterScreen(
             // master bus and its motion from a free-running clock: lights in a
             // real room sweep on their own and change with the music, they do
             // not teleport on every kick.
-            RaveBackground(bands = state.bands, phase = rigPhase(elapsedMillis))
+            //
+            // Not composed at all when it is off or when the room is dark, so a
+            // silent app has no light rig in its layout to walk, measure and
+            // draw nothing from.
+            if (lightShow && !state.bands.isDark) {
+                RaveBackground(bands = state.bands, phase = rigPhase(elapsedMillis))
+            }
 
             PlatterCanvas(
                 state = state,
@@ -533,6 +572,15 @@ private fun GestureLabelOverlay(
  * No A/B buttons and no drag handle — tapping a row loads it.
  */
 private const val TWO_PI = (2.0 * Math.PI).toFloat()
+
+/**
+ * How often the parked frame loop checks whether it should start again.
+ *
+ * A tenth of a second: the delay before the light rig starts sweeping after the
+ * first beat, and imperceptible against a fade-in. Nothing that responds to a
+ * finger waits on this, because a pointer event un-parks the loop directly.
+ */
+private const val IDLE_FRAME_POLL_MILLIS = 100L
 
 @Composable
 private fun TrackStrip(

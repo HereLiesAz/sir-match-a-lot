@@ -38,6 +38,15 @@ interface AudioOutput {
     fun stop()
 
     fun release()
+
+    /**
+     * Hints that something is about to make a sound, so an output that has stood
+     * down can come back immediately rather than at its next idle check.
+     *
+     * Advisory: an output that never stands down does nothing, and one that does
+     * must still be correct without ever being told.
+     */
+    fun wake() = Unit
 }
 
 /**
@@ -80,14 +89,92 @@ class OfflineAudioOutput(
  * the knob that trades one against the other.
  *
  * The render lambda runs on this thread and must not allocate.
+ *
+ * ## Standing down
+ *
+ * A blocking write is only cheap when there is something to write. Left alone,
+ * this thread renders, filters, limits and meters silence forever — the full
+ * per-sample cost of the whole graph, at the device's native rate, from the
+ * moment the app opens until it is killed — while `AudioTrack` holds the output
+ * path open so the audio hardware never gets to idle either. Measured against
+ * everything else in the app, that was the largest single power draw and it was
+ * paid whether or not a single track had been loaded.
+ *
+ * So when [isIdle] says nothing is sounding, the track is paused and this thread
+ * parks. It wakes on a short timer — or immediately on [wake] — checks again,
+ * and resumes the moment there is audio. Pausing is deliberately delayed by
+ * about a second of blocks so a gap between clips, or a scratch held at zero
+ * rate, does not tear down and rebuild the output path underneath the music.
  */
 class AudioTrackOutput(
     override val sampleRate: Int = 44_100,
     override val framesPerBuffer: Int = 256,
 ) : AudioOutput {
 
+    /**
+     * Says whether nothing is currently sounding.
+     *
+     * Supplied by [AudioEngine], which is the only thing that can answer it.
+     * Absent — or always false — means never stand down, which is exactly the
+     * old behaviour and what someone who wants no wake-up latency at all gets.
+     */
+    @Volatile
+    var isIdle: (() -> Boolean)? = null
+
+    /**
+     * Called once each time the output stands down, on the audio thread.
+     *
+     * The engine uses it to drop the meters to silence: a light show frozen at
+     * whatever level was playing when the music stopped is worse than one that
+     * goes dark, and nothing else is going to clear them once this thread has
+     * stopped measuring.
+     */
+    @Volatile
+    var onStandDown: (() -> Unit)? = null
+
+    /** True while the output is parked because nothing was sounding. */
+    @Volatile
+    var isStoodDown: Boolean = false
+        private set
+
+    private val gate = java.lang.Object()
+
     companion object Factory {
         private const val BYTES_PER_FLOAT = 4
+
+        /**
+         * How long the audio thread parks between idle checks.
+         *
+         * Twenty milliseconds is about two render blocks, so the worst-case
+         * delay before sound resumes is comparable to the buffering already in
+         * the path — and a wake-up that does nothing but read one volatile
+         * boolean costs a rounding error next to a block of DSP.
+         */
+        const val IDLE_POLL_MILLIS = 20L
+
+        /**
+         * Builds an output at the rate [option] asks for, defaulting to the
+         * device's native mixer rate.
+         *
+         * @see com.hereliesaz.sirmatchalot.data.SampleRateOption for what the
+         *   choice costs in memory, power and bandwidth.
+         */
+        fun forDevice(
+            context: android.content.Context,
+            option: com.hereliesaz.sirmatchalot.data.SampleRateOption,
+        ): AudioTrackOutput {
+            val native = forDevice(context)
+            val rate = option.resolve(native.sampleRate)
+            if (rate == native.sampleRate) return native
+            // The platform's preferred burst is expressed in frames at the
+            // native rate. Scaling it keeps the block roughly the same *duration*
+            // — which is what the buffering is actually about — instead of
+            // quartering the latency budget along with the rate.
+            val frames = (native.framesPerBuffer.toLong() * rate / native.sampleRate)
+                .toInt()
+                .coerceAtLeast(64)
+            return AudioTrackOutput(sampleRate = rate, framesPerBuffer = frames)
+        }
 
         /**
          * Builds an output running at the device's **native** mixer rate.
@@ -170,13 +257,50 @@ class AudioTrackOutput(
         val created = builder.build()
         track = created
 
+        // Roughly a second of blocks. Long enough that a silent bar, a clip
+        // boundary or a scratch held still is not mistaken for the end of the
+        // performance; short enough that leaving the app paused stops costing
+        // anything almost immediately.
+        val idleBlocksBeforeStandDown =
+            (sampleRate / framesPerBuffer.coerceAtLeast(1)).coerceAtLeast(1)
+
         thread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val buffer = FloatArray(framesPerBuffer * Deck.CHANNELS)
             created.play()
             var lastUnderrun = 0
+            var idleBlocks = 0
+            var paused = false
 
             while (running.get()) {
+                if (isIdle?.invoke() == true) idleBlocks++ else idleBlocks = 0
+
+                if (idleBlocks >= idleBlocksBeforeStandDown) {
+                    if (!paused) {
+                        runCatching {
+                            created.pause()
+                            // Drop what is queued rather than letting a second
+                            // of stale silence play out on the next resume.
+                            created.flush()
+                        }
+                        paused = true
+                        isStoodDown = true
+                        onStandDown?.invoke()
+                    }
+                    // Parked, not spinning: one short wait per cycle, and a
+                    // caller that knows sound is coming can cut it short.
+                    synchronized(gate) {
+                        runCatching { gate.wait(IDLE_POLL_MILLIS) }
+                    }
+                    continue
+                }
+
+                if (paused) {
+                    runCatching { created.play() }
+                    paused = false
+                    isStoodDown = false
+                }
+
                 render(buffer, framesPerBuffer)
                 var offset = 0
                 val total = buffer.size
@@ -208,10 +332,19 @@ class AudioTrackOutput(
     /** True once [start] has been called and the render thread is running. */
     val isRunning: Boolean get() = running.get()
 
+    /** Cuts a stand-down short, so the next sample is not up to a poll late. */
+    override fun wake() {
+        synchronized(gate) { gate.notifyAll() }
+    }
+
     override fun stop() {
         if (!running.getAndSet(false)) return
+        // The thread may be parked in the idle wait; without this, stopping
+        // would block for the rest of the poll interval.
+        wake()
         thread?.join(500)
         thread = null
+        isStoodDown = false
     }
 
     override fun release() {
@@ -268,9 +401,44 @@ class AudioEngine(
     private val scratch = ScratchModel()
     private var started = false
 
+    /**
+     * Whether the audio thread may stand down while nothing is sounding.
+     *
+     * Follows the user's setting. Turning it off restores the old behaviour —
+     * the graph runs continuously — which costs battery and buys the guarantee
+     * that the first sample after a pause is immediate.
+     */
+    @Volatile
+    var idleShutdown: Boolean = true
+
+    /**
+     * True when nothing in the graph can be producing sound.
+     *
+     * Deliberately structural rather than a level measurement: a track playing a
+     * silent passage is *sounding* and must keep the output open, or the first
+     * beat after the silence would arrive a stand-down late. What counts is
+     * whether anything is running, not whether it happens to be loud.
+     */
+    fun isIdle(): Boolean =
+        !deckA.isSounding && !deckB.isSounding && !sampler.isActive && !growl.isPlaying
+
+    /** Brings the output back immediately, ahead of its next idle check. */
+    fun wake() = output.wake()
+
     fun start() {
         if (started) return
         started = true
+
+        if (output is AudioTrackOutput) {
+            output.isIdle = { idleShutdown && isIdle() }
+            // Nothing is measuring once the thread parks, so the meters would
+            // otherwise stay frozen at whatever was playing when the music
+            // stopped — a light show stuck mid-chorus over silence.
+            output.onStandDown = {
+                spectrum.reset()
+                mixer.markSilent()
+            }
+        }
 
         // Synthesised off the audio thread, once. It is a couple of seconds of
         // formant synthesis — milliseconds of work, but not work the render
