@@ -451,3 +451,78 @@ h1, h2, h3, h4, h5, h6 {
         justify-content: center;
     }
 }
+
+/* Shared Session — where a session link lands */
+.session-section {
+    padding: 6rem 5% 2rem;
+}
+
+/* `hidden` loses to the display above without this, so an ordinary visit to
+   the page would show an empty session panel. */
+.session-section[hidden] {
+    display: none;
+}
+
+.session-panel {
+    max-width: 900px;
+    margin: 0 auto;
+    text-align: center;
+}
+
+.session-title {
+    font-size: 2.25rem;
+    margin-top: 1rem;
+}
+
+.session-meta {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    margin-bottom: 2rem;
+}
+
+.session-decks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 2rem;
+    text-align: left;
+}
+
+.session-deck-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+}
+
+.deck-a-title { color: var(--cyan); }
+.deck-b-title { color: var(--magenta); }
+
+.session-tracks {
+    list-style: decimal inside;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.session-tracks li {
+    /* A title can be arbitrarily long and comes from someone else's library. */
+    overflow-wrap: anywhere;
+}
+
+.session-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.session-cues,
+.session-note {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-top: 0.75rem;
+}
+
+.session-note {
+    margin-top: 2rem;
+    text-align: center;
+}

@@ -29,6 +29,38 @@
         </div>
     </nav>
 
+    <!--
+      Where a shared session link lands.
+
+      The app's SessionLink.DEFAULT_BASE is this page, so a link copied from
+      the app opens here. Hidden until the URL actually carries a session;
+      filled in by script.js from the query parameters documented in
+      docs/API.md.
+    -->
+    <section id="shared-session" class="session-section" hidden>
+        <div class="glass-panel session-panel">
+            <div class="badge">Shared session</div>
+            <h2 class="section-title session-title">Someone sent you a <span class="text-gradient">mix.</span></h2>
+            <div class="session-meta" id="session-meta"></div>
+            <div class="session-decks">
+                <div class="session-deck">
+                    <h3 class="session-deck-title deck-a-title">Deck A</h3>
+                    <ol class="session-tracks" id="session-deck-a"></ol>
+                    <p class="session-cues" id="session-cues-a"></p>
+                </div>
+                <div class="session-deck">
+                    <h3 class="session-deck-title deck-b-title">Deck B</h3>
+                    <ol class="session-tracks" id="session-deck-b"></ol>
+                    <p class="session-cues" id="session-cues-b"></p>
+                </div>
+            </div>
+            <p class="session-note">
+                Open this link on a device with Sir Match-a-Lot installed to load
+                the session, or paste it into the app's Link panel.
+            </p>
+        </div>
+    </section>
+
     <header class="hero">
         <div class="hero-content">
             <div class="badge">Next-Gen Android DJing</div>

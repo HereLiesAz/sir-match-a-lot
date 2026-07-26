@@ -172,6 +172,12 @@ dependencies {
     // is compiled by SQLite; without this, a syntax error in a migration ships
     // and first appears on an upgrading user's device at launch.
     testImplementation(libs.sqlite.jdbc)
+    // A real JSON implementation on the JVM. `isReturnDefaultValues` makes the
+    // android.jar stubs inert rather than throwing, so without this every
+    // `JSONObject` in a unit test silently does nothing and every assertion
+    // about a message's contents passes without testing anything. The room
+    // protocol is entirely JSON, so it would have been untestable.
+    testImplementation(libs.json)
 
     // Instrumented tests
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

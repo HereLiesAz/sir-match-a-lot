@@ -107,3 +107,81 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 });
+
+/**
+ * Reads a shared session out of the URL.
+ *
+ * The app builds these links (`SessionLink.toUrl`) and this page is their
+ * default destination, so without this a copied link lands on a page that
+ * ignores it. The format is deliberately legible query parameters — see
+ * `docs/API.md` — which is exactly what makes reading it here twenty lines
+ * rather than a parser.
+ *
+ * Runs separately from the gesture animation above: a malformed link must not
+ * take the rest of the page down with it.
+ */
+document.addEventListener('DOMContentLoaded', () => {
+    const section = document.getElementById('shared-session');
+    if (!section) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const deckA = params.getAll('a');
+    const deckB = params.getAll('b');
+    if (deckA.length === 0 && deckB.length === 0) return;
+
+    const fill = (id, tracks) => {
+        const list = document.getElementById(id);
+        if (!list) return;
+        list.innerHTML = '';
+        if (tracks.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'session-empty';
+            empty.textContent = 'Empty';
+            list.appendChild(empty);
+            return;
+        }
+        tracks.forEach((track) => {
+            const item = document.createElement('li');
+            // textContent, not innerHTML: a track title arrives from whoever
+            // wrote the link, and a link is a thing strangers send you.
+            item.textContent = track;
+            list.appendChild(item);
+        });
+    };
+
+    const cues = (id, value) => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        const points = (value || '')
+            .split(',')
+            .map((cue) => cue.trim())
+            .filter((cue) => cue.length > 0 && !Number.isNaN(Number(cue)));
+        node.textContent = points.length ? `Cues: ${points.join('s, ')}s` : '';
+    };
+
+    fill('session-deck-a', deckA);
+    fill('session-deck-b', deckB);
+    cues('session-cues-a', params.get('ca'));
+    cues('session-cues-b', params.get('cb'));
+
+    const meta = document.getElementById('session-meta');
+    if (meta) {
+        const parts = [];
+        const bpm = params.get('bpm');
+        if (bpm && !Number.isNaN(Number(bpm))) parts.push(`${Number(bpm).toFixed(1)} BPM`);
+        const key = params.get('key');
+        if (key) parts.push(`Key ${key}`);
+        const crossfade = params.get('x');
+        if (crossfade && !Number.isNaN(Number(crossfade))) {
+            const value = Number(crossfade);
+            const towards = value === 0 ? 'centred' : value < 0 ? 'toward A' : 'toward B';
+            parts.push(`Crossfader ${value} (${towards})`);
+        }
+        const room = params.get('room');
+        if (room) parts.push(`Room ${room.toUpperCase()}`);
+        meta.textContent = parts.join('  ·  ');
+    }
+
+    section.hidden = false;
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});

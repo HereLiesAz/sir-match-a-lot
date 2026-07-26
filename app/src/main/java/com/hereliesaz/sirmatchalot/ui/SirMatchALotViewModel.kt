@@ -27,7 +27,10 @@ import com.hereliesaz.sirmatchalot.domain.MixDirector
 import com.hereliesaz.sirmatchalot.domain.MixPlan
 import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
+import com.hereliesaz.sirmatchalot.sync.SessionLink
 import com.hereliesaz.sirmatchalot.sync.SyncClient
+import com.hereliesaz.sirmatchalot.sync.SyncRole
+import com.hereliesaz.sirmatchalot.sync.SyncServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1003,6 +1006,33 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _isWsConnected = MutableStateFlow(false)
     val isWsConnected: StateFlow<Boolean> = _isWsConnected
 
+    /**
+     * What this device is for in the room.
+     *
+     * "Each showing a different screen" is half of the multi-device request, and
+     * the half that was missing: `joinRoom` sent a role and nothing read it. The
+     * role is held here so the UI can follow it, and re-announced on connect so
+     * the host knows what this device claims to be.
+     */
+    private val _role = MutableStateFlow(SyncRole.ALL)
+    val role: StateFlow<SyncRole> = _role
+
+    /**
+     * Sets this device's role, telling the room if already connected.
+     *
+     * Choosing a role is deliberately local: which screen *this* phone shows is
+     * this phone's business. The room is told so the host can display a roster
+     * that means something, not so it can grant permission.
+     */
+    fun setRole(role: SyncRole) {
+        if (_role.value == role) return
+        _role.value = role
+        if (_isWsConnected.value) {
+            syncClient.joinRoom(_roomCode.value, role.wireName, "Android Device")
+        }
+        _feedbackMsg.value = "This device: ${role.label}"
+    }
+
     private val _feedbackMsg = MutableStateFlow("Offline Mode")
     val feedbackMsg: StateFlow<String> = _feedbackMsg
 
@@ -1160,6 +1190,139 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     private fun deckNamed(deck: String) =
         if (deck == "A") audioEngine.deckA else audioEngine.deckB
+
+    // --- Hosting a room ---
+
+    /**
+     * This device's room server, when it is the host.
+     *
+     * One phone hosts and the others join it, which is what makes one-click
+     * connection on the same Wi-Fi possible with no infrastructure at all.
+     * `SyncClient` has always broadcast for a server; nothing ever answered.
+     */
+    private val syncServer = SyncServer()
+
+    private val _isHosting = MutableStateFlow(false)
+    val isHosting: StateFlow<Boolean> = _isHosting
+
+    private val _peerCount = MutableStateFlow(0)
+    val peerCount: StateFlow<Int> = _peerCount
+
+    private val _hostUrl = MutableStateFlow<String?>(null)
+    val hostUrl: StateFlow<String?> = _hostUrl
+
+    /**
+     * Starts hosting, generating a room code if none is set.
+     *
+     * The host applies remote events to its own engine as well as relaying them,
+     * so a device driving the pads from across the room is playing *this*
+     * instrument rather than talking to a relay that ignores it.
+     */
+    fun startHosting() {
+        if (_isHosting.value) return
+        val code = _roomCode.value.takeIf { it.isNotBlank() } ?: SyncServer.generateRoomCode()
+
+        syncServer.onPeersChanged = { _peerCount.value = it }
+        syncServer.onEvent = { event, payload ->
+            when (event) {
+                "play_sampler_pad" -> onSamplerTriggerEvent(payload.optInt("padId"))
+                "kaoss_move" -> onKaossMoveEvent(
+                    payload.optDouble("x").toFloat(),
+                    payload.optDouble("y").toFloat(),
+                    payload.optInt("padId"),
+                )
+                "sync_click" -> onAutoSyncEvent()
+                "load_track_direct" ->
+                    onLoadTrackEvent(payload.optString("deck"), payload.optString("trackId"))
+                "nudge_deck_direct" ->
+                    onNudgeEvent(payload.optString("deck"), payload.optString("direction"))
+                "seek_deck" ->
+                    onSeekEvent(payload.optString("deck"), payload.optDouble("time").toFloat())
+            }
+        }
+        syncServer.onStateChanged = { state -> onRoomStateReceived(state) }
+
+        if (!syncServer.start(code)) {
+            _feedbackMsg.value = "Could not host — port ${syncServer.port} is in use"
+            return
+        }
+        _roomCode.value = code
+        _isHosting.value = true
+        _hostUrl.value = syncServer.websocketUrl()
+        _feedbackMsg.value = syncServer.websocketUrl()
+            ?.let { "Hosting room $code — others can join now" }
+            ?: "Hosting room $code, but this device is not on a network"
+    }
+
+    fun stopHosting() {
+        syncServer.stop()
+        _isHosting.value = false
+        _peerCount.value = 0
+        _hostUrl.value = null
+        _feedbackMsg.value = "Stopped hosting"
+    }
+
+    // --- Sharing a session ---
+
+    /**
+     * The loaded session as a link.
+     *
+     * Built from what is actually on the decks, so a link always describes the
+     * session as it stands rather than as it was when something was last saved.
+     */
+    fun sessionLink(): SessionLink = SessionLink(
+        deckA = _loadedTracksA.value.map { SessionLink.TrackRef(it.title, it.artist) },
+        deckB = _loadedTracksB.value.map { SessionLink.TrackRef(it.title, it.artist) },
+        cuesA = _cuesA.value.filterNotNull().map { it.toDouble() },
+        cuesB = _cuesB.value.filterNotNull().map { it.toDouble() },
+        crossfade = _crossfader.value,
+        referenceBpm = _reference.value?.bpm,
+        referenceKey = _reference.value?.camelotKey,
+        roomCode = _roomCode.value.takeIf { it.isNotBlank() },
+    )
+
+    /**
+     * Loads what a shared link describes, matching its tracks against this
+     * library by title and artist.
+     *
+     * A track the receiving library does not hold is named in the message rather
+     * than skipped silently — the point of sharing a session is to be able to
+     * recreate it, and knowing which two songs are missing is what makes that
+     * possible.
+     */
+    fun openSessionLink(url: String) {
+        val session = SessionLink.fromUrl(url)
+        if (session.isEmpty) {
+            _feedbackMsg.value = "That link has no session in it"
+            return
+        }
+        clearDecks()
+        session.roomCode?.let { _roomCode.value = it }
+        setCrossfaderValue(session.crossfade)
+
+        val missing = ArrayList<String>()
+        fun load(refs: List<SessionLink.TrackRef>, deck: PlatterGeometry.Deck) {
+            for (ref in refs) {
+                val match = _tracks.value.firstOrNull { track ->
+                    track.title.equals(ref.title, ignoreCase = true) &&
+                        (ref.artist.isBlank() || track.artist.equals(ref.artist, ignoreCase = true))
+                }
+                if (match == null) missing.add(ref.toString()) else loadOntoDeck(match, deck)
+            }
+        }
+        load(session.deckA, PlatterGeometry.Deck.A)
+        load(session.deckB, PlatterGeometry.Deck.B)
+
+        _cuesA.value = session.cuesA.map { it.toFloat() as Float? }
+            .plus(List(4) { null }).take(4)
+        _cuesB.value = session.cuesB.map { it.toFloat() as Float? }
+            .plus(List(4) { null }).take(4)
+
+        _feedbackMsg.value = when {
+            missing.isEmpty() -> "Session loaded"
+            else -> "Session loaded — not in your library: ${missing.joinToString(", ")}"
+        }
+    }
 
     fun startAutoDiscovery() {
         _feedbackMsg.value = "Broadcasting LAN search..."
@@ -1596,7 +1759,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     override fun onConnected() {
         _isWsConnected.value = true
         _feedbackMsg.value = "Linked to Sync Server!"
-        syncClient.joinRoom(_roomCode.value, "all", "Android Device")
+        syncClient.joinRoom(_roomCode.value, _role.value.wireName, "Android Device")
     }
 
     override fun onDisconnected() {
@@ -1612,6 +1775,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
             if (json.has("crossfader")) {
                 applyCrossfade(json.getInt("crossfader"))
+            }
+            // Cue points travel; playhead position deliberately does not. A
+            // remote `currentTime` applied here would fight the local render
+            // loop and, since every applied change is echoed back as state,
+            // would do it in a feedback loop. Cues are static marks, so they
+            // can be shared without either problem.
+            json.optJSONObject("deckA")?.let { _cuesA.value = remoteCues(it, _cuesA.value) }
+            json.optJSONObject("deckB")?.let { _cuesB.value = remoteCues(it, _cuesB.value) }
+        }
+    }
+
+    /** Cue points out of a remote deck object, keeping the local ones it omits. */
+    private fun remoteCues(deck: JSONObject, current: List<Float?>): List<Float?> {
+        val cues = deck.optJSONArray("cues") ?: return current
+        return List(4) { index ->
+            if (index >= cues.length() || cues.isNull(index)) {
+                null
+            } else {
+                cues.optDouble(index).takeIf { !it.isNaN() }?.toFloat()
             }
         }
     }
@@ -1654,6 +1836,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         super.onCleared()
         audioEngine.release()
         decoded.clear()
+        syncServer.stop()
         syncClient.disconnect()
     }
 }

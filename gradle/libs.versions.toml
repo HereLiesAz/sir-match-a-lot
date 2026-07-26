@@ -18,6 +18,7 @@ room = "2.8.4"
 okhttp = "5.4.0"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
 sqliteJdbc = "3.51.0.0"
+json = "20250107"
 # KSP releases track the Kotlin version they were built against. 2.3.10 is the
 # newest published build; KSP2 accepts the 2.4.x compiler, so this is correct
 # rather than a mismatch. Revisit when a 2.4.x KSP ships.
@@ -52,6 +53,7 @@ androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref =
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 okhttp-core = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
+json = { module = "org.json:json", version.ref = "json" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

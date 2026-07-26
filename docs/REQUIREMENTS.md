@@ -133,10 +133,10 @@ Azphalt store packs. The app names what you asked for; it does not take it.
 
 | # | Requirement | Status |
 | :-- | :--- | :--- |
-| H1 | Link multiple devices; each shows a different screen; all act as one instrument | planned (phase 6) |
-| H2 | One-click auto-connect on the same Wi-Fi — requires a device to host, which does not exist yet | planned (phase 6) |
-| H3 | Export the loaded session (two tracks, cue points, loop settings) as a shareable link with query parameters | planned (phase 6) |
-| H4 | Expose the app's complete API | planned (phase 6) |
+| H1 | Link multiple devices; each shows a different screen; all act as one instrument | done — `SyncRole` picks the screen a device shows and the tab bar follows it; the host applies remote events to its own engine as well as relaying them, so a remote pad plays the host's instrument rather than a relay that ignores it |
+| H2 | One-click auto-connect on the same Wi-Fi — requires a device to host, which does not exist yet | done — `SyncServer` is that device: a UDP responder on 8888 answers the discovery broadcast `SyncClient` was always sending, and an RFC 6455 server on 8890 (`WebSocketProtocol`) carries the room |
+| H3 | Export the loaded session (two tracks, cue points, loop settings) as a shareable link with query parameters | done — `SessionLink`; `web/index.html` reads the parameters, so the default destination understands its own links |
+| H4 | Expose the app's complete API | done — `docs/API.md` specifies all three surfaces: discovery, the room protocol, and the session-link format |
 | H5 | Comprehensive documentation and a web page, describing the app that actually exists | done for the gesture map and platter behaviour — README and `web/` rewritten against §C/§D with an explicit status section; revisit as phases 5-6 land |
 
 ## Contradictions resolved
