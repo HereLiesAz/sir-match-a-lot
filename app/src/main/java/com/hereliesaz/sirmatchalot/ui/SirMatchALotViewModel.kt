@@ -19,6 +19,7 @@ import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.BeatSync
+import com.hereliesaz.sirmatchalot.domain.DeckCapacity
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
 import com.hereliesaz.sirmatchalot.domain.MixCommand
 import com.hereliesaz.sirmatchalot.domain.MixDeck
@@ -73,6 +74,21 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * stereo track — until the ViewModel died.
      */
     private val decoded = com.hereliesaz.sirmatchalot.audio.DecodedCache()
+    /**
+     * The track that set the session's tempo and key.
+     *
+     * The first thing put on the platter sets the tone, and everything after
+     * conforms to it: stretched to its BPM and shifted to its key. Without a
+     * fixed reference, "match the other deck" means whatever happens to be
+     * loaded at the time, so the same two tracks align differently depending on
+     * the order they went on — and a circle whose clips are at different tempos
+     * has no coherent bar grid to snap to.
+     *
+     * Cleared with the decks.
+     */
+    private val _reference = MutableStateFlow<Track?>(null)
+    val reference: StateFlow<Track?> = _reference
+
     private val peaksCache = mutableMapOf<String, PeakEnvelope>()
     private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
@@ -164,6 +180,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     ?: com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(pcm.toMonoFloat(), pcm.sampleRate)
             }
 
+            // The first track on the platter sets the session's tempo and key;
+            // everything after is rendered to match before it is ever heard.
+            // Conforming the audio itself, rather than setting a deck rate, is
+            // what lets several clips share one circle: a deck has one rate, so
+            // rate-matching only ever works when a deck holds one track.
+            val playable = conformToReference(track, pcm)
+
             val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
             val existing = engineDeck.clips
             // A drop names a point on the circle, and angle is time — so the
@@ -177,9 +200,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle)
                 else -> existing.maxOfOrNull { it.endFrame } ?: 0
             }
-            engineDeck.clips = existing + Clip(
+            engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
                 id = track.id,
-                buffer = pcm,
+                buffer = playable,
                 startFrame = startFrame,
                 loop = existing.isEmpty(),
             )
@@ -195,38 +218,125 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
             onDeck.value = onDeck.value + track
             republishPlatter()
-            if (!startSilent) alignOnDrop(track, deck)
+            if (!startSilent) reportConformed(track)
             syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
         }
     }
 
     /**
-     * Beat-matches a freshly dropped track against whatever is on the other deck.
+     * Renders [pcm] to the session reference's tempo and key.
      *
-     * A track with no measured tempo is left at its own speed and said so, rather
-     * than being warped by a ratio derived from a tempo nobody measured.
+     * Stretched so its BPM matches — pitch held, so the stretch does not undo
+     * the key match — and then shifted so its key matches. Both are rendered
+     * into the buffer rather than applied as deck settings, because a deck has
+     * one rate and one playhead: rate-matching can only ever align a deck that
+     * holds a single track, and the whole point of the circle is that it holds
+     * several.
+     *
+     * The first track to arrive becomes the reference and is returned untouched.
+     * A track with no measured tempo or key is also returned untouched — there
+     * is nothing to conform it by, and inventing a ratio is what the original
+     * analysis did.
      */
-    private fun alignOnDrop(track: Track, deck: PlatterGeometry.Deck) {
-        val other = if (deck == PlatterGeometry.Deck.A) _loadedTracksB.value else _loadedTracksA.value
-        val reference = other.firstOrNull { it.bpm != null }
-        if (track.bpm == null) {
-            _feedbackMsg.value = "${track.title} has not been analysed yet"
-            return
+    private fun conformToReference(
+        track: Track,
+        pcm: com.hereliesaz.sirmatchalot.audio.PcmBuffer,
+    ): com.hereliesaz.sirmatchalot.audio.PcmBuffer {
+        val existing = _reference.value
+        if (existing == null) {
+            _reference.value = track
+            return pcm
         }
-        if (reference == null) return
+        if (existing.id == track.id) return pcm
 
-        val alignment = BeatSync.align(track, reference)
-        if (alignment == null) {
-            _feedbackMsg.value = "${track.title} will not beat-match ${reference.title}"
+        val referenceBpm = existing.bpm
+        val trackBpm = track.bpm
+        var result = pcm
+
+        if (referenceBpm != null && trackBpm != null && trackBpm > 0.0 && referenceBpm > 0.0) {
+            // To play a 140 BPM track at 120, it has to become longer.
+            val stretch = (trackBpm / referenceBpm).coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+            if (abs(stretch - 1.0) > 1e-3) result = result.timeStretched(stretch)
+        }
+
+        val alignment = BeatSync.align(track, existing)
+        val semitones = alignment?.semitoneShift ?: 0
+        if (semitones != 0) result = result.pitchShifted(semitones.toDouble())
+
+        return result
+    }
+
+    /** Says what conforming did, once the clip is on the deck. */
+    private fun reportConformed(track: Track) {
+        val existing = _reference.value
+        if (existing == null || existing.id == track.id) {
+            _feedbackMsg.value = "${track.title} sets the session — " +
+                "${track.bpmLabel()} BPM, ${track.keyLabel()}"
             return
         }
-        audioEngine.applyAlignment(
-            if (deck == PlatterGeometry.Deck.A) "A" else "B",
-            alignment.tempoRatio,
-            alignment.phaseOffsetSeconds,
+        val referenceBpm = existing.bpm
+        val trackBpm = track.bpm
+        if (trackBpm == null || referenceBpm == null) {
+            _feedbackMsg.value = "${track.title} has no measured tempo — added as it is"
+            return
+        }
+        val semitones = BeatSync.align(track, existing)?.semitoneShift ?: 0
+        _feedbackMsg.value = buildString {
+            append("${track.title} conformed to ${String.format("%.1f", referenceBpm)} BPM")
+            if (semitones != 0) append(", ${String.format("%+d", semitones)} semitones to ${existing.keyLabel()}")
+        }
+    }
+
+    /**
+     * Drops the oldest clips from [engineDeck] until [incoming] fits the circle.
+     *
+     * @return the clips that should remain, for the caller to add to.
+     */
+    private fun evictForCapacity(
+        engineDeck: com.hereliesaz.sirmatchalot.audio.Deck,
+        deck: PlatterGeometry.Deck,
+        incoming: com.hereliesaz.sirmatchalot.audio.PcmBuffer,
+    ): List<Clip> {
+        val framesPerBeat = deckFramesPerBeat(deck).takeIf { it > 0.0 }
+            ?: BeatSnap.framesPerBeat(_reference.value?.bpm, audioEngine.output.sampleRate)
+        if (framesPerBeat <= 0.0) return engineDeck.clips
+
+        val sounding = clipUnderPlayhead(engineDeck)
+        val entries = engineDeck.clips.mapIndexed { index, clip ->
+            DeckCapacity.Entry(
+                id = clip.id,
+                beats = (clip.frameCount / framesPerBeat).toInt().coerceAtLeast(1),
+                addedOrder = index,
+            )
+        }
+        val incomingBeats = (incoming.frameCount / framesPerBeat).toInt().coerceAtLeast(1)
+        val protectedIds = setOfNotNull(sounding)
+
+        val evictions = DeckCapacity.evictionsFor(
+            existing = entries,
+            incoming = incomingBeats,
+            protectedIds = protectedIds,
         )
+        if (evictions.isEmpty()) return engineDeck.clips
+
         _feedbackMsg.value =
-            "Matched ${track.title} to ${String.format("%.1f", reference.bpm)} BPM"
+            "Platter full — dropped ${evictions.size} to make room"
+        for (id in evictions) {
+            _loadedTracksA.value = _loadedTracksA.value.filterNot { it.id == id }
+            _loadedTracksB.value = _loadedTracksB.value.filterNot { it.id == id }
+            peaksCache.remove(id)
+            energyCache.remove(id)
+        }
+        decoded.trim(pinnedTrackIds())
+        return engineDeck.clips.filterNot { it.id in evictions }
+    }
+
+    /** The clip the playhead is currently inside, which must never be evicted. */
+    private fun clipUnderPlayhead(engineDeck: com.hereliesaz.sirmatchalot.audio.Deck): String? {
+        val position = engineDeck.playhead
+        return engineDeck.clips.firstOrNull { clip ->
+            clip.loop || (position >= clip.startFrame && position < clip.endFrame)
+        }?.id
     }
 
     /** Rebuilds the platter layout from the engine's clips. */
@@ -437,6 +547,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _loadedTracksB.value = emptyList()
         _selectedTrackIds.value = emptySet()
         decoded.trim(pinned = emptySet())
+        // A new session gets a new reference; the old one no longer sets a tone
+        // for anything.
+        _reference.value = null
         republishPlatter()
     }
 
@@ -695,16 +808,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 engineDeck.playhead = 0.0
                 engineDeck.playing = true
                 _isPlaying.value = true
-                command.alignment?.let {
-                    audioEngine.applyAlignment(name, it.tempoRatio, it.phaseOffsetSeconds)
-                    val drift = if (_keylock.value) -12.0 * ln(it.tempoRatio) / ln(2.0) else 0.0
-                    val total = it.semitoneShift + drift
-                    if (abs(total) >= 0.01) {
-                        renderPitchShift(
-                            if (command.deck == MixDeck.A) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B,
-                            total,
-                            it.semitoneShift,
-                        )
+
+                // Clips are conformed to the session reference at load, so they
+                // already share its tempo and key. Applying the planner's
+                // alignment on top would correct a difference that has already
+                // been rendered away — a track would be stretched twice and
+                // shifted twice. Only phase is still worth applying, and only
+                // when the clip was never conformed.
+                command.alignment?.let { alignment ->
+                    if (_reference.value == null) {
+                        audioEngine.applyAlignment(name, alignment.tempoRatio, alignment.phaseOffsetSeconds)
+                    } else {
+                        audioEngine.applyAlignment(name, 1.0, alignment.phaseOffsetSeconds)
                     }
                 }
             }
