@@ -19,7 +19,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | A6 | Silence trimmed from the start and end of every track | done (`audio/AudioDecoder`) |
 | A7 | Analysis runs over whole tracks, not excerpts | done (one decode feeds every measurement) |
 | A8 | Loop candidates found automatically from the playlist's songs | done (`dsp/StructureFinder.findLoops`, bar-aligned self-similarity); surfaced in the sampler by "Fill from track" |
-| A9 | Points of interest tagged (drop, break, vocal entry) | partial — drops, breakdowns, builds and peaks are detected and snapped to bar lines (`StructureFinder.findPointsOfInterest`); vocal detection would need a separate model |
+| A9 | Points of interest tagged (drop, break, vocal entry) | **done** — drops, breakdowns, builds and peaks from `StructureFinder`, snapped to bar lines; vocal entry from `VocalDetector`, which requires harmonic content, pitch *instability* and formant-band presence together. Pitch instability is what separates a voice from a lead synth playing the same notes in the same band. Limit recorded and tested: deep vibrato from any source reads as singing |
 | A10 | Replace the filename-hash and random-number "analysis" entirely | **done** — `ai/SongAnalyzer.kt` deleted, `analysis/TrackAnalyzer` measures from audio |
 
 ## B. Audio engine
@@ -39,7 +39,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | B11 | A single sample alone on a deck loops around the whole circle | done (tested) |
 | B12 | Engine runs at the device's native rate; one high-quality SRC at load | **done** — `dsp/SincResampler` (Kaiser windowed-sinc polyphase, exact phase table) converts each track once in `PcmBuffer.resampledTo`, so the render loop runs at rate 1.0. Flat to 20 kHz within 0.08 dB, 108 dB alias rejection; measurements in AUDIO_QUALITY.md |
 | B13 | Master limiter transparent at listening levels | done (-1 dBFS threshold, tested) |
-| B14 | Hi-res (24-bit / float) source support | planned — gap 2 in AUDIO_QUALITY.md |
+| B14 | Hi-res (24-bit / float) source support | **done** — `PcmBuffer` carries the decoder's native depth; a float source stays float through slicing, resampling, stretching and shifting, and the render loops branch once per clip per block rather than converting per sample. `DecodedCache` counts bytes rather than frames, since a float sample costs twice what a 16-bit one does |
 
 ## C. The platter
 
@@ -54,12 +54,12 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C7 | Waveforms glow, brightening and growing with live output | done — driven by `Mixer.level`, not an oscillator |
 | C8 | Deck B's waveform reaches inward toward the far side | done |
 | C9 | Energy graph around the circle, repeating as needed, colour-coded | done — the analyser now persists the curve to `Track.energyPath` (`EnergyCurve.toByteArray`, window length included so a curve read back can still answer `at`), and `republishPlatter` feeds it to `PlatterClip.energy`. A track analysed before the path was written recomputes the curve at load rather than falling back to neutral forever |
-| C10 | Cue markers visible on the ring | planned (phase 5) |
+| C10 | Cue markers visible on the ring | **done** — `PlatterMarker`, drawn straddling the ring: outside for Deck A, inside for Deck B, matching where each deck's rays already point. Not scaled by the metered level, so a cue stays legible during the quiet passage you are looking for it in. Structural landmarks ride the same mechanism |
 | C11 | The platter is the feature — not inside a card, not on a grey panel | done |
 | C12 | Identical layout in portrait and landscape; song list along the bottom scrolling horizontally in portrait; navigation bar fixed | done — needs confirming on a device |
 | C13 | Song list entries are draggable onto the platter | **done** — long-press a card in the strip to lift it, drag onto the circle, and release. The ring under the finger picks the deck (outside A, inside B) and the angle picks the position: angle is time, so the fraction dropped at is the frame the clip starts on. A target marker shows both before release. Long-press rather than immediate drag, or the strip would stop scrolling |
 | C14 | No A/B buttons and no drag handle on song rows | done |
-| C15 | Background is an out-of-focus rave light show, genuinely driven by the audio, not a strobe | planned (phase 6) |
+| C15 | Background is an out-of-focus rave light show, genuinely driven by the audio, not a strobe | **done** — `RaveBackground` over `SpectrumMeter`. Three bands off the master bus rather than one level, so a kick and a hi-hat move different lights instead of everything pulsing together, which is what a strobe is. Brightness from the audio, motion from a free-running clock. Silence is darkness |
 
 ## D. Gestures
 
@@ -82,7 +82,7 @@ Prompt 75 replaced it with D1–D6 below.
 | D10 | Single tap selects the waveform under the finger on that deck | done |
 | D11 | Double tap selects both decks' waveforms at that spot | done |
 | D12 | Long press removes the selected track(s) | done |
-| D13 | Easter egg: scratching too far backward triggers a very low, growling "I am Satan, Lord of Darkness", slow at first then accelerating | partial — `ScratchModel` fires the trigger exactly once per gesture from one accumulator, tested; the growling voice itself is not yet synthesised |
+| D13 | Easter egg: scratching too far backward triggers a very low, growling "I am Satan, Lord of Darkness", slow at first then accelerating | **done** — `ScratchModel` fires once per gesture; `GrowlVoice` synthesises the line with a source-filter formant synthesiser (glottal pulse train at 62 Hz, three resonators per phoneme, noise for the fricatives, sub-harmonic and period jitter for the growl), accelerating across the utterance. Synthesised rather than bundled, because F9 says no built-in audio clips |
 
 ## E. Gesture labels
 
@@ -100,14 +100,14 @@ Prompt 75 replaced it with D1–D6 below.
 | # | Requirement | Status |
 | :-- | :--- | :--- |
 | F1 | Local audio files supported | done — a single file, or a whole folder walked recursively (`importFolder`, `data/AudioFileFilter`). A music library is a folder of folders, so the walk descends; it is iterative with a visited set, so a deep or cyclic tree terminates rather than overflowing the stack |
-| F2 | Any music service whose link resolves to a track or playlist | partial — `data/PlaylistParser` reads M3U/M3U8, XSPF, Atom and RSS, plus pasted link lists and tracklists, and `importFromLink` fetches a link and expands it. Anything serving a real audio file (podcast enclosures, direct links, self-hosted, purchased downloads) imports playable. **YouTube and Spotify give song lists, not audio**, and this app deliberately does not extract audio from them — see the note below the table |
+| F2 | Any music service whose link resolves to a track or playlist | **done, within a deliberate boundary** — `data/PlaylistParser` reads M3U/M3U8, XSPF, Atom and RSS, plus pasted link lists and tracklists, and `importFromLink` fetches a link and expands it. Anything serving a real audio file (podcast enclosures, direct links, self-hosted, purchased downloads) imports playable. **YouTube and Spotify give song lists, not audio**, and this app deliberately does not extract audio from them — see the note below the table. That is the finished behaviour, not outstanding work: the remaining gap is one the app declines to close |
 | F3 | A playlist link imports every track in it, not one | **done** — a playlist becomes one library entry per song. Entries with no playable location are kept, named, with a null `sourceUri`, rather than dropped or given invented audio |
 | F4 | Long imports run in the background with a progress notification, pausable and resumable | **done** — `analysis/AnalysisService` is a foreground service with a progress notification carrying Pause/Resume/Stop actions. It owns its own database handle and analyser rather than reaching into the ViewModel, because it outlives it by design; progress travels back through `AnalysisProgressBus` so the notification and the library screen show the same figures. Pause takes effect *between* tracks, so resuming does not repeat work already paid for |
 | F5 | Dropdown filter sorting the library by Camelot proximity to the Deck A track | done (`MixPlanner.byHarmonicProximity`, wired to the library sort chips) |
 | F6 | Shuffle Crate: fills both decks by harmonic compatibility and BPM match | done (`MixPlanner.shuffleCrate`, weighted-random over usable pairs) |
 | F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | **done** — `MixPlanner.automatchicMix` decides the running order and per-step corrections; `domain/MixDirector` performs it, deciding when each transition starts (one crossfade before the outgoing track ends), how long it lasts (16 bars of the outgoing tempo, capped at a third of the track), and where the crossfader sits at every instant. It emits commands rather than calling the engine, so the timing is a pure function of elapsed time and is fully unit-tested |
 | F8 | Auto beat sync, auto pitch, auto stretch, harmonize | **done** — `syncToDeckA` applies rate and phase through the engine and *renders* the pitch shift into the clip via `PcmBuffer.pitchShifted`, combining the harmonic interval with a keylock correction of `-12*log2(tempoRatio)` so a tempo match does not drag the key with it. Keylock is toggleable, because off is the turntable behaviour the scratch gestures depend on |
-| F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | partial — host corrected, packs import unanalysed; auto-download on first launch still to remove |
+| F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | **done** — auto-download on first launch removed; a store pack is imported when asked for, and arrives unanalysed for the analysis queue to measure. The same code path hid a bug: the track list was published only when non-empty, so clearing the library left the last non-empty list on screen for ever |
 | F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
 
 **On YouTube and Spotify.** Their terms prohibit downloading audio, and Google
@@ -126,8 +126,8 @@ Azphalt store packs. The app names what you asked for; it does not take it.
 | G1 | Kaoss-pad / Kitara style expressive pad | done (`audio/MasterFilter` on the master bus, `ui/SamplerScreen`'s FilterPad). X is a bipolar DJ filter (centre bypass, left sweeps a lowpass down, right a highpass up, log-mapped); Y is resonance to Q 8 with `1/sqrt(Q)` compensation so a sweep does not slam the limiter. Placed before the limiter and after the crossfade, so it acts on the mix and its resonant peaks are still caught |
 | G2 | Record to a pad and replay it | done (`audio/Sampler` + `ui/SamplerScreen`: arm record, hold a pad to capture, hold to replay) |
 | G3 | Unused pads auto-filled with samples grabbed from loaded tracks | done (`Sampler.autoFill` from `StructureFinder` loop candidates, driven by the sampler's "Fill from track"; never overwrites an occupied pad) |
-| G4 | Automatic loop maker sampling loops from the active playlist | partial — loops are found and can fill pads; running it across a whole playlist automatically is outstanding |
-| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | planned — `Clip` already supports it; the UI to place a pad on a deck is outstanding |
+| G4 | Automatic loop maker sampling loops from the active playlist | **done** — `LoopHarvest` allocates round-robin by track, best-first within a track, so every song contributes its best loop before any song contributes its second; playlist order breaks ties. Two passes, so a playlist never has to fit in memory at once |
+| G5 | The sampler/looper can occupy a deck slot, showing N loops the way songs are shown | **done** — `placePadsOnDeck` puts each loaded pad on the circle as its own clip, so each gets its own arc, colour and waveform. The pads keep their audio: placing a loop should not cost you the pad |
 
 ## H. Reach
 

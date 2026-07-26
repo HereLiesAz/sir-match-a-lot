@@ -126,8 +126,20 @@ class Deck(
 
             for (clip in snapshot) {
                 val local = localPosition(clip, position, cycle) ?: continue
-                left += Resampler.read(clip.buffer.channel(0), local) * clip.gain
-                right += Resampler.read(clip.buffer.channel(1), local) * clip.gain
+                // One branch per clip per frame on the depth, rather than a
+                // conversion per sample. A hi-res clip is read from its float
+                // storage directly; a 16-bit one from its Short storage. The
+                // alternative — a common float view — would mean either
+                // widening every 16-bit track in memory, doubling the heap the
+                // decks hold, or narrowing every hi-res one, which is the thing
+                // carrying depth exists to avoid.
+                if (clip.buffer.isFloat) {
+                    left += Resampler.read(clip.buffer.floatChannel(0), local) * clip.gain
+                    right += Resampler.read(clip.buffer.floatChannel(1), local) * clip.gain
+                } else {
+                    left += Resampler.read(clip.buffer.channel(0), local) * clip.gain
+                    right += Resampler.read(clip.buffer.channel(1), local) * clip.gain
+                }
             }
 
             val base = frame * CHANNELS

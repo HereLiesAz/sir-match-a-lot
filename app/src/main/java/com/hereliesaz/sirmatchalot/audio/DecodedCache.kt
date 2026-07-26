@@ -12,8 +12,13 @@ package com.hereliesaz.sirmatchalot.audio
  * gigabyte on a heap that tops out at 256 MB. That was reported as
  * `OutOfMemoryError`.
  *
- * Bounded by **frames**, not entries, because tracks differ in length by more
+ * Bounded by **bytes**, not entries, because tracks differ in length by more
  * than an order of magnitude and a count-based bound says nothing about memory.
+ *
+ * Bytes rather than frames, specifically, because depth now varies: a hi-res
+ * source is stored as float and costs four bytes a sample where a CD rip costs
+ * two. Counting frames would have made the cache believe a float track was half
+ * the size it is, and the budget exists precisely to stop the heap running out.
  *
  * ## Pinning
  *
@@ -29,13 +34,13 @@ package com.hereliesaz.sirmatchalot.audio
  * Not thread-safe; owned by the ViewModel, which touches it from one coroutine.
  */
 class DecodedCache(
-    /** Ceiling on total frames held, summed across channels. */
-    private val maxFrames: Long = defaultBudgetFrames(),
+    /** Ceiling on total sample bytes held, summed across channels. */
+    private val maxBytes: Long = defaultBudgetBytes(),
 ) {
     private val entries = LinkedHashMap<String, PcmBuffer>()
 
-    /** Total frames held, counting each channel. */
-    var heldFrames: Long = 0
+    /** Total sample bytes held, counting each channel at its own depth. */
+    var heldBytes: Long = 0
         private set
 
     val size: Int get() = entries.size
@@ -62,15 +67,15 @@ class DecodedCache(
      * The new entry is never itself evicted, since it was just asked for.
      */
     fun put(id: String, buffer: PcmBuffer, pinned: Set<String> = emptySet()) {
-        entries.remove(id)?.let { heldFrames -= it.totalFrames }
+        entries.remove(id)?.let { heldBytes -= it.byteCount }
         entries[id] = buffer
-        heldFrames += buffer.totalFrames
+        heldBytes += buffer.byteCount
         trim(pinned + id)
     }
 
     /** Drops [id] if it is held and not pinned elsewhere. */
     fun remove(id: String) {
-        entries.remove(id)?.let { heldFrames -= it.totalFrames }
+        entries.remove(id)?.let { heldBytes -= it.byteCount }
     }
 
     /**
@@ -80,45 +85,44 @@ class DecodedCache(
      * long mix releases each track as it finishes rather than at the end.
      */
     fun trim(pinned: Set<String>) {
-        if (heldFrames <= maxFrames) {
+        if (heldBytes <= maxBytes) {
             overBudget = false
             return
         }
         val candidates = entries.keys.filterNot { it in pinned }
         for (id in candidates) {
-            if (heldFrames <= maxFrames) break
-            entries.remove(id)?.let { heldFrames -= it.totalFrames }
+            if (heldBytes <= maxBytes) break
+            entries.remove(id)?.let { heldBytes -= it.byteCount }
         }
-        overBudget = heldFrames > maxFrames
+        overBudget = heldBytes > maxBytes
     }
 
     fun clear() {
         entries.clear()
-        heldFrames = 0
+        heldBytes = 0
         overBudget = false
     }
 
-    private val PcmBuffer.totalFrames: Long
-        get() = frameCount.toLong() * channelCount
-
     companion object {
         /**
-         * Frames to hold, from the runtime's own heap ceiling rather than a fixed
+         * Bytes to hold, from the runtime's own heap ceiling rather than a fixed
          * number — the limit is 256 MB on some devices and several times that on
          * others, and a constant tuned for one is wrong for the other.
          *
-         * A third of the heap, at two bytes per frame per channel. The rest has
-         * to cover the decoder's accumulation buffers, the conversion
-         * intermediates, and Compose.
+         * A third of the heap. The rest has to cover the decoder's accumulation
+         * buffers, the conversion intermediates, and Compose.
          */
-        fun defaultBudgetFrames(): Long {
+        fun defaultBudgetBytes(): Long {
             val heapBytes = Runtime.getRuntime().maxMemory()
-            return (heapBytes / 3 / BYTES_PER_FRAME).coerceAtLeast(MINIMUM_FRAMES)
+            return (heapBytes / 3).coerceAtLeast(MINIMUM_BYTES)
         }
 
-        private const val BYTES_PER_FRAME = 2L
-
-        /** Enough for roughly two five-minute stereo tracks, whatever the heap says. */
-        private const val MINIMUM_FRAMES = 2L * 5 * 60 * 48_000 * 2
+        /**
+         * Enough for roughly two five-minute 16-bit stereo tracks, whatever the
+         * heap says. A pair of hi-res tracks is twice that and will not fit —
+         * which is the honest answer on a small device, and `overBudget` is how
+         * a caller learns it before the allocator does.
+         */
+        private const val MINIMUM_BYTES = 2L * 5 * 60 * 48_000 * 2 * 2
     }
 }
