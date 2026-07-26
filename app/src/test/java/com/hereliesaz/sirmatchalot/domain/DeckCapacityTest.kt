@@ -113,9 +113,12 @@ class DeckCapacityTest {
     }
 
     @Test
-    fun `the default is sized for about three songs`() {
-        // A four-minute track at 128 BPM is about 512 beats.
+    fun `the default is sized for about two songs`() {
+        // A four-minute track at 128 BPM is about 512 beats. Two, not three,
+        // because every clip is a fully decoded track: three a deck is roughly
+        // 350 MB across both decks, which does not fit a 256 MB heap.
         val fourMinutesAt128 = 512
-        assertTrue(DeckCapacity.DEFAULT_MAX_BEATS >= fourMinutesAt128 * 3)
+        assertTrue(DeckCapacity.DEFAULT_MAX_BEATS >= fourMinutesAt128 * 2)
+        assertTrue(DeckCapacity.DEFAULT_MAX_BEATS < fourMinutesAt128 * 3)
     }
 }

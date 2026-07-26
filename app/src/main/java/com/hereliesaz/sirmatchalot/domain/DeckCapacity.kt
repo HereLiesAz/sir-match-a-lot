@@ -19,13 +19,19 @@ package com.hereliesaz.sirmatchalot.domain
 object DeckCapacity {
 
     /**
-     * Enough for roughly three songs.
+     * Enough for roughly two songs.
      *
-     * A four-minute track at 128 BPM is 512 beats, so three of them is about
-     * 1536. The figure is generous rather than exact — the point is a ceiling,
-     * not a quota.
+     * A four-minute track at 128 BPM is 512 beats, so two of them is about 1024;
+     * the figure below leaves a little headroom. Generous rather than exact —
+     * the point is a ceiling, not a quota.
+     *
+     * Two rather than three because of what a clip costs. Every clip on the
+     * circle is a fully decoded track: five minutes of 48 kHz stereo is about
+     * 58 MB, so three a deck is roughly 350 MB across both decks, which does not
+     * fit a 256 MB heap and is uncomfortable even with largeHeap. Two a deck is
+     * about 230 MB, which does.
      */
-    const val DEFAULT_MAX_BEATS = 1_600
+    const val DEFAULT_MAX_BEATS = 1_100
 
     /**
      * What the deck knows about a clip for capacity purposes.

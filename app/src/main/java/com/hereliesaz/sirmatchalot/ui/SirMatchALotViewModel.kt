@@ -197,7 +197,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             val startFrame = when {
                 existing.isEmpty() -> 0
                 atFraction != null && cycle > 0 ->
-                    (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle)
+                    // Snapped, exactly as a drag is. A drop that landed off the
+                    // grid while a drag of the same clip snapped onto it would
+                    // be two different answers to the same question.
+                    BeatSnap.snapFrame(
+                        frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
+                        framesPerBeat = sessionFramesPerBeat(),
+                        phaseFrames = sessionBeatPhaseFrames(),
+                    ).coerceIn(0, cycle)
                 else -> existing.maxOfOrNull { it.endFrame } ?: 0
             }
             engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
@@ -297,8 +304,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         deck: PlatterGeometry.Deck,
         incoming: com.hereliesaz.sirmatchalot.audio.PcmBuffer,
     ): List<Clip> {
-        val framesPerBeat = deckFramesPerBeat(deck).takeIf { it > 0.0 }
-            ?: BeatSnap.framesPerBeat(_reference.value?.bpm, audioEngine.output.sampleRate)
+        val framesPerBeat = sessionFramesPerBeat()
         if (framesPerBeat <= 0.0) return engineDeck.clips
 
         val sounding = clipUnderPlayhead(engineDeck)
@@ -439,8 +445,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         // correct by eye.
         val startFrame = BeatSnap.snapFrame(
             frame = raw,
-            framesPerBeat = deckFramesPerBeat(deck),
-            phaseFrames = deckBeatPhaseFrames(deck),
+            framesPerBeat = sessionFramesPerBeat(),
+            phaseFrames = sessionBeatPhaseFrames(),
         )
         if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
 
@@ -472,18 +478,38 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         republishPlatter()
     }
 
-    /** Frames per beat on [deck], from the first track on it with a measured tempo. */
-    private fun deckFramesPerBeat(deck: PlatterGeometry.Deck): Double {
-        val tracks = if (deck == PlatterGeometry.Deck.A) _loadedTracksA.value else _loadedTracksB.value
-        val reference = tracks.firstOrNull { it.bpm != null } ?: return 0.0
-        return BeatSnap.framesPerBeat(reference.bpm, audioEngine.output.sampleRate)
+    /**
+     * Frames per beat for the whole platter.
+     *
+     * One grid, not one per deck, because every clip is conformed to the session
+     * reference's tempo when it loads. Reading a deck's *own* first track
+     * instead — as this did before conforming existed — gives the grid of a
+     * tempo nothing on the platter is actually playing at: a 140 BPM track
+     * stretched to a 120 BPM session would be snapped to 140 BPM beat lines,
+     * which land nowhere near its beats.
+     *
+     * Falls back to whatever is loaded when no reference has been set, which is
+     * the state a session is in before its first track finishes loading.
+     */
+    private fun sessionFramesPerBeat(): Double {
+        val bpm = _reference.value?.bpm
+            ?: (_loadedTracksA.value + _loadedTracksB.value).firstNotNullOfOrNull { it.bpm }
+        return BeatSnap.framesPerBeat(bpm, audioEngine.output.sampleRate)
     }
 
-    /** Where [deck]'s grid starts, so beat lines sit on the music rather than on frame zero. */
-    private fun deckBeatPhaseFrames(deck: PlatterGeometry.Deck): Double {
-        val tracks = if (deck == PlatterGeometry.Deck.A) _loadedTracksA.value else _loadedTracksB.value
-        val reference = tracks.firstOrNull { it.bpm != null } ?: return 0.0
-        return (reference.firstBeatSeconds ?: 0.0) * audioEngine.output.sampleRate
+    /**
+     * Where the platter's grid starts, so beat lines sit on the music rather
+     * than on frame zero.
+     *
+     * The reference track is the one clip that is never stretched, so its
+     * measured first beat is the grid's phase, and every conformed clip's beats
+     * line up with it by construction.
+     */
+    private fun sessionBeatPhaseFrames(): Double {
+        val first = _reference.value?.firstBeatSeconds
+            ?: (_loadedTracksA.value + _loadedTracksB.value)
+                .firstOrNull { it.bpm != null }?.firstBeatSeconds
+        return (first ?: 0.0) * audioEngine.output.sampleRate
     }
 
     /**
@@ -508,7 +534,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val existing = engineDeck.clips.firstOrNull { it.id == clipId } ?: return
         val pristine = decoded[clipId] ?: existing.buffer
 
-        val framesPerBeat = deckFramesPerBeat(deck)
+        val framesPerBeat = sessionFramesPerBeat()
         val snapped = BeatSnap.snapRatio(pristine.frameCount, ratio, framesPerBeat)
             .coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
 
