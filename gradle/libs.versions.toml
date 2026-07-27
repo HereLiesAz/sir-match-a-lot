@@ -1,5 +1,5 @@
 [versions]
-androidGradlePlugin = "9.3.0"
+androidGradlePlugin = "9.3.1"
 androidxCore = "1.19.0"
 androidxLifecycle = "2.11.0"
 androidxActivity = "1.13.0"
@@ -17,8 +17,8 @@ lifecycleViewmodelNav3 = "2.11.0"
 room = "2.8.4"
 okhttp = "5.4.0"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
-sqliteJdbc = "3.51.0.0"
-json = "20250107"
+sqliteJdbc = "3.53.2.1"
+json = "20260719"
 # KSP releases track the Kotlin version they were built against. 2.3.10 is the
 # newest published build; KSP2 accepts the 2.4.x compiler, so this is correct
 # rather than a mismatch. Revisit when a 2.4.x KSP ships.
