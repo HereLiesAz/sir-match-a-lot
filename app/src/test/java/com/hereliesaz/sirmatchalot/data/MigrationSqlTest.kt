@@ -87,6 +87,27 @@ class MigrationSqlTest {
         }
     }
 
+    /**
+     * Column names from the schema Room exported for [version].
+     *
+     * The working directory differs between running from Gradle and from an
+     * IDE, so both are tried rather than assuming one.
+     */
+    private fun exportedColumnNames(version: Int): Set<String> {
+        val relative = "schemas/com.hereliesaz.sirmatchalot.data.AppDatabase/$version.json"
+        val file = listOf(java.io.File(relative), java.io.File("app/$relative"))
+            .firstOrNull { it.isFile }
+            ?: return emptySet()
+
+        // Deliberately not a JSON library: the shape needed is one array of
+        // objects with a `columnName`, and the point of the test is the column
+        // set, not the parser.
+        return Regex("\"columnName\"\\s*:\\s*\"([^\"]+)\"")
+            .findAll(file.readText())
+            .map { it.groupValues[1] }
+            .toSet()
+    }
+
     private fun Connection.columnNames(): Set<String> =
         createStatement().use { statement ->
             statement.executeQuery("PRAGMA table_info(`tracks`)").use { rows ->
@@ -128,6 +149,33 @@ class MigrationSqlTest {
                     assertNull(rows.getString("cachedPath"))
                 }
             }
+        }
+    }
+
+    @Test
+    fun `the migrated table matches Room's own exported schema`() {
+        // The test that catches the mistake that ships.
+        //
+        // Room validates the live table against the schema it exported for the
+        // current version, and throws at open time when they differ — so adding
+        // a field to the entity and forgetting the migration is a crash on
+        // launch for everyone upgrading, and nothing whatsoever for a fresh
+        // install. Which means it passes every test on a developer's machine
+        // and fails only on devices that already had the app.
+        //
+        // Reading the exported JSON makes the entity itself the expectation, so
+        // the next column added has to appear in a migration or this fails here.
+        val expected = exportedColumnNames(version = 4)
+        assertTrue("no exported schema found for version 4", expected.isNotEmpty())
+
+        openVersion2Database().use { connection ->
+            connection.insertVersion2Row("a")
+            connection.migrateAll()
+            assertEquals(
+                "the migrated table does not match the entity Room will validate against",
+                expected,
+                connection.columnNames(),
+            )
         }
     }
 
