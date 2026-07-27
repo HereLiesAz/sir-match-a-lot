@@ -208,9 +208,13 @@ fun PlatterScreen(
     // captures its parameters once; reading the captured `state` would pin the
     // loop to whatever was playing at first composition.
     val playing by androidx.compose.runtime.rememberUpdatedState(state.isPlaying)
+    // A pending clip pulses, so the clock has to keep running while one exists
+    // even with the transport stopped — which is exactly the case: you drop a
+    // track onto an idle platter and wait for it.
+    val preparing by androidx.compose.runtime.rememberUpdatedState(state.isPreparing)
     LaunchedEffect(Unit) {
         while (true) {
-            if (!playing && !pointerActive && visibleLabels.isEmpty()) {
+            if (!playing && !preparing && !pointerActive && visibleLabels.isEmpty()) {
                 kotlinx.coroutines.delay(IDLE_FRAME_POLL_MILLIS)
                 continue
             }
@@ -406,7 +410,48 @@ fun PlatterScreen(
                 } else {
                     0f
                 },
+                pulse = elapsedMillis % PULSE_PERIOD_MS / PULSE_PERIOD_MS.toFloat() * TWO_PI,
             )
+
+            // What the platter is waiting for, in the middle of the platter.
+            //
+            // The app bar's indicator is for work you are not watching. This is
+            // for the one case where you are: you dropped a track, the ring
+            // looks unchanged, and the only question is whether anything is
+            // happening. It says so in the place you are already looking, and it
+            // names the track and the stage rather than spinning anonymously.
+            if (state.isPreparing) {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = if (state.pending.size == 1) "PREPARING" else "PREPARING ${state.pending.size}",
+                        color = Color(0xFF22D3EE),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 2.sp,
+                    )
+                    for (clip in state.pending) {
+                        Text(
+                            text = clip.title,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        Text(
+                            text = clip.stage,
+                            color = Color(0xFF9CA3AF),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
 
             GestureLabelOverlay(visibleLabels, canvasSize, scale, 0f, 0f)
 
@@ -486,6 +531,7 @@ fun PlatterScreen(
 
         TrackStrip(
             tracks = tracks,
+            preparingIds = state.pending.map { it.id }.toSet(),
             sortLabel = sortLabel,
             onCycleSort = onCycleSort,
             onLoad = actions::onLoadTrack,
@@ -584,6 +630,9 @@ private const val TWO_PI = (2.0 * Math.PI).toFloat()
  */
 private const val IDLE_FRAME_POLL_MILLIS = 100L
 
+/** One breath of the pending-clip pulse. Slow enough to read as waiting. */
+private const val PULSE_PERIOD_MS = 1_600L
+
 /**
  * The track list: along the bottom, scrolling horizontally, best match first.
  *
@@ -600,6 +649,7 @@ private const val IDLE_FRAME_POLL_MILLIS = 100L
 @Composable
 private fun TrackStrip(
     tracks: List<RankedTrack>,
+    preparingIds: Set<String>,
     sortLabel: String,
     onCycleSort: () -> Unit,
     onLoad: (Track) -> Unit,
@@ -635,6 +685,9 @@ private fun TrackStrip(
     }
 
     LazyRow(
+        // Hoisted and saveable, so scrolling to the far end of a long library
+        // and switching tabs does not put you back at the beginning.
+        state = androidx.compose.foundation.lazy.rememberLazyListState(),
         modifier = Modifier
             .fillMaxWidth()
             .height(96.dp)
@@ -689,7 +742,18 @@ private fun TrackStrip(
                         )
                     }
                 }
-                Text(track.artist, color = Color(0xFF9CA3AF), fontSize = 11.sp, maxLines = 1)
+                if (track.id in preparingIds) {
+                    Text(
+                        "PREPARING…",
+                        color = Color(0xFF22D3EE),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                    )
+                } else {
+                    Text(track.artist, color = Color(0xFF9CA3AF), fontSize = 11.sp, maxLines = 1)
+                }
 
                 // What it would take to bring this one in, when there is
                 // something to bring it in after. Otherwise what it is.

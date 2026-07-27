@@ -122,6 +122,44 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val work = BackgroundWork()
 
     /**
+     * Clips asked for and not ready yet, for the platter to draw where they will
+     * land.
+     *
+     * Separate from [work] because the app bar's indicator and the platter
+     * answer different questions. The indicator is for work you are not
+     * watching; this is for the ring you just dropped something onto and are
+     * staring at. A track load is the one operation that is both.
+     */
+    private val _pendingClips = MutableStateFlow<List<com.hereliesaz.sirmatchalot.ui.platter.PendingClip>>(emptyList())
+
+    private fun beginPending(
+        track: Track,
+        deck: PlatterGeometry.Deck,
+        atFraction: Float?,
+        stage: String,
+    ) {
+        val entry = com.hereliesaz.sirmatchalot.ui.platter.PendingClip(
+            id = track.id,
+            deck = deck,
+            fraction = atFraction ?: 0f,
+            title = track.title,
+            stage = stage,
+        )
+        _pendingClips.value = _pendingClips.value.filterNot { it.id == track.id } + entry
+    }
+
+    /** Moves a pending clip on to its next stage, leaving it where it is. */
+    private fun updatePending(trackId: String, stage: String) {
+        _pendingClips.value = _pendingClips.value.map {
+            if (it.id == trackId) it.copy(stage = stage) else it
+        }
+    }
+
+    private fun endPending(trackId: String) {
+        _pendingClips.value = _pendingClips.value.filterNot { it.id == trackId }
+    }
+
+    /**
      * In-flight work, including the background service's.
      *
      * The service runs in its own right and survives this ViewModel, so its
@@ -212,6 +250,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 delay(_settings.value.visualRefresh.frameMillis)
                 val deck = engine.deckA.takeIf { it.cycleFrames > 0 } ?: engine.deckB
                 _platterState.value = _platterState.value.copy(
+                    pending = _pendingClips.value,
                     playheadFraction = deck.cyclePosition(),
                     outputLevel = engine.mixer.level.peak,
                     // Sounding, not merely "transport running". The platter uses
@@ -361,8 +400,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
             try {
                 work.track(BackgroundWork.loadId(track.id), "Loading ${track.title}") { progress ->
+                    // The same words in both places, so the ring and the app bar
+                    // never disagree about what is happening.
+                    fun stage(text: String) {
+                        progress.detail(text)
+                        updatePending(track.id, text)
+                    }
+                    beginPending(track, deck, atFraction, "reading")
+
                     val pcm = decoded[track.id] ?: run {
-                        progress.detail("decoding")
+                        stage("decoding")
                         // Ask the container how big this is before committing to
                         // holding it. Finding out from the allocator instead means
                         // an OutOfMemoryError thrown while the decoder holds a whole
@@ -377,16 +424,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             }
                         }
 
-                        val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
-                            _feedbackMsg.value = "Could not decode ${track.title}"
-                            return@track
+                        val outcome = AudioDecoder.decodeDetailed(getApplication(), Uri.parse(source))
+                        val raw = when (outcome) {
+                            is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Success -> outcome.audio.pcm
+                            is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Failure -> {
+                                _feedbackMsg.value = decodeFailureMessage(track, outcome)
+                                return@track
+                            }
                         }
                         // Convert to the engine's rate here, once, with a filter good
                         // enough to be inaudible. The alternative is the render loop's
                         // 4-point spline doing it on every sample forever, at rate
                         // 0.919 for a 44.1 kHz file on a 48 kHz device.
                         if (raw.sampleRate != engine.output.sampleRate) {
-                            progress.detail("converting ${raw.sampleRate} Hz to ${engine.output.sampleRate} Hz")
+                            stage("converting ${raw.sampleRate} Hz to ${engine.output.sampleRate} Hz")
                             _feedbackMsg.value =
                                 "Converting ${track.title} to ${engine.output.sampleRate} Hz..."
                         }
@@ -399,7 +450,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                         converted
                     }
 
-                    progress.detail("measuring")
+                    stage("measuring")
 
                     fun mono(): FloatArray = monoDownmix ?: pcm.toMonoFloat().also { monoDownmix = it }
 
@@ -449,7 +500,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     // Conforming the audio itself, rather than setting a deck rate, is
                     // what lets several clips share one circle: a deck has one rate, so
                     // rate-matching only ever works when a deck holds one track.
-                    progress.detail(conformingDetail(track))
+                    stage(conformingDetail(track))
                     val playable = conformToReference(track, pcm)
 
                     val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
@@ -502,6 +553,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 // anything. What it must not do is pretend to have worked.
                 onOutOfMemory(track)
             } finally {
+                // In the same `finally` as everything else this coroutine has to
+                // let go of. A pending clip left on the ring after its load died
+                // is a clip that never arrives and never stops promising to.
+                endPending(track.id)
                 // The downmix is the largest thing here that nothing else keeps.
                 // Dropping the reference before the coroutine's frame is
                 // collected matters when the next load starts immediately, which
@@ -527,6 +582,30 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _feedbackMsg.value =
             "Ran out of memory loading ${track.title} — clear a deck, " +
                 "or choose a lower engine sample rate in Settings"
+    }
+
+    /**
+     * Says why a track would not decode, and what to do about it.
+     *
+     * Every one of these used to be "Could not decode X". The most common cause
+     * is not a decoding problem at all — it is a file the app has lost
+     * permission to read, which needs re-importing, not re-encoding.
+     */
+    private fun decodeFailureMessage(
+        track: Track,
+        failure: com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Failure,
+    ): String = when (failure.reason) {
+        com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Reason.NO_PERMISSION ->
+            "${track.title} — no longer allowed to read this file. " +
+                "Import it again, or import its folder, to restore access"
+        com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Reason.UNREADABLE ->
+            "${track.title} — the file could not be opened. It may have been moved or deleted"
+        com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Reason.NO_AUDIO_TRACK ->
+            "${track.title} has no audio track in it"
+        com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Reason.NO_CODEC ->
+            "${track.title} — this device has no decoder for ${failure.detail ?: "that format"}"
+        com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Reason.EMPTY ->
+            "${track.title} decoded to nothing — the file may be truncated"
     }
 
     /** Says a track will not fit, in megabytes rather than in bytes. */
@@ -2110,6 +2189,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      */
     fun importTrack(uri: Uri, title: String? = null, artist: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            // Persist the grant, or the library outlives the right to read it.
+            //
+            // A document from `OpenDocument` is readable until the process dies
+            // and no longer. The database row, meanwhile, is forever. So every
+            // single-file import worked in the session it was made and then
+            // failed from the next app start — or the next app *update*, which
+            // also kills the process — with the row still sitting there looking
+            // perfectly fine. Reported as "Could not decode", which sent anyone
+            // looking at codecs instead of at permissions.
+            //
+            // `runCatching` because not every provider offers a persistable
+            // grant; when it declines, the import still works for this session
+            // and the failure later is at least now named correctly.
+            runCatching {
+                getApplication<Application>().contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+
             val fileName = uri.lastPathSegment ?: "Unknown"
             val parsed = com.hereliesaz.sirmatchalot.data.LinkParser.parseFileName(fileName)
             val track = Track(
@@ -2139,11 +2238,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             return false
         }
         try {
-            val decoded = AudioDecoder.decode(getApplication(), Uri.parse(source))
-            if (decoded == null) {
-                _feedbackMsg.value = "Could not decode ${track.title}"
+            val outcome = AudioDecoder.decodeDetailed(getApplication(), Uri.parse(source))
+            if (outcome is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Failure) {
+                _feedbackMsg.value = decodeFailureMessage(track, outcome)
                 return false
             }
+            val decoded = (outcome as com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Success).audio
 
             val analysis = analyzer.analyse(decoded.pcm)
             val peaksFile = java.io.File(getApplication<Application>().filesDir, "peaks/${track.id}.peaks")

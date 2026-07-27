@@ -61,6 +61,7 @@ fun MainScreen(
     val isWsConnected by viewModel.isWsConnected.collectAsState()
     val roomCode by viewModel.roomCode.collectAsState()
 
+    val stateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
     var showSyncDialog by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showWork by remember { mutableStateOf(false) }
@@ -310,6 +311,15 @@ fun MainScreen(
                 .padding(innerPadding)
                 .background(Color(0xFF09090B))
         ) {
+            // Each tab keeps its own saved state — scroll positions above all.
+            //
+            // A `when` swaps composables, which disposes the one leaving and
+            // discards everything it remembered, so scrolling to the far end of
+            // a library and glancing at the platter put you back at the top on
+            // return. A SaveableStateHolder keeps each tab's saveable state
+            // while it is off screen and restores it when it comes back, which
+            // is what a tab bar implies and what a `when` alone does not do.
+            stateHolder.SaveableStateProvider(currentTab) {
             when (currentTab) {
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
                 DjTab.CONTROLS -> {
@@ -336,6 +346,7 @@ fun MainScreen(
                 DjTab.PERFORMANCE -> key(engineGeneration) {
                     SamplerScreen(viewModel = viewModel)
                 }
+            }
             }
 
             // Drawn over the content rather than above it. Taking layout space

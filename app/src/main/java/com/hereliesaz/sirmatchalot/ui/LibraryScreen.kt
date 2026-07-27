@@ -381,10 +381,14 @@ fun LibraryScreen(
         Spacer(Modifier.height(8.dp))
 
         LazyColumn(
+            // Hoisted so it is saveable: with the tab content wrapped in a
+            // SaveableStateHolder, where you were in a long library survives
+            // leaving the tab and coming back.
+            state = androidx.compose.foundation.lazy.rememberLazyListState(),
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(tracks) { track ->
+            items(tracks, key = { it.id }) { track ->
                 TrackRowItem(
                     track = track,
                     onLoadA = { viewModel.addTrackToDeckA(track) },
