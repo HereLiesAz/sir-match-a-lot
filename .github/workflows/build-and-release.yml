@@ -247,13 +247,6 @@ jobs:
           TARGET_NAME="${APP_NAME}-${VERSION_NAME}.apk"
           cp "$UNIVERSAL_APK" "$TARGET_NAME"
 
-          # Also stage the .aab (the artifact to upload to Google Play).
-          if [ -n "$AAB_FILE" ] && [ -f "$AAB_FILE" ]; then
-             AAB_TARGET="${APP_NAME}-${VERSION_NAME}.aab"
-             cp "$AAB_FILE" "$AAB_TARGET"
-             echo "AAB_RELEASE=$AAB_TARGET" >> $GITHUB_ENV
-          fi
-
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
           echo "APK_FILE=$TARGET_NAME" >> $GITHUB_ENV
 
@@ -276,10 +269,10 @@ jobs:
                --title "Latest Release ($TAG_NAME)" \
                --notes "Auto-build from commit $GITHUB_SHA" \
                --target $GITHUB_SHA
-             gh release upload $TAG_NAME "$APK_FILE" ${AAB_RELEASE:+"$AAB_RELEASE"} --clobber
+             gh release upload $TAG_NAME "$APK_FILE" --clobber
           else
              echo "Creating new release..."
-             gh release create $TAG_NAME "$APK_FILE" ${AAB_RELEASE:+"$AAB_RELEASE"} --prerelease \
+             gh release create $TAG_NAME "$APK_FILE" --prerelease \
                --title "Latest Release ($TAG_NAME)" \
                --notes "Auto-build from commit $GITHUB_SHA" \
                --target $GITHUB_SHA
