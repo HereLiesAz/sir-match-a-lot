@@ -52,6 +52,20 @@ data class Track(
     @ColumnInfo(defaultValue = "0") val trimEndMs: Long = 0L,
 
     // --- Cached analysis artefacts ---
+    /**
+     * A local copy of the original audio file, once one has been made.
+     *
+     * A `content://` source is not a file this app owns. A Drive or cloud
+     * provider re-fetches it over the network on every read; any provider can
+     * withdraw the grant, move the file, or be unmounted, at which point the
+     * library row survives and the audio does not.
+     *
+     * A copy of the *encoded* file, not the decoded audio — an MP3 minute is
+     * about a megabyte where a decoded minute is ten, so this is affordable for
+     * a library in a way that caching PCM never could be.
+     */
+    val cachedPath: String? = null,
+
     val peaksPath: String? = null,
     val energyPath: String? = null,
     @ColumnInfo(defaultValue = "0") val analysisVersion: Int = 0,

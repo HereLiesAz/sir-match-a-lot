@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -45,6 +44,7 @@ fun LibraryScreen(
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val transitionProgress by viewModel.transitionProgress.collectAsState()
+    val transitionStyle by viewModel.transitionStyle.collectAsState()
     val analysisProgress by viewModel.analysisProgress.collectAsState()
     var linkInput by remember { mutableStateOf("") }
 
@@ -319,6 +319,19 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Bold,
             )
             if (transitionProgress > 0f) {
+                // Naming the move is not decoration. A set that varies its
+                // transitions and describes every one of them as a nameless
+                // green bar still reads as one thing happening over and over.
+                transitionStyle?.let { style ->
+                    Text(
+                        text = style.label.uppercase(),
+                        color = Color(0xFFFBBF24),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
                 LinearProgressIndicator(
                     progress = { transitionProgress },
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -381,10 +394,14 @@ fun LibraryScreen(
         Spacer(Modifier.height(8.dp))
 
         LazyColumn(
+            // Hoisted so it is saveable: with the tab content wrapped in a
+            // SaveableStateHolder, where you were in a long library survives
+            // leaving the tab and coming back.
+            state = androidx.compose.foundation.lazy.rememberLazyListState(),
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(tracks) { track ->
+            items(tracks, key = { it.id }) { track ->
                 TrackRowItem(
                     track = track,
                     onLoadA = { viewModel.addTrackToDeckA(track) },

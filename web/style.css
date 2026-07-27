@@ -437,6 +437,21 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 0.9rem;
 }
 
+.footer-links {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.footer-links a {
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+
+.footer-links a:hover {
+    color: var(--text-primary, #fff);
+    text-decoration: underline;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
     .hero, .gestures-section {

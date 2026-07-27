@@ -76,6 +76,20 @@ class GestureEngine {
         var active = false
         var total = 0f
         var delta = 0f
+
+        /**
+         * Distance covered along this axis, regardless of direction.
+         *
+         * Separate from [total], which is *signed* and is what the gesture
+         * reports. Signed sum is the wrong measure of "has this axis been
+         * used": a scratch is back-and-forth, so its signed total hovers near
+         * zero however hard it is being worked, while a slow one-directional
+         * drift on another axis accumulates without pause. Deciding intent on
+         * the signed total therefore made the axis you were actually moving
+         * look idle next to the one you were not.
+         */
+        var travelled = 0f
+
         /** Magnitude of recent movement, low-pass filtered to smooth jitter. */
         var activity = 0f
 
@@ -83,12 +97,14 @@ class GestureEngine {
             active = false
             total = 0f
             delta = 0f
+            travelled = 0f
             activity = 0f
         }
 
         fun observe(frameDelta: Float) {
             delta = frameDelta
             total += frameDelta
+            travelled += abs(frameDelta)
             activity += (abs(frameDelta) - activity) * ACTIVITY_SMOOTHING
         }
     }
@@ -205,23 +221,42 @@ class GestureEngine {
      * mid-motion ends, and does not need the finger lifted.
      */
     private fun arbitrate(candidates: List<Axis>) {
-        // Normalise each axis against its own enter threshold so pixels and
-        // radians can be compared.
+        // Dominance is decided on what you are doing *now*, not on what you did
+        // first.
+        //
+        // This compared lifetime *signed* displacement, and both halves of that
+        // were wrong. Signed, so a scratch — which is back-and-forth by
+        // definition — cancelled itself out to nearly zero and read as an idle
+        // axis. Lifetime, so whichever axis moved first kept its lead for the
+        // whole gesture, and its lead grew with any continuing drift: an axis
+        // taken up later had to out-accumulate the entire history of the first
+        // one to be heard.
+        //
+        // Together that is the reported feel exactly — the engine settling on
+        // an interpretation early and then waiting, apparently for the rest of
+        // a gesture nobody was making. Recent activity, unsigned, lets the axis
+        // under the finger right now win, and lets a gesture change its mind
+        // mid-stroke.
+        //
+        // Each axis is normalised by its own enter threshold so pixels and
+        // radians are comparable.
         var strongest = 0f
         for (axis in candidates) {
-            val normalised = abs(axis.total) / axis.enterThreshold
-            if (normalised > strongest) strongest = normalised
+            val rate = axis.activity / axis.enterThreshold
+            if (rate > strongest) strongest = rate
         }
 
         for (axis in candidates) {
-            val normalised = abs(axis.total) / axis.enterThreshold
             if (axis.active) {
                 if (axis.activity < axis.exitThreshold) {
                     axis.reset()
                 }
             } else {
-                val clearsThreshold = normalised >= 1f
-                val isSignificant = strongest <= 0f || normalised >= strongest * DOMINANCE_RATIO
+                // Distance covered, not net displacement: an axis worked hard in
+                // both directions has been used, whatever it sums to.
+                val clearsThreshold = axis.travelled >= axis.enterThreshold
+                val rate = axis.activity / axis.enterThreshold
+                val isSignificant = strongest <= 0f || rate >= strongest * DOMINANCE_RATIO
                 if (clearsThreshold && isSignificant) {
                     axis.active = true
                 }
@@ -281,7 +316,7 @@ class GestureEngine {
          * registers as both, while the incidental rotation and span drift that a
          * two-finger drag inevitably produces do not.
          */
-        const val DOMINANCE_RATIO = 0.35f
+        const val DOMINANCE_RATIO = 0.25f
 
         private const val ACTIVITY_SMOOTHING = 0.4f
     }

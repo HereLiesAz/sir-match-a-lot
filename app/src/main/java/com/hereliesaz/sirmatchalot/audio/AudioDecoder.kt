@@ -55,6 +55,49 @@ data class DecodedAudio(
 private fun MediaFormat.intOr(key: String, fallback: Int): Int =
     if (containsKey(key)) runCatching { getInteger(key) }.getOrDefault(fallback) else fallback
 
+/**
+ * Why a decode did not produce audio.
+ *
+ * Every failure used to arrive at the UI as the same sentence — "Could not
+ * decode X" — for at least five unrelated causes, of which only one is actually
+ * about decoding. A file the app has lost permission to open, a file that has
+ * been moved or deleted, a video with no audio in it, a codec the device does
+ * not have, and a genuinely corrupt stream all read identically, and each has a
+ * different remedy. Distinguishing them is the difference between "re-import
+ * the folder" and "this file is broken".
+ */
+sealed interface DecodeOutcome {
+
+    data class Success(val audio: DecodedAudio) : DecodeOutcome
+
+    data class Failure(val reason: Reason, val detail: String? = null) : DecodeOutcome
+
+    enum class Reason {
+        /**
+         * The app is not allowed to read the file.
+         *
+         * Overwhelmingly the common one, and the least like a decoding problem.
+         * A document picked with `OpenDocument` is readable only until the
+         * process dies unless the grant was explicitly persisted, so the library
+         * row outlives the permission: the track sits there looking fine and
+         * fails the moment it is loaded, from the next app start onward.
+         */
+        NO_PERMISSION,
+
+        /** Gone, renamed, on unmounted storage, or otherwise unopenable. */
+        UNREADABLE,
+
+        /** Opened, but there is no audio track in it. */
+        NO_AUDIO_TRACK,
+
+        /** There is audio, but this device has no decoder for that format. */
+        NO_CODEC,
+
+        /** Decoded without error and produced no frames. */
+        EMPTY,
+    }
+}
+
 object AudioDecoder {
 
     private const val TIMEOUT_US = 10_000L
@@ -130,13 +173,37 @@ object AudioDecoder {
         context: Context,
         uri: Uri,
         trimSilence: Boolean = true,
-    ): DecodedAudio? = withContext(Dispatchers.IO) {
+    ): DecodedAudio? =
+        (decodeDetailed(context, uri, trimSilence) as? DecodeOutcome.Success)?.audio
+
+    /**
+     * Decodes [uri], saying what went wrong when it does.
+     *
+     * @see DecodeOutcome.Reason for why the distinction is worth carrying.
+     */
+    suspend fun decodeDetailed(
+        context: Context,
+        uri: Uri,
+        trimSilence: Boolean = true,
+    ): DecodeOutcome = withContext(Dispatchers.IO) {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(context, uri, null)
+        } catch (e: SecurityException) {
+            // The library row outlived the permission to read the file. This is
+            // the one that used to be reported as a decoding failure, and it is
+            // the one that is nothing of the kind.
+            extractor.release()
+            return@withContext DecodeOutcome.Failure(
+                DecodeOutcome.Reason.NO_PERMISSION,
+                e.message,
+            )
         } catch (e: Exception) {
             extractor.release()
-            return@withContext null
+            return@withContext DecodeOutcome.Failure(
+                DecodeOutcome.Reason.UNREADABLE,
+                e.message,
+            )
         }
 
         var trackIndex = -1
@@ -151,12 +218,15 @@ object AudioDecoder {
         }
         if (trackIndex < 0 || inputFormat == null) {
             extractor.release()
-            return@withContext null
+            return@withContext DecodeOutcome.Failure(DecodeOutcome.Reason.NO_AUDIO_TRACK)
         }
 
         extractor.selectTrack(trackIndex)
         val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
-        val codec = MediaCodec.createDecoderByType(mime)
+        val codec = runCatching { MediaCodec.createDecoderByType(mime) }.getOrElse { error ->
+            extractor.release()
+            return@withContext DecodeOutcome.Failure(DecodeOutcome.Reason.NO_CODEC, mime)
+        }
 
         // Channel count and sample rate can change when the decoder reports its
         // real output format, so they are read from the output format below
@@ -282,7 +352,7 @@ object AudioDecoder {
             extractor.release()
         }
 
-        if (frames == 0) return@withContext null
+        if (frames == 0) return@withContext DecodeOutcome.Failure(DecodeOutcome.Reason.EMPTY)
 
         // copyOf is what trims the over-allocated tail; when the estimate
         // landed exactly there is nothing to trim and the copy would be a whole
@@ -308,7 +378,7 @@ object AudioDecoder {
         }
 
         if (!trimSilence) {
-            return@withContext DecodedAudio(exact, frames, 0)
+            return@withContext DecodeOutcome.Success(DecodedAudio(exact, frames, 0))
         }
 
         // Bounds are taken from the summed channels, so a channel that is silent
@@ -316,12 +386,14 @@ object AudioDecoder {
         // rather than through toMonoFloat(), which would materialise a
         // whole-track FloatArray purely to find two indices.
         val bounds = exact.contentBounds(SILENCE_THRESHOLD)
-            ?: return@withContext DecodedAudio(exact, frames, 0)
+            ?: return@withContext DecodeOutcome.Success(DecodedAudio(exact, frames, 0))
 
-        DecodedAudio(
-            pcm = exact.slice(bounds.first, bounds.last + 1),
-            originalFrameCount = frames,
-            trimmedStartFrames = bounds.first,
+        DecodeOutcome.Success(
+            DecodedAudio(
+                pcm = exact.slice(bounds.first, bounds.last + 1),
+                originalFrameCount = frames,
+                trimmedStartFrames = bounds.first,
+            ),
         )
     }
 

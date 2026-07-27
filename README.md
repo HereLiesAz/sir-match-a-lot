@@ -129,6 +129,23 @@ per-device roles — the shareable session link, and the documented API.
 recording or sample extraction. Also outstanding: the automatic loop maker,
 running it across a whole playlist, and placing a pad bank on a deck slot.
 
+## 🔒 Privacy, permissions, terms
+
+No accounts, no analytics, no advertising, no crash reporting, and no server of
+its own. Your music and everything measured from it stay on your device; the app
+makes a network request only when you ask it to import a link or fetch a store
+pack.
+
+- [`docs/PRIVACY.md`](docs/PRIVACY.md) — what is stored, what is sent, and when
+- [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) — every permission, why it exists,
+  what breaks without it. **The app does not use your microphone**
+- [`docs/TERMS.md`](docs/TERMS.md) — terms of use, and why no audio is taken from
+  YouTube or Spotify
+- [`docs/SECURITY.md`](docs/SECURITY.md) — reporting a vulnerability, and the
+  known limits of the local-network sync
+- [`docs/DATA_SAFETY.md`](docs/DATA_SAFETY.md) — the Play data safety answers,
+  traceable to code
+
 ## 📄 License
 
 Sir Match-a-Lot is licensed under the **GNU General Public License v3.0** — see
