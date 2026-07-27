@@ -112,15 +112,21 @@ class BackgroundWork {
      * every exception — including [kotlinx.coroutines.CancellationException],
      * which a cancelled harvest or a killed load throws — propagate unchanged.
      *
-     * `inline` so that a `return@launch` inside [block] still compiles. The
-     * bodies this wraps are long functions with early exits all through them —
-     * a track that will not fit, a file that will not decode — and forcing each
-     * one to be rewritten as a nested-lambda return would be the wrapper
-     * dictating the shape of the code it is only meant to be watching. The
-     * `finally` runs on those paths too, which is the whole reason for wrapping
-     * rather than bracketing by hand.
+     * **Not `inline`.** It was, so that a `return@launch` inside [block] would
+     * compile — the bodies this wraps are long, with early exits all through
+     * them. That combination, an inline suspend function taking a suspend lambda
+     * containing a non-local return, crashed the Kotlin JVM backend while
+     * building the coroutine state machine: *"Couldn't transform method node"*.
+     * Intermittently, which is worse than always — it compiled on a developer
+     * machine and in CI, then failed on the next build with nothing relevant
+     * changed.
+     *
+     * Call sites use `return@track` instead. Since the tracked block is the
+     * whole body of the coroutine in every case, returning from the block and
+     * returning from the coroutine are the same thing — and the `finally` runs
+     * either way, which is what actually matters here.
      */
-    suspend inline fun <T> track(
+    suspend fun <T> track(
         id: String,
         label: String,
         detail: String? = null,

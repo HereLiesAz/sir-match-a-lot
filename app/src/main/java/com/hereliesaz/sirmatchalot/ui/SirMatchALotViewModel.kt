@@ -373,13 +373,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             val estimate = probe.decodedBytes(engine.output.sampleRate)
                             if (!decoded.canAdmit(estimate, pinnedTrackIds())) {
                                 _feedbackMsg.value = tooLargeMessage(track, estimate)
-                                return@launch
+                                return@track
                             }
                         }
 
                         val raw = AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm ?: run {
                             _feedbackMsg.value = "Could not decode ${track.title}"
-                            return@launch
+                            return@track
                         }
                         // Convert to the engine's rate here, once, with a filter good
                         // enough to be inaudible. The alternative is the render loop's
@@ -1015,7 +1015,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 )
                 cursor += playable.frameCount
             }
-            if (added.isEmpty()) return@launch
+            if (added.isEmpty()) return@track
 
             engineDeck.clips = engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) } + added
             republishPlatter()
@@ -1814,11 +1814,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 com.hereliesaz.sirmatchalot.data.AzphaltStoreRepository.fetchAudioPackages()
             }.getOrElse {
                 _feedbackMsg.value = "Could not reach the Azphalt store"
-                return@launch
+                return@track
             }
             if (packages.isEmpty()) {
                 _feedbackMsg.value = "No packs available"
-                return@launch
+                return@track
             }
             val pack = packages.first()
             progress.detail("downloading ${pack.name}")
@@ -1828,11 +1828,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     .downloadAndExtractPackage(getApplication(), pack)
             }.getOrElse {
                 _feedbackMsg.value = "Could not install ${pack.name}"
-                return@launch
+                return@track
             }
             if (tracks.isEmpty()) {
                 _feedbackMsg.value = "${pack.name} contained no audio"
-                return@launch
+                return@track
             }
             trackDao.insertTracks(tracks)
             _feedbackMsg.value =
@@ -2006,9 +2006,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _roomCode.value = code
         _isHosting.value = true
         _hostUrl.value = syncServer.websocketUrl()
-        _feedbackMsg.value = syncServer.websocketUrl()
-            ?.let { "Hosting room $code — others can join now" }
-            ?: "Hosting room $code, but this device is not on a network"
+        _feedbackMsg.value = when {
+            syncServer.websocketUrl() == null ->
+                "Hosting room $code, but this device is not on a network"
+            // Hosting works; being *found* does not. Worth saying, because the
+            // symptom is another device searching and finding nothing, which
+            // looks like a broken network rather than a busy port.
+            !syncServer.isDiscoverable ->
+                "Hosting room $code — port ${SyncServer.DISCOVERY_PORT} is in use, " +
+                    "so others must enter ${syncServer.websocketUrl()} by hand"
+            else -> "Hosting room $code — others can join now"
+        }
     }
 
     fun stopHosting() {
@@ -2227,12 +2235,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             runCatching { walk(treeUri, treeUri, found) }
                 .onFailure {
                     _feedbackMsg.value = "Could not read that folder"
-                    return@launch
+                    return@track
                 }
 
             if (found.isEmpty()) {
                 _feedbackMsg.value = "No audio files in that folder"
-                return@launch
+                return@track
             }
 
             val existing = _tracks.value.mapNotNull { it.sourceUri }.toHashSet()
@@ -2376,14 +2384,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 !trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true) -> trimmed
                 else -> fetchPlaylistDocument(trimmed) ?: run {
                     _feedbackMsg.value = "Could not read that link"
-                    return@launch
+                    return@track
                 }
             }
 
             val entries = PlaylistParser.parse(document)
             if (entries.isEmpty()) {
                 _feedbackMsg.value = "Nothing recognisable as a playlist there"
-                return@launch
+                return@track
             }
 
             val existing = _tracks.value

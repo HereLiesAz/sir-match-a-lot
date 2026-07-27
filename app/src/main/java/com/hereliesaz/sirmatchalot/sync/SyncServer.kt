@@ -90,18 +90,50 @@ class SyncServer(
 
         val socket = runCatching { ServerSocket(port) }.getOrNull() ?: return false
         serverSocket = socket
+
+        // Bound here, before returning, rather than inside the thread that
+        // reads it.
+        //
+        // Binding in the thread meant `start` returned true while nothing was
+        // yet listening on the discovery port, and UDP does not queue for an
+        // unbound port — it drops. So a device that broadcast in that window got
+        // silence, and "one-click auto-connect" failed for no reason the user
+        // could see or act on. The window is short, which makes it worse: it
+        // fails occasionally, on a loaded device, and looks like a flaky network.
+        //
+        // The same race is why the discovery test failed on CI while passing on
+        // every developer machine.
+        val discovery = runCatching {
+            DatagramSocket(discoveryPort).apply { broadcast = true }
+        }.getOrNull()
+        discoverySocket = discovery
         running.set(true)
 
         Thread({ acceptLoop(socket) }, "SirMatchALot-SyncAccept").apply {
             isDaemon = true
             start()
         }
-        Thread({ discoveryLoop() }, "SirMatchALot-Discovery").apply {
-            isDaemon = true
-            start()
+        if (discovery != null) {
+            Thread({ discoveryLoop(discovery) }, "SirMatchALot-Discovery").apply {
+                isDaemon = true
+                start()
+            }
         }
         return true
     }
+
+    /**
+     * Whether other devices can *find* this room, as opposed to join it.
+     *
+     * False when the discovery port was already taken — by another copy of this
+     * app, or anything else on 8888. Hosting still works and a peer that is told
+     * the address can still connect, so this is not a failure to host; it is a
+     * failure to be found, and the difference is worth reporting rather than
+     * swallowing. It used to be swallowed entirely: the bind happened inside a
+     * thread whose failure path was `return`, so hosting reported success and
+     * was quietly undiscoverable.
+     */
+    val isDiscoverable: Boolean get() = discoverySocket != null
 
     fun stop() {
         if (!running.getAndSet(false)) return
@@ -124,12 +156,7 @@ class SyncServer(
      * because the client half was written against a server that was never
      * built, and the sensible thing is to match it rather than change both.
      */
-    private fun discoveryLoop() {
-        val socket = runCatching {
-            DatagramSocket(discoveryPort).apply { broadcast = true }
-        }.getOrNull() ?: return
-        discoverySocket = socket
-
+    private fun discoveryLoop(socket: DatagramSocket) {
         val buffer = ByteArray(512)
         while (running.get()) {
             try {
