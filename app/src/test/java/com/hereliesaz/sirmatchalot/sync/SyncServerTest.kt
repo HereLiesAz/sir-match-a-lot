@@ -3,6 +3,7 @@ package com.hereliesaz.sirmatchalot.sync
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -300,6 +301,45 @@ class SyncServerTest {
             assertTrue(reply.has("serverIp"))
             assertTrue(reply.getString("wsUrl").startsWith("ws://"))
             assertEquals("TEST", reply.getString("roomCode"))
+        }
+    }
+
+    @Test
+    fun `the discovery port is listening before start returns`() {
+        // The race that made the test above fail on CI and pass everywhere
+        // else. The discovery socket used to be bound *inside* the thread that
+        // reads it, so `start` could return true with nothing yet listening —
+        // and UDP does not queue for an unbound port, it drops. A device that
+        // broadcast in that window got silence, and one-click connection failed
+        // for no reason anyone could see.
+        //
+        // Asserting on the flag rather than by sending a packet and hoping:
+        // this is about what is true at the instant `start` returns.
+        val discoveryPort = freePort()
+        val instance = SyncServer(port = freePort(), discoveryPort = discoveryPort)
+        assertTrue(instance.start("TEST"))
+        server = instance
+
+        assertTrue("start returned before the discovery port was bound", instance.isDiscoverable)
+        // Bound means taken: a second bind of the same port must now fail.
+        assertFalse(
+            "the discovery port was not actually held",
+            runCatching { DatagramSocket(discoveryPort).close() }.isSuccess,
+        )
+    }
+
+    @Test
+    fun `a busy discovery port still hosts, and says it is not discoverable`() {
+        // Hosting and being findable are different things. A port clash used to
+        // fail silently inside the discovery thread, so hosting reported success
+        // and was quietly undiscoverable — the worst of both, since the symptom
+        // appears on somebody else's device.
+        val discoveryPort = freePort()
+        DatagramSocket(discoveryPort).use {
+            val instance = SyncServer(port = freePort(), discoveryPort = discoveryPort)
+            assertTrue("hosting should still work", instance.start("TEST"))
+            server = instance
+            assertFalse(instance.isDiscoverable)
         }
     }
 

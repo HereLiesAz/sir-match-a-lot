@@ -78,16 +78,18 @@ class AnalysisService : Service() {
 
         if (worker?.isActive == true) return START_STICKY
 
+        val rescan = intent?.getBooleanExtra(EXTRA_RESCAN, false) ?: false
         startForegroundCompat(buildNotification(AnalysisState(total = 1, current = "Starting...")))
-        worker = scope.launch { run() }
+        worker = scope.launch { run(rescan) }
         return START_STICKY
     }
 
-    private suspend fun run() {
+    private suspend fun run(rescan: Boolean = false) {
         val dao = AppDatabase.getDatabase(applicationContext).trackDao()
         val analyzer = TrackAnalyzer()
 
-        val plan = AnalysisQueue.plan(dao.getAllTracks())
+        val tracks = dao.getAllTracks()
+        val plan = if (rescan) AnalysisQueue.planFullRescan(tracks) else AnalysisQueue.plan(tracks)
         if (!plan.hasWork) {
             AnalysisProgressBus.finish()
             stopSelf()
@@ -287,9 +289,13 @@ class AnalysisService : Service() {
         const val ACTION_RESUME = "com.hereliesaz.sirmatchalot.ANALYSIS_RESUME"
         const val ACTION_STOP = "com.hereliesaz.sirmatchalot.ANALYSIS_STOP"
 
+        /** Set to re-measure everything, not only what has never been measured. */
+        const val EXTRA_RESCAN = "com.hereliesaz.sirmatchalot.ANALYSIS_RESCAN"
+
         /** Starts a run, or does nothing if one is already going. */
-        fun start(context: Context) {
+        fun start(context: Context, rescan: Boolean = false) {
             val intent = Intent(context, AnalysisService::class.java)
+                .putExtra(EXTRA_RESCAN, rescan)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

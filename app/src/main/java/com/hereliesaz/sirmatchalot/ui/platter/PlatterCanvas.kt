@@ -40,6 +40,15 @@ fun PlatterCanvas(
     offsetX: Float = 0f,
     offsetY: Float = 0f,
     rotation: Float = 0f,
+    /**
+     * Free-running phase, for the pending-clip pulse.
+     *
+     * A pending clip has no measurable progress — a decode reports nothing until
+     * it is done — so what marks it as *alive* has to come from a clock. A still
+     * ghost on the ring looks like a rendering artefact; one that breathes reads
+     * as something being worked on.
+     */
+    pulse: Float = 0f,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
         val cx = size.width / 2f + offsetX
@@ -87,6 +96,74 @@ fun PlatterCanvas(
         // happens to sit at the same angle.
         drawMarkers(state, cx, cy, baseRadius, rotation)
         drawPlayhead(state, cx, cy, baseRadius, maxHeight, lengthScale, glow, rotation)
+        drawPending(state, cx, cy, baseRadius, rotation, pulse)
+    }
+}
+
+/**
+ * Draws clips that are still being prepared, where they will land.
+ *
+ * An arc rather than a point, because a clip occupies a span of the revolution
+ * and the honest thing to show is "something is coming here", not a precise
+ * boundary nobody knows yet — the length is not known until the audio is
+ * decoded and conformed.
+ *
+ * Faint, and on the ring radius of its own deck, so it reads as a placeholder
+ * rather than as audio. It pulses because there is nothing else to say it is
+ * alive: a decode reports no progress until it finishes.
+ */
+private fun DrawScope.drawPending(
+    state: PlatterState,
+    cx: Float,
+    cy: Float,
+    baseRadius: Float,
+    rotation: Float,
+    pulse: Float,
+) {
+    if (state.pending.isEmpty()) return
+
+    // 0..1 and back, so the fade has no seam where it wraps.
+    val breath = (sin(pulse) * 0.5f + 0.5f).coerceIn(0f, 1f)
+
+    for (clip in state.pending) {
+        val outward = clip.deck == PlatterGeometry.Deck.A
+        val radius = if (outward) baseRadius * 1.25f else baseRadius * 0.75f
+        val colour = Color.hsl(
+            hue = ClipPalette.hueFor(clip.deck, 0),
+            saturation = ClipPalette.saturationFor(),
+            lightness = ClipPalette.lightnessFor(energy = 0.5f),
+        )
+        val alpha = 0.25f + 0.45f * breath
+
+        // A short arc at the landing point, drawn as a run of dots so it cannot
+        // be mistaken for a waveform — waveform rays are radial, these are not.
+        val steps = 24
+        val span = 0.06f
+        for (step in 0 until steps) {
+            val fraction = clip.fraction + span * (step / (steps - 1f) - 0.5f)
+            val angle = PlatterGeometry.screenAngleForFraction(fraction) + rotation
+            val x = cx + cos(angle) * radius
+            val y = cy + sin(angle) * radius
+            drawCircle(
+                color = colour.copy(alpha = alpha),
+                radius = 2.5f,
+                center = Offset(x, y),
+                blendMode = BlendMode.Plus,
+            )
+        }
+
+        // A brighter mark exactly where it starts.
+        val (px, py) = PlatterGeometry.pointAt(clip.fraction, radius, cx, cy)
+        val start = Offset(
+            cx + (px - cx) * cos(rotation) - (py - cy) * sin(rotation),
+            cy + (px - cx) * sin(rotation) + (py - cy) * cos(rotation),
+        )
+        drawCircle(
+            color = colour.copy(alpha = (0.5f + 0.5f * breath).coerceIn(0f, 1f)),
+            radius = 5f,
+            center = start,
+            blendMode = BlendMode.Plus,
+        )
     }
 }
 

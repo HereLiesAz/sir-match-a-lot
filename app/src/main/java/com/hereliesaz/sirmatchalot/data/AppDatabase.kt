@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Track::class], version = 3, exportSchema = true)
+@Database(entities = [Track::class], version = 4, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
 
@@ -100,6 +100,23 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the local copy of the audio file.
+         *
+         * One nullable column, so it is an `ALTER TABLE` rather than the
+         * table rebuild version 3 needed. Existing rows get null and make their
+         * copy the next time they are loaded or analysed.
+         */
+        val MIGRATION_3_4_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE `tracks` ADD COLUMN `cachedPath` TEXT",
+        )
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_3_4_STATEMENTS.forEach(db::execSQL)
+            }
+        }
+
+        /**
          * The version 2 `tracks` table, as shipped.
          *
          * Kept beside the migration so the test can build the database the
@@ -126,7 +143,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // A real migration, not fallbackToDestructiveMigration().
                     // The previous builder wiped the user's entire library on
                     // every schema change.
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

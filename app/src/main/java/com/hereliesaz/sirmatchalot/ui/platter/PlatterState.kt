@@ -58,6 +58,31 @@ data class PlatterMarker(
 }
 
 /**
+ * A clip that has been asked for and is not ready yet.
+ *
+ * Dropping a track on the platter starts a decode, a rate conversion and then a
+ * stretch and a shift — seconds to tens of seconds — and until this existed the
+ * platter showed *nothing at all* during it. The ring you dropped onto looked
+ * exactly as it had a moment before, so the only available reading was that the
+ * drop had missed.
+ *
+ * A pending clip is drawn on the ring at the point it will land, so the answer to
+ * "did that work?" is in the place the question was asked. The app bar's
+ * indicator is for work you are not watching; this is for work you are.
+ *
+ * @param fraction where on the revolution it will start — the point dropped at.
+ * @param stage which part of the load is happening now, in the same words the
+ *   indicator uses.
+ */
+data class PendingClip(
+    val id: String,
+    val deck: PlatterGeometry.Deck,
+    val fraction: Float,
+    val title: String,
+    val stage: String,
+)
+
+/**
  * Everything the platter draws, as one immutable snapshot.
  *
  * Rendering takes this rather than a ViewModel so the Canvas has no dependency
@@ -86,7 +111,21 @@ data class PlatterState(
      * audio does.
      */
     val bands: SpectrumBands = SpectrumBands.DARK,
+
+    /**
+     * Clips that have been asked for and are still being prepared.
+     *
+     * Drawn on the ring where they will land, so a drop that starts twenty
+     * seconds of decoding does not look like a drop that missed.
+     */
+    val pending: List<PendingClip> = emptyList(),
 ) {
+    /** True while anything is still being prepared for the platter. */
+    val isPreparing: Boolean get() = pending.isNotEmpty()
+
+    fun pendingFor(deck: PlatterGeometry.Deck): List<PendingClip> =
+        pending.filter { it.deck == deck }
+
     val isEmpty: Boolean get() = deckA.isEmpty() && deckB.isEmpty()
 
     fun clipsFor(deck: PlatterGeometry.Deck): List<PlatterClip> =
