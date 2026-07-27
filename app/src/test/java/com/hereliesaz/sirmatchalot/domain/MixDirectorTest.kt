@@ -1,6 +1,8 @@
 package com.hereliesaz.sirmatchalot.domain
 
 import com.hereliesaz.sirmatchalot.data.Track
+import com.hereliesaz.sirmatchalot.dsp.LoopCandidate
+import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -293,6 +295,13 @@ class MixDirectorTest {
         // Each transition overlaps two tracks, so the set is shorter than the sum
         // of the durations by one crossfade per transition. Getting this wrong is
         // how a "60 minute set" turns out to be 75.
+        //
+        // True of *this* director, which has no structures and therefore plays
+        // every track to its end. Given a TrackStructureProvider a set is shorter
+        // again, because tracks are cut at musical exits — see
+        // `a structured set leaves tracks at their musical exits` below. The two
+        // do not contradict each other; they are the two halves of the same
+        // design, and the plain blend is deliberately preserved intact.
         val plan = planOf(
             track("one", seconds = 60.0),
             track("two", seconds = 60.0),
@@ -366,5 +375,250 @@ class MixDirectorTest {
                 .map { it.track.title }
         }
         assertEquals(titles(0.016), titles(0.5))
+    }
+
+    // --- Performing rather than sequencing ---
+    //
+    // Everything above runs without a TrackStructureProvider, and asserts the
+    // plain sixteen-bar blend the director has always performed. That path is
+    // untouched on purpose: it is what an unanalysed library still gets, and it
+    // is the baseline these tests measure the new behaviour against.
+
+    private fun structure(
+        track: Track,
+        points: List<PointOfInterest> = emptyList(),
+        loops: List<LoopCandidate> = emptyList(),
+    ) = TrackStructure.of(track, points = points, loops = loops)
+
+    /** A provider over a fixed map, so a test states a track's shape in a line. */
+    private fun provider(vararg entries: Pair<Track, TrackStructure>): TrackStructureProvider {
+        val byId = entries.associate { it.first.id to it.second }
+        return TrackStructureProvider { byId[it.id] }
+    }
+
+    @Test
+    fun `a structured set leaves tracks at their musical exits`() {
+        // The user asked for tracks to be cut at musical exits rather than played
+        // to the end, so a set with structures is shorter than the same plan
+        // without them. This is the assertion the older length test is the
+        // no-provider half of.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val plan = planOf(a, b)
+
+        val breakdown = PointOfInterest(140.0, PointOfInterest.Kind.BREAKDOWN, 1f)
+        val director = MixDirector(
+            plan = plan,
+            structures = provider(a to structure(a, points = listOf(breakdown)), b to structure(b)),
+            seed = 3,
+        )
+
+        director.start()
+        var elapsed = 0.0
+        var handover = -1.0
+        while (!director.finished && elapsed < 2_000.0) {
+            val commands = director.advance(0.02)
+            if (handover < 0 && commands.any { it is MixCommand.Retire }) handover = elapsed
+            elapsed += 0.02
+        }
+
+        assertTrue("never handed over", handover > 0.0)
+        assertTrue(
+            "handed over at $handover, which is not the breakdown",
+            handover < 250.0,
+        )
+    }
+
+    @Test
+    fun `an entry offset is carried to whoever starts the deck`() {
+        // A track whose first ninety seconds are a filter sweep must not be heard
+        // from frame zero every single time.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val plan = planOf(a, b)
+
+        val drop = PointOfInterest(120.0, PointOfInterest.Kind.DROP, 1f)
+        var seen = false
+        for (seed in 0L until 40L) {
+            val director = MixDirector(
+                plan = plan,
+                structures = provider(a to structure(a), b to structure(b, points = listOf(drop))),
+                seed = seed,
+            )
+            val entries = run(director, seconds = 900.0)
+                .filterIsInstance<MixCommand.Start>()
+                .map { it.entrySeconds }
+            if (entries.any { it > 0.0 }) { seen = true; break }
+        }
+        assertTrue("every entry was still from the top of the track", seen)
+    }
+
+    @Test
+    fun `nothing a transition does to a deck outlives the deck`() {
+        // A set stopped mid-slam must not leave a deck playing backwards, and the
+        // deck about to be reused must not inherit an eighteen dB shelf.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val c = track("three", seconds = 300.0)
+        val plan = planOf(a, b, c)
+
+        val drop = PointOfInterest(30.0, PointOfInterest.Kind.DROP, 1f)
+        val loops = listOf(LoopCandidate(80.0, 8, 16.0, 0.9f))
+        val director = MixDirector(
+            plan = plan,
+            structures = provider(
+                a to structure(a, loops = loops),
+                b to structure(b, points = listOf(drop), loops = loops),
+                c to structure(c, points = listOf(drop)),
+            ),
+            seed = 11,
+        )
+
+        val commands = run(director, seconds = 2_000.0)
+        // Every retire is preceded by the deck being handed back as it was found.
+        for ((index, command) in commands.withIndex()) {
+            if (command !is MixCommand.Retire) continue
+            val before = commands.subList(maxOf(0, index - 6), index)
+            assertTrue(
+                "deck ${command.deck} retired without its rate restored",
+                before.any { it is MixCommand.SetDeckRate && it.deck == command.deck && it.rate == 1.0 },
+            )
+            assertTrue(
+                "deck ${command.deck} retired still shelved",
+                before.any {
+                    it is MixCommand.SetDeckEq && it.deck == command.deck &&
+                        it.bassDb == 0.0 && it.trebleDb == 0.0
+                },
+            )
+            assertTrue(
+                "deck ${command.deck} retired at the wrong gain",
+                before.any { it is MixCommand.SetDeckGain && it.deck == command.deck && it.gain == 1f },
+            )
+        }
+    }
+
+    @Test
+    fun `a self-quote never collides with the transition it precedes`() {
+        // The flourish is the track answering its own subject; a loop still
+        // ringing when a loop roll begins would read as one botched effect
+        // rather than two deliberate ones.
+        val a = track("one", seconds = 400.0)
+        val b = track("two", seconds = 400.0)
+        val plan = planOf(a, b)
+
+        val shape = structure(
+            a,
+            points = listOf(PointOfInterest(200.0, PointOfInterest.Kind.BREAKDOWN, 1f)),
+            loops = listOf(LoopCandidate(80.0, 8, 15.0, 0.9f)),
+        )
+
+        for (seed in 0L until 60L) {
+            val director = MixDirector(
+                plan = plan,
+                structures = provider(a to shape, b to structure(b)),
+                seed = seed,
+            )
+            director.start()
+            var elapsed = 0.0
+            var transitionAt = -1.0
+            var lastLoop = -1.0
+            while (!director.finished && elapsed < 1_500.0) {
+                val commands = director.advance(0.02)
+                if (transitionAt < 0 && commands.any { it is MixCommand.Performing }) {
+                    transitionAt = elapsed
+                }
+                if (transitionAt < 0 && commands.any { it is MixCommand.TriggerLoop }) {
+                    lastLoop = elapsed
+                }
+                elapsed += 0.02
+            }
+            if (lastLoop > 0 && transitionAt > 0) {
+                assertTrue("quote at $lastLoop ran into the handover at $transitionAt", lastLoop < transitionAt)
+            }
+        }
+    }
+
+    @Test
+    fun `an unanalysed track falls back to the plain blend rather than guessing`() {
+        // The provider answering null is a first-class answer: a track nothing
+        // was measured on has no landmarks, and inventing some would be worse
+        // than the blend it replaced.
+        val a = track("one", seconds = 60.0)
+        val b = track("two", seconds = 60.0)
+        val plan = planOf(a, b)
+
+        val blind = run(MixDirector(plan), seconds = 200.0)
+        val alsoBlind = run(
+            MixDirector(plan, structures = { null }, seed = 99),
+            seconds = 200.0,
+        )
+        assertEquals(blind, alsoBlind)
+    }
+
+    @Test
+    fun `the same seed performs the same set twice`() {
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val plan = planOf(a, b)
+        val shapes = provider(
+            a to structure(
+                a,
+                points = listOf(PointOfInterest(150.0, PointOfInterest.Kind.BREAKDOWN, 1f)),
+                loops = listOf(LoopCandidate(80.0, 8, 16.0, 0.9f)),
+            ),
+            b to structure(b, points = listOf(PointOfInterest(60.0, PointOfInterest.Kind.DROP, 1f))),
+        )
+
+        fun perform(seed: Long) =
+            run(MixDirector(plan, structures = shapes, seed = seed), seconds = 900.0)
+
+        assertEquals(perform(5), perform(5))
+    }
+
+    @Test
+    fun `two runs of the same library are not the same set`() {
+        // The complaint, as a test. Same plan, same structures, different night.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val plan = planOf(a, b)
+        val shapes = provider(
+            a to structure(
+                a,
+                points = listOf(
+                    PointOfInterest(120.0, PointOfInterest.Kind.BREAKDOWN, 1f),
+                    PointOfInterest(220.0, PointOfInterest.Kind.BREAKDOWN, 1f),
+                ),
+                loops = listOf(LoopCandidate(80.0, 8, 16.0, 0.9f)),
+            ),
+            b to structure(b, points = listOf(PointOfInterest(60.0, PointOfInterest.Kind.DROP, 1f))),
+        )
+
+        val performances = (0L until 12L).map { seed ->
+            run(MixDirector(plan, structures = shapes, seed = seed), seconds = 900.0)
+                .filterIsInstance<MixCommand.Performing>()
+                .map { it.style }
+        }
+        assertTrue("every run performed identically: $performances", performances.toSet().size > 1)
+    }
+
+    @Test
+    fun `the crossfader still ends hard over on the incoming deck`() {
+        // Whatever curve a style travels on, a transition that does not finish
+        // leaves both tracks half audible for the rest of the set.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val plan = planOf(a, b)
+        val shapes = provider(
+            a to structure(a, points = listOf(PointOfInterest(150.0, PointOfInterest.Kind.BREAKDOWN, 1f))),
+            b to structure(b, points = listOf(PointOfInterest(60.0, PointOfInterest.Kind.DROP, 1f))),
+        )
+
+        for (seed in 0L until 30L) {
+            val positions = run(MixDirector(plan, structures = shapes, seed = seed), seconds = 900.0)
+                .filterIsInstance<MixCommand.Crossfade>()
+                .map { it.position }
+            assertTrue("seed $seed never reached deck B: ${positions.lastOrNull()}", positions.last() == 1f)
+            assertTrue("seed $seed left the fader out of range", positions.all { it in 0f..1f })
+        }
     }
 }
