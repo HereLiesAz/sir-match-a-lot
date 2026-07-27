@@ -4,7 +4,19 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+        RECORD_AUDIO was declared here and requested on first launch, and nothing
+        in the app ever used it: there is no AudioRecord, no MediaRecorder, and
+        no microphone path anywhere in the source. The sampler's "record" button
+        captures this app's own mixer output — a float buffer already in memory,
+        on its way to AudioTrack — which needs no permission at all.
+
+        Removed rather than justified. A microphone prompt on first launch, for a
+        capability the app does not have, is the kind of thing that gets an app
+        uninstalled before it plays a note; it would also have to be declared on
+        the Play data safety form and defended in review, for a feature that
+        does not exist.
+    -->
     <!--
         Analysis of a large folder runs for minutes. A foreground service is what
         keeps it alive while the app is backgrounded, which is precisely when a
