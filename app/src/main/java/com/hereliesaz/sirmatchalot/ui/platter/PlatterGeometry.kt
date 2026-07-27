@@ -27,7 +27,8 @@ object PlatterGeometry {
     /** Screen-space angle, in radians, of 12 o'clock. */
     const val TWELVE_OCLOCK = -Math.PI.toFloat() / 2f
 
-    private const val TWO_PI = (2.0 * Math.PI).toFloat()
+    /** One full turn. Shared, because it was defined in three files. */
+    const val TWO_PI = (2.0 * Math.PI).toFloat()
 
     /** Fraction of one revolution, 0..1, for [seconds] into a [cycleSeconds] cycle. */
     fun fractionForTime(seconds: Double, cycleSeconds: Double): Float {
@@ -69,6 +70,45 @@ object PlatterGeometry {
 
     /** Distance from centre of a touch at ([x], [y]). */
     fun radiusOf(x: Float, y: Float, cx: Float, cy: Float): Float = hypot(x - cx, y - cy)
+
+    /**
+     * Revolution fraction at a screen point, **undoing** a platter [rotation].
+     *
+     * The canvas draws every clip, marker and playhead at
+     * `screenAngleForFraction(fraction) + rotation`. Hit-testing that ignores
+     * the same rotation is a second, disagreeing answer to "where is this clip
+     * on screen": tapping selects a different clip from the one under the
+     * finger, and a drag moves a clip somewhere other than where it was
+     * released.
+     *
+     * It is not a rare case either. Locking the playhead rotates the platter
+     * *continuously* during playback, so with lock on, every tap and every drag
+     * was aimed at where the clip would have been had the platter never turned.
+     */
+    fun fractionOf(x: Float, y: Float, cx: Float, cy: Float, rotation: Float): Float =
+        fractionForScreenAngle(screenAngleOf(x, y, cx, cy) - rotation)
+
+    /**
+     * The waveform ring's base radius for a canvas of [width] by [height].
+     *
+     * One definition, because it decides both where the rings are *drawn* and
+     * where a finger has to be to hit them. It was written out at six call
+     * sites — three of them in the same file — and any one of them drifting
+     * would put the ring somewhere other than where it can be touched.
+     */
+    fun baseRadius(width: Float, height: Float, scale: Float = 1f): Float =
+        minOf(width, height) * BASE_RADIUS_FRACTION * scale
+
+    /** Radius of a deck's ring, where its clips are drawn and grabbed. */
+    fun ringRadius(deck: Deck, baseRadius: Float): Float =
+        if (deck == Deck.A) baseRadius * DECK_A_RING else baseRadius * DECK_B_RING
+
+    /** Share of the short side the ring sits at. */
+    const val BASE_RADIUS_FRACTION = 0.30f
+
+    /** Deck A's ring is outside the base radius, Deck B's inside. */
+    const val DECK_A_RING = 1.25f
+    const val DECK_B_RING = 0.75f
 
     /** Point on the circle of radius [radius] at [fraction] of a revolution. */
     fun pointAt(fraction: Float, radius: Float, cx: Float, cy: Float): Pair<Float, Float> {
@@ -161,7 +201,7 @@ object PlatterGeometry {
         maxHeight: Float,
         levelScale: Float = 1f,
         gamma: Float = 0.75f,
-        peakOvershoot: Float = 2.4f,
+        peakOvershoot: Float = BASE_OVERSHOOT,
     ): Float {
         if (peak <= 0f || maxHeight <= 0f) return 0f
         // heightAtFraction is peak-to-peak over [-1, 1], so halve to an excursion.
@@ -187,14 +227,39 @@ object PlatterGeometry {
         clipSpanFraction: Float,
         maxHeight: Float,
         levelScale: Float = 1f,
+        affinity: Float = 0f,
     ): Float {
         if (clipSpanFraction <= 0f || envelope.size == 0) return 0f
         var offset = (fraction - clipStartFraction) % 1f
         if (offset < 0f) offset += 1f
         if (offset > clipSpanFraction) return 0f
         val within = (offset / clipSpanFraction).coerceIn(0f, 1f)
-        return exaggeratedHeight(envelope.heightAtFraction(within), maxHeight, levelScale)
+        return exaggeratedHeight(
+            peak = envelope.heightAtFraction(within),
+            maxHeight = maxHeight,
+            levelScale = levelScale,
+            peakOvershoot = overshootFor(affinity),
+        )
     }
+
+    /**
+     * How far rays may overshoot where the decks agree by [affinity].
+     *
+     * The baseline used to be the maximum, applied everywhere, so the ring was
+     * as dramatic through a passage where the two tracks fight as through one
+     * where they lock together — which is to say the drama carried no
+     * information. Turning the floor down leaves the agreement somewhere to
+     * grow into, and the loudest ring is now the part of the mix that is
+     * actually working.
+     */
+    fun overshootFor(affinity: Float): Float =
+        BASE_OVERSHOOT + (MATCHED_OVERSHOOT - BASE_OVERSHOOT) * affinity.coerceIn(0f, 1f)
+
+    /** Overshoot with nothing to agree with — one deck, or two that clash. */
+    const val BASE_OVERSHOOT = 1.5f
+
+    /** Overshoot where the two decks agree completely. */
+    const val MATCHED_OVERSHOOT = 2.9f
 
     /**
      * How many discrete radial rays to draw around a ring of [radius].

@@ -376,6 +376,23 @@ class AudioEngine(
      */
     val sampler = Sampler(sampleRate = output.sampleRate)
 
+    /**
+     * A second, smaller pad bank the Automatchic Mix plays by itself.
+     *
+     * Separate from [sampler] because those eight pads belong to the performer.
+     * A director that borrowed one would silence whatever the user had loaded
+     * onto it, mid-set, to play a loop they did not ask for — and give it back
+     * empty. Four pads is more than a transition ever needs at once.
+     *
+     * It never records, so its capture space is zero-length rather than the
+     * couple of megabytes an unused thirty-second ceiling would reserve.
+     */
+    val mixSampler = Sampler(
+        padCount = 4,
+        sampleRate = output.sampleRate,
+        maxRecordSeconds = 0.0,
+    )
+
     /** Fired once when a scratch is dragged past the reverse threshold. */
     @Volatile
     var onReverseThreshold: (() -> Unit)? = null
@@ -420,7 +437,8 @@ class AudioEngine(
      * whether anything is running, not whether it happens to be loud.
      */
     fun isIdle(): Boolean =
-        !deckA.isSounding && !deckB.isSounding && !sampler.isActive && !growl.isPlaying
+        !deckA.isSounding && !deckB.isSounding && !sampler.isActive &&
+            !mixSampler.isActive && !growl.isPlaying
 
     /** Brings the output back immediately, ahead of its next idle check. */
     fun wake() = output.wake()
@@ -458,6 +476,9 @@ class AudioEngine(
             // recorded pad while recording cannot feed back on itself.
             sampler.captureFromMaster(buffer, frames)
             sampler.render(buffer, frames)
+            // After the performer's pads, so a director's loop layers over the
+            // whole mix exactly as a hand-triggered one does.
+            mixSampler.render(buffer, frames)
             growl.render(buffer, frames)
             // Measured last, so the lights follow everything a listener hears —
             // decks, pads and all — rather than only the deck mix.

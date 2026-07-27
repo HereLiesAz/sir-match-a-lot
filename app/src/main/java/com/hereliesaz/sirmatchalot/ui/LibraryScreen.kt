@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -45,6 +44,7 @@ fun LibraryScreen(
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val nowPlaying by viewModel.nowPlaying.collectAsState()
     val transitionProgress by viewModel.transitionProgress.collectAsState()
+    val transitionStyle by viewModel.transitionStyle.collectAsState()
     val analysisProgress by viewModel.analysisProgress.collectAsState()
     var linkInput by remember { mutableStateOf("") }
 
@@ -319,6 +319,19 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Bold,
             )
             if (transitionProgress > 0f) {
+                // Naming the move is not decoration. A set that varies its
+                // transitions and describes every one of them as a nameless
+                // green bar still reads as one thing happening over and over.
+                transitionStyle?.let { style ->
+                    Text(
+                        text = style.label.uppercase(),
+                        color = Color(0xFFFBBF24),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
                 LinearProgressIndicator(
                     progress = { transitionProgress },
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),

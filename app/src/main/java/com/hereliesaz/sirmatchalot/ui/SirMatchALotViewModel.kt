@@ -29,6 +29,8 @@ import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.domain.LoopHarvest
+import com.hereliesaz.sirmatchalot.domain.TrackStructure
+import com.hereliesaz.sirmatchalot.domain.TransitionStyle
 import com.hereliesaz.sirmatchalot.audio.PcmBuffer
 import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterMarker
@@ -389,6 +391,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         peaksCache.clear()
         energyCache.clear()
         poiCache.clear()
+        loopCache.clear()
         clipTitles.clear()
 
         val next = AudioEngine(
@@ -649,6 +652,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         peaksCache.clear()
         energyCache.clear()
         poiCache.clear()
+        loopCache.clear()
         System.gc()
         _feedbackMsg.value =
             "Ran out of memory loading ${track.title} — clear a deck, " +
@@ -837,6 +841,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     title = _tracks.value.firstOrNull { it.id == clip.id }?.title
                         ?: clipTitles[clip.id]
                         ?: clip.id,
+                    startSeconds = clip.startFrame.toDouble() / clip.buffer.sampleRate,
                     durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
                     peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
                     energy = energyCache[clip.id],
@@ -844,12 +849,114 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
+        fun cycleSecondsOf(deck: PlatterGeometry.Deck): Double =
+            (if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB)
+                .cycleSeconds
+
         val selected = _selectedTrackIds.value
         _platterState.value = _platterState.value.copy(
-            deckA = PlatterState.layout(inputsFor(PlatterGeometry.Deck.A), selected, PlatterGeometry.Deck.A),
-            deckB = PlatterState.layout(inputsFor(PlatterGeometry.Deck.B), selected, PlatterGeometry.Deck.B),
+            beatGridA = beatGridFor(PlatterGeometry.Deck.A),
+            beatGridB = beatGridFor(PlatterGeometry.Deck.B),
+            affinity = affinityBetweenDecks(),
+            deckA = PlatterState.layout(
+                clips = inputsFor(PlatterGeometry.Deck.A),
+                selectedIds = selected,
+                deck = PlatterGeometry.Deck.A,
+                cycleSeconds = cycleSecondsOf(PlatterGeometry.Deck.A),
+            ),
+            deckB = PlatterState.layout(
+                clips = inputsFor(PlatterGeometry.Deck.B),
+                selectedIds = selected,
+                deck = PlatterGeometry.Deck.B,
+                cycleSeconds = cycleSecondsOf(PlatterGeometry.Deck.B),
+            ),
             markers = buildMarkers(),
         )
+    }
+
+    /**
+     * Beat and bar lines for a deck's revolution.
+     *
+     * From the session reference's measured tempo, because every clip is
+     * conformed to it on load — so one grid describes the whole platter, and a
+     * per-clip grid would draw lines at tempos nothing is playing at.
+     */
+    private fun beatGridFor(
+        deck: PlatterGeometry.Deck,
+    ): com.hereliesaz.sirmatchalot.ui.platter.PlatterBeatGrid {
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val reference = _reference.value
+            ?: (_loadedTracksA.value + _loadedTracksB.value).firstOrNull { it.bpm != null }
+        return com.hereliesaz.sirmatchalot.ui.platter.PlatterBeatGrid.of(
+            bpm = reference?.bpm,
+            firstBeatSeconds = reference?.firstBeatSeconds,
+            cycleSeconds = engineDeck.cycleSeconds,
+            downbeatOffset = reference?.downbeatOffset ?: 0,
+        )
+    }
+
+    /**
+     * How well the two decks complement each other, angle by angle.
+     *
+     * The overall harmonic and tempo score sets the ceiling; the two energy
+     * curves decide where under it each moment of the revolution sits. A pair of
+     * tracks scoring 90% still has a minute that fights and a minute that locks,
+     * and this is the platter saying which is which — the one view in the app
+     * looking at both timelines at once.
+     */
+    private fun affinityBetweenDecks(): com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity {
+        val trackA = _loadedTracksA.value.firstOrNull()
+        val trackB = _loadedTracksB.value.firstOrNull()
+        if (trackA == null || trackB == null) {
+            // One deck, or none. There is nothing to complement.
+            return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.NONE
+        }
+
+        val match = HarmonicEngine.compareTracks(trackA, trackB)
+        if (!match.isComplete) {
+            // Unmeasured. A guessed compatibility would make the ring swell for
+            // reasons nothing measured.
+            return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.NONE
+        }
+
+        return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.of(
+            compatibility = match.overallScore / 100f,
+            energyA = { fraction -> deckEnergyAt(PlatterGeometry.Deck.A, fraction) },
+            energyB = { fraction -> deckEnergyAt(PlatterGeometry.Deck.B, fraction) },
+        )
+    }
+
+    /**
+     * Measured energy on [deck] at a fraction of its revolution, or null where
+     * the deck has nothing sounding there.
+     *
+     * Null rather than zero: silence between clips is not a quiet passage, and
+     * treating it as one would have two decks "agreeing" through a gap.
+     */
+    private fun deckEnergyAt(deck: PlatterGeometry.Deck, fraction: Float): Float? {
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val cycle = engineDeck.cycleSeconds
+        if (cycle <= 0.0) return null
+        val seconds = fraction.toDouble() * cycle
+
+        for (clip in engineDeck.clips) {
+            val rate = clip.buffer.sampleRate
+            val start = clip.startFrame.toDouble() / rate
+            val length = clip.frameCount.toDouble() / rate
+            val within = if (clip.loop) {
+                if (length <= 0.0) continue
+                var offset = (seconds - start) % length
+                if (offset < 0) offset += length
+                offset
+            } else {
+                val offset = seconds - start
+                if (offset < 0.0 || offset > length) continue
+                offset
+            }
+            val curve = energyCache[clip.id] ?: continue
+            return curve.at(within).coerceIn(0f, 1f)
+        }
+        return null
     }
 
     /**
@@ -919,6 +1026,65 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     /** Structural landmarks per clip id, measured once from the energy curve. */
     private val poiCache = HashMap<String, List<PointOfInterest>>()
+
+    /**
+     * Loopable sections per track id, found once from self-similarity.
+     *
+     * Filled opportunistically: finding loops needs decoded audio and a measured
+     * grid, and both are already in hand at exactly two moments — when the pads
+     * are auto-filled, and when the mix director asks a track for its shape
+     * while that track is loaded. Anywhere else it would mean decoding a file to
+     * answer a question nobody had yet asked.
+     */
+    private val loopCache = HashMap<String, List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate>>()
+
+    /** Loops in [track], measured now if the audio is to hand, or empty. */
+    private fun loopsFor(track: Track): List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate> {
+        loopCache[track.id]?.let { return it }
+        val bpm = track.bpm ?: return emptyList()
+        val firstBeat = track.firstBeatSeconds ?: return emptyList()
+        val pcm = decoded[track.id] ?: return emptyList()
+        val found = com.hereliesaz.sirmatchalot.dsp.StructureFinder().findLoops(
+            pcm.toMonoFloat(),
+            pcm.sampleRate,
+            com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, firstBeat, downbeatOffset = track.downbeatOffset),
+        )
+        loopCache[track.id] = found
+        return found
+    }
+
+    /**
+     * What the mix director knows about a track's shape.
+     *
+     * Everything here was already measured and cached and simply never reached
+     * the thing performing the mix, which is why every transition it made was
+     * the same one.
+     *
+     * The result is scaled into **playback** time. A track loaded onto a deck
+     * has been conformed to the session's tempo — physically time-stretched
+     * before it is ever heard — so a drop measured ninety seconds into the file
+     * arrives somewhere else entirely. Scaling once here means every consumer
+     * downstream can treat these numbers as the wall clock, rather than each
+     * remembering a ratio.
+     */
+    private fun structureFor(track: Track): TrackStructure? {
+        if (track.durationMs <= 0L || track.bpm == null) return null
+        val structure = TrackStructure.of(
+            track = track,
+            points = poiCache[track.id].orEmpty(),
+            loops = loopsFor(track),
+            energy = energyCache[track.id],
+        )
+        val reference = _reference.value?.bpm
+        // Conforming multiplies the rate by reference/source, so the played
+        // duration is divided by it.
+        val ratio = if (reference != null && reference > 0.0 && track.bpm > 0.0) {
+            track.bpm / reference
+        } else {
+            1.0
+        }
+        return structure.scaledBy(ratio)
+    }
 
     /**
      * Fills empty sampler pads with loops found in the track on Deck A.
@@ -1633,6 +1799,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _transitionProgress = MutableStateFlow(0f)
     val transitionProgress: StateFlow<Float> = _transitionProgress
 
+    /**
+     * How the transition now running is being performed, or null between them.
+     *
+     * Shown because a set that varies its transitions and describes them all
+     * identically still reads as robotic: the work has to be visible to count.
+     */
+    private val _transitionStyle = MutableStateFlow<TransitionStyle?>(null)
+    val transitionStyle: StateFlow<TransitionStyle?> = _transitionStyle
+
     private var autoMixJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -1656,8 +1831,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         stopAutomatchicMix()
         clearDecks()
 
-        val director = MixDirector(plan)
+        // Seeded from the clock, so running the same library twice is not the
+        // same set twice — which is the whole point of the exercise.
+        val director = MixDirector(
+            plan = plan,
+            structures = { track -> structureFor(track) },
+            seed = System.nanoTime(),
+        )
         _mixDirector.value = director
+        _transitionStyle.value = null
         apply(director.start())
 
         autoMixJob = viewModelScope.launch {
@@ -1682,6 +1864,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         autoMixJob = null
         _mixDirector.value = null
         _transitionProgress.value = 0f
+        releaseMixControls()
     }
 
     /** Carries out what the director asked for. */
@@ -1696,9 +1879,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             is MixCommand.Start -> {
                 val name = if (command.deck == MixDeck.A) "A" else "B"
                 val engineDeck = deckNamed(name)
-                // Enter from the top of the track, not from wherever the deck's
-                // playhead happened to be left.
-                engineDeck.playhead = 0.0
+                // Enter where the director asked, not from wherever the deck's
+                // playhead happened to be left. Zero is the usual answer and was
+                // once the only one; a chosen entry is how a track gets brought
+                // in on its build rather than on its intro every single time.
+                //
+                // The playhead counts frames of the *clip's* audio, not of the
+                // output — a deck reads its material at its own rate — so the
+                // conversion has to come from the clip that was just loaded.
+                val clipRate = engineDeck.clips
+                    .firstOrNull { it.id == command.track.id }
+                    ?.buffer?.sampleRate
+                    ?: engineDeck.outputSampleRate
+                engineDeck.playhead =
+                    (command.entrySeconds * clipRate).coerceAtLeast(0.0)
                 engineDeck.playing = true
                 _isPlaying.value = true
                 engine.wake()
@@ -1718,12 +1912,32 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 }
             }
 
-            is MixCommand.Crossfade -> applyCrossfade(((command.position * 200f) - 100f).toInt())
+            // Positioned as a fraction, not rounded through 201 integer steps.
+            // A sixteen-bar blend at 128 BPM crosses in thirty seconds; through
+            // the integer path that is a staircase of 201 treads, and the
+            // mixer's own smoothing was covering for it.
+            is MixCommand.Crossfade -> applyCrossfade(command.position)
+
+            is MixCommand.SetDeckEq -> deckNamed(deckName(command.deck)).let {
+                it.bassBoostDb = command.bassDb
+                it.trebleDb = command.trebleDb
+            }
+
+            is MixCommand.SetDeckGain -> deckNamed(deckName(command.deck)).gain = command.gain
+
+            is MixCommand.SetDeckRate -> deckNamed(deckName(command.deck)).rate = command.rate
+
+            is MixCommand.TriggerLoop -> triggerMixLoop(command)
+
+            MixCommand.StopMixLoops -> audioEngine.mixSampler.stopAll()
+
+            is MixCommand.Performing -> _transitionStyle.value = command.style
 
             is MixCommand.Retire -> {
-                val name = if (command.deck == MixDeck.A) "A" else "B"
+                val name = deckName(command.deck)
                 deckNamed(name).playing = false
                 removeTrackFromDecks(command.track.id)
+                _transitionStyle.value = null
             }
 
             is MixCommand.NowPlaying -> {
@@ -1735,8 +1949,59 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             MixCommand.Finished -> {
                 _mixDirector.value = null
                 _transitionProgress.value = 0f
+                releaseMixControls()
             }
         }
+    }
+
+    private fun deckName(deck: MixDeck) = if (deck == MixDeck.A) "A" else "B"
+
+    /**
+     * Plays one of a track's own loops over the mix.
+     *
+     * Sliced from what is **on the deck** rather than from the decoded original,
+     * because the two are not the same audio: a clip is conformed to the
+     * session's tempo and key before it is heard, and the loop's boundaries were
+     * measured against that same conformed timeline. Slicing the original would
+     * put a quote of the track slightly out of tune and out of time with the
+     * track it is quoting, which is the one thing it must not be.
+     */
+    private fun triggerMixLoop(command: MixCommand.TriggerLoop) {
+        val source = listOf(audioEngine.deckA, audioEngine.deckB)
+            .firstNotNullOfOrNull { deck -> deck.clips.firstOrNull { it.id == command.trackId } }
+            ?.buffer
+            ?: decoded[command.trackId]
+            ?: return
+
+        val start = (command.loop.startSeconds * source.sampleRate).toInt()
+        val end = ((command.loop.startSeconds + command.loop.durationSeconds) * source.sampleRate).toInt()
+        if (start < 0 || end <= start || start >= source.frameCount) return
+
+        val pad = audioEngine.mixSampler.pads.firstOrNull { !it.isPlaying }
+            ?: audioEngine.mixSampler.pads.first()
+        pad.gain = command.gain
+        pad.load(source.slice(start, end.coerceAtMost(source.frameCount)), label = null, loop = command.repeat)
+        pad.trigger()
+        engine.wake()
+    }
+
+    /**
+     * Hands the decks back exactly as they were found.
+     *
+     * A set can end at any moment — the plan runs out, or the user stops it mid
+     * transition — and every one of those moments is inside some script. Leaving
+     * a deck reversed, shelved eighteen dB down, or at half gain would look like
+     * the app breaking rather than a set ending.
+     */
+    private fun releaseMixControls() {
+        audioEngine.mixSampler.stopAll()
+        for (deck in listOf(audioEngine.deckA, audioEngine.deckB)) {
+            deck.rate = 1.0
+            deck.gain = 1f
+            deck.bassBoostDb = 0.0
+            deck.trebleDb = 0.0
+        }
+        _transitionStyle.value = null
     }
 
     /**
@@ -2066,6 +2331,21 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val clamped = value.coerceIn(-100, 100)
         _crossfader.value = clamped
         audioEngine.mixer.crossfade = (clamped + 100) / 200f
+    }
+
+    /**
+     * Positions the crossfader from a continuous 0..1, keeping full resolution.
+     *
+     * The slider is an `Int` because a slider is a thing a finger moves, and 201
+     * positions is finer than a finger. A programmed fade is not: routing one
+     * through the same integer means a thirty-second blend is delivered as 201
+     * discrete steps. The UI's own reading is still quantised — it is a slider —
+     * but the audio is not.
+     */
+    private fun applyCrossfade(position: Float) {
+        val clamped = position.coerceIn(0f, 1f)
+        _crossfader.value = ((clamped * 200f) - 100f).toInt().coerceIn(-100, 100)
+        audioEngine.mixer.crossfade = clamped
     }
 
     fun setVolume(vol: Float) {
