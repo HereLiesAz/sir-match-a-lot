@@ -122,6 +122,70 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val work = BackgroundWork()
 
     /**
+     * Local copies of imported audio, so the app owns what it plays.
+     *
+     * A `content://` source is a reference: a cloud provider re-fetches it over
+     * the network on every read, a grant can lapse, and a file can move. A copy
+     * of the encoded file answers all three, and costs about a megabyte a
+     * minute rather than the ten a decoded one would.
+     */
+    private val audioCache = com.hereliesaz.sirmatchalot.data.AudioFileCache.forContext(application)
+
+    /**
+     * The URI to decode [track] from, making a local copy first if there is not
+     * one already.
+     *
+     * Falls back to the original on any failure, so a copy that cannot be made
+     * costs the benefit and never the track.
+     */
+    private suspend fun playableSource(
+        track: Track,
+        source: String,
+        onStage: ((String) -> Unit)? = null,
+    ): Uri {
+        val original = Uri.parse(source)
+        val existing = audioCache.localFile(track.id)
+        if (existing != null) {
+            audioCache.touch(track.id)
+            return Uri.fromFile(existing)
+        }
+        if (!_settings.value.localCopies.isEnabled) return original
+
+        onStage?.invoke("copying locally")
+        val copied = audioCache.store(
+            context = getApplication(),
+            uri = original,
+            trackId = track.id,
+            extension = com.hereliesaz.sirmatchalot.data.AudioFileCache
+                .extensionOf(getApplication(), original),
+        ) ?: return original
+
+        // Recorded on the row so the copy is found again without a directory
+        // scan, and so deleting a track can delete its audio too.
+        runCatching { trackDao.updateTrack(track.copy(cachedPath = copied.absolutePath)) }
+        audioCache.trim(_settings.value.localCopies.ceiling(), keep = pinnedTrackIds())
+        return Uri.fromFile(copied)
+    }
+
+    /** Bytes of local audio held, and the ceiling, for the settings screen. */
+    fun localCopyUsage(): Pair<Long, Long> =
+        audioCache.heldBytes() to _settings.value.localCopies.ceiling()
+
+    fun localCopyCount(): Int = audioCache.count()
+
+    /** Deletes every local copy, keeping the library itself. */
+    fun clearLocalCopies() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val removed = audioCache.clear()
+            _tracks.value.filter { it.cachedPath != null }.forEach {
+                runCatching { trackDao.updateTrack(it.copy(cachedPath = null)) }
+            }
+            _feedbackMsg.value =
+                if (removed == 0) "No local copies to remove" else "Removed $removed local copies"
+        }
+    }
+
+    /**
      * Clips asked for and not ready yet, for the platter to draw where they will
      * land.
      *
@@ -292,6 +356,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (next.memoryBudget != current.memoryBudget) {
             decoded.setBudget(budgetBytesFor(next.memoryBudget), pinnedTrackIds())
         }
+        if (next.localCopies != current.localCopies) {
+            viewModelScope.launch(Dispatchers.IO) {
+                audioCache.trim(next.localCopies.ceiling(), keep = pinnedTrackIds())
+            }
+        }
         engine.idleShutdown = next.idleShutdown
         if (next.requiresEngineRebuild(current)) rebuildEngine(next)
     }
@@ -424,7 +493,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             }
                         }
 
-                        val outcome = AudioDecoder.decodeDetailed(getApplication(), Uri.parse(source))
+                        val playable = playableSource(track, source) { stage(it) }
+                        stage("decoding")
+                        val outcome = AudioDecoder.decodeDetailed(getApplication(), playable)
                         val raw = when (outcome) {
                             is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Success -> outcome.audio.pcm
                             is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Failure -> {
@@ -1037,7 +1108,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         decoded[track.id]?.let { return it }
         val source = track.sourceUri ?: return null
         return runCatching {
-            AudioDecoder.decode(getApplication(), Uri.parse(source))?.pcm
+            AudioDecoder.decode(getApplication(), playableSource(track, source))?.pcm
         }.getOrNull()
     }
 
@@ -2238,7 +2309,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             return false
         }
         try {
-            val outcome = AudioDecoder.decodeDetailed(getApplication(), Uri.parse(source))
+            val outcome = AudioDecoder.decodeDetailed(getApplication(), playableSource(track, source))
             if (outcome is com.hereliesaz.sirmatchalot.audio.DecodeOutcome.Failure) {
                 _feedbackMsg.value = decodeFailureMessage(track, outcome)
                 return false
@@ -2560,15 +2631,29 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * seconds. Without something visible changing, the button was
      * indistinguishable from a dead one for the entire run.
      */
-    private val _analysisProgress = MutableStateFlow<AnalysisProgress?>(null)
-    val analysisProgress: StateFlow<AnalysisProgress?> = _analysisProgress
+    /**
+     * Progress of the analysis run, mirrored from the service.
+     *
+     * A view of [com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus] rather
+     * than a second source. It used to be a second source — the ViewModel's own
+     * analysis loop — and the two could disagree about whether anything was
+     * running at all.
+     */
+    val analysisProgress: StateFlow<AnalysisProgress?> =
+        com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus.state
+            .map { state ->
+                if (state.total <= 0) {
+                    null
+                } else {
+                    AnalysisProgress(state.done, state.total, state.current)
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** @param done tracks finished so far, out of [total]. */
     data class AnalysisProgress(val done: Int, val total: Int, val current: String) {
         val fraction: Float get() = if (total <= 0) 0f else done.toFloat() / total
     }
-
-    private var analysisJob: kotlinx.coroutines.Job? = null
 
     /**
      * Measures every track that has audio and has not been measured yet.
@@ -2579,11 +2664,24 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * which is how "pressing analyse does nothing" came about. Three of those
      * four outcomes were doing exactly nothing, correctly, and saying so.
      */
+    /**
+     * Measures every track that has audio and has not been measured yet.
+     *
+     * Hands the work to [com.hereliesaz.sirmatchalot.analysis.AnalysisService],
+     * always — which is the whole change. There used to be two analysis paths:
+     * this one, which ran inside the ViewModel with no notification and died the
+     * moment the app was backgrounded, and the service, which had the
+     * notification and the Pause and Stop controls and was started only by a
+     * folder import. The button in the library called the first one.
+     *
+     * So the run a user actually started was the one that could not be seen from
+     * outside the app and did not survive leaving it — for work that takes
+     * minutes and that nobody sits and watches. One path now, and it is the one
+     * with the notification.
+     *
+     * @param rescan re-measure everything, not only what has never been measured.
+     */
     fun analysePending(rescan: Boolean = false) {
-        if (analysisJob?.isActive == true) {
-            _feedbackMsg.value = "Already analysing — let it finish"
-            return
-        }
         val plan = if (rescan) {
             AnalysisQueue.planFullRescan(_tracks.value)
         } else {
@@ -2593,47 +2691,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             _feedbackMsg.value = plan.idleMessage()
             return
         }
-
         _feedbackMsg.value = plan.startMessage()
-        analysisJob = viewModelScope.launch(Dispatchers.IO) {
-            var done = 0
-            var failed = 0
-            try {
-                for (track in plan.toAnalyse) {
-                    _analysisProgress.value = AnalysisProgress(done, plan.toAnalyse.size, track.title)
-                    work.begin(
-                        id = BackgroundWork.ANALYSIS,
-                        label = "Analysing",
-                        detail = "${done + 1} of ${plan.toAnalyse.size} — ${track.title}",
-                        progress = done.toFloat() / plan.toAnalyse.size,
-                    )
-                    if (!analyseTrack(track)) failed++
-                    done++
-                }
-            } finally {
-                work.end(BackgroundWork.ANALYSIS)
-            }
-            _analysisProgress.value = null
-            _feedbackMsg.value = buildString {
-                append("Analysed ${done - failed} of ${plan.toAnalyse.size}")
-                if (failed > 0) append(", $failed could not be decoded")
-                if (plan.missingAudio.isNotEmpty()) {
-                    append("; ${plan.missingAudio.size} have no audio file")
-                }
-            }
-        }
+        com.hereliesaz.sirmatchalot.analysis.AnalysisService.start(getApplication(), rescan)
     }
 
     /** Stops an analysis run in progress. */
-    fun cancelAnalysis() {
-        analysisJob?.cancel()
-        analysisJob = null
-        _analysisProgress.value = null
-        _feedbackMsg.value = "Analysis stopped"
-    }
+    fun cancelAnalysis() = stopBackgroundAnalysis()
 
     fun deleteTrack(track: Track) {
         viewModelScope.launch(Dispatchers.IO) {
+            // The copy goes with the row. Leaving it would be disk nobody can
+            // account for and nothing can reach.
+            audioCache.remove(track.id)
             trackDao.deleteTrack(track)
             removeTrackFromDecks(track.id)
         }

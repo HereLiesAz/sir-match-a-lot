@@ -104,6 +104,35 @@ enum class MemoryBudget(val label: String, val heapDivisor: Int) {
 }
 
 /**
+ * How much disk local copies of imported audio may use.
+ *
+ * Copies exist so the app owns what it plays: a cloud source otherwise refetches
+ * over the network on every read, and a lapsed grant or a moved file takes the
+ * audio away from a library row that survives. See
+ * [com.hereliesaz.sirmatchalot.data.AudioFileCache].
+ *
+ * Encoded audio, so the numbers are ordinary: roughly a megabyte a minute, which
+ * is about 30 hours to the gigabyte.
+ */
+enum class LocalCopyBudget(val label: String, val maxBytes: Long?) {
+    OFF("Off — play from the original every time", 0L),
+    GB_2("Up to 2 GB — around 30 hours", 2L * 1024 * 1024 * 1024),
+    GB_8("Up to 8 GB — around 130 hours", 8L * 1024 * 1024 * 1024),
+    UNLIMITED("No limit", null),
+    ;
+
+    val isEnabled: Boolean get() = this != OFF
+
+    /** The ceiling to trim against; [Long.MAX_VALUE] when there is none. */
+    fun ceiling(): Long = maxBytes ?: Long.MAX_VALUE
+
+    companion object {
+        fun fromKey(key: String?): LocalCopyBudget =
+            entries.firstOrNull { it.name == key } ?: GB_2
+    }
+}
+
+/**
  * Everything the user can set about how the engine spends memory and power.
  *
  * A plain immutable value, with no Android in it, so the defaults and the
@@ -135,6 +164,15 @@ data class EngineSettings(
      * absolutely immediate than have the battery back.
      */
     val idleShutdown: Boolean = true,
+
+    /**
+     * How much disk local copies of imported audio may take.
+     *
+     * On by default, and deliberately: the alternative is an app whose library
+     * stops working when a grant lapses, a file moves, or the network does, and
+     * every one of those has happened.
+     */
+    val localCopies: LocalCopyBudget = LocalCopyBudget.GB_2,
 ) {
     /** Whether a change from [other] requires rebuilding the audio engine. */
     fun requiresEngineRebuild(other: EngineSettings): Boolean = sampleRate != other.sampleRate
@@ -155,6 +193,7 @@ interface KeyValueStore {
 class SettingsStore(private val store: KeyValueStore) {
 
     fun load(): EngineSettings = EngineSettings(
+        localCopies = LocalCopyBudget.fromKey(store.getString(KEY_LOCAL_COPIES)),
         sampleRate = SampleRateOption.fromKey(store.getString(KEY_SAMPLE_RATE)),
         visualRefresh = VisualRefresh.fromKey(store.getString(KEY_VISUAL_REFRESH)),
         memoryBudget = MemoryBudget.fromKey(store.getString(KEY_MEMORY_BUDGET)),
@@ -168,6 +207,7 @@ class SettingsStore(private val store: KeyValueStore) {
         store.putString(KEY_MEMORY_BUDGET, settings.memoryBudget.name)
         store.putString(KEY_LIGHT_SHOW, settings.lightShow.toString())
         store.putString(KEY_IDLE_SHUTDOWN, settings.idleShutdown.toString())
+        store.putString(KEY_LOCAL_COPIES, settings.localCopies.name)
     }
 
     companion object {
@@ -178,6 +218,7 @@ class SettingsStore(private val store: KeyValueStore) {
         private const val KEY_MEMORY_BUDGET = "memory_budget"
         private const val KEY_LIGHT_SHOW = "light_show"
         private const val KEY_IDLE_SHUTDOWN = "idle_shutdown"
+        private const val KEY_LOCAL_COPIES = "local_copies"
 
         /** A store backed by the app's own preferences file. */
         fun forContext(context: android.content.Context): SettingsStore {

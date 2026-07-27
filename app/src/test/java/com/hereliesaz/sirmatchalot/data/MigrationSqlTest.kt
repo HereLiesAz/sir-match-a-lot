@@ -79,6 +79,72 @@ class MigrationSqlTest {
         }
     }
 
+    /** Everything from version 2 through to the current schema. */
+    private fun Connection.migrateAll() {
+        migrate()
+        createStatement().use { statement ->
+            for (sql in AppDatabase.MIGRATION_3_4_STATEMENTS) statement.executeUpdate(sql)
+        }
+    }
+
+    private fun Connection.columnNames(): Set<String> =
+        createStatement().use { statement ->
+            statement.executeQuery("PRAGMA table_info(`tracks`)").use { rows ->
+                buildSet { while (rows.next()) add(rows.getString("name")) }
+            }
+        }
+
+    // --- Version 3 to 4: the local copy ---
+
+    @Test
+    fun `the local copy migration compiles and runs`() {
+        openVersion2Database().use { connection ->
+            connection.insertVersion2Row("a")
+            connection.migrateAll()
+        }
+    }
+
+    @Test
+    fun `the local copy column exists after migrating`() {
+        openVersion2Database().use { connection ->
+            connection.migrateAll()
+            assertTrue("cachedPath" in connection.columnNames())
+        }
+    }
+
+    @Test
+    fun `an existing row survives with no local copy yet`() {
+        // Nullable and unset, so every track already in a library keeps working
+        // and makes its copy the next time it is loaded or analysed. A migration
+        // that demanded a value would have had to invent one.
+        openVersion2Database().use { connection ->
+            connection.insertVersion2Row("a", title = "Blue Monday")
+            connection.migrateAll()
+
+            connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT `title`, `cachedPath` FROM `tracks`").use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals("Blue Monday", rows.getString("title"))
+                    assertNull(rows.getString("cachedPath"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the migrated table still matches the entity`() {
+        // The version-3 test asserts this for its own columns; adding one to the
+        // entity without adding it to the migration is exactly the mistake that
+        // ships and then crashes Room at open time on an upgrading device.
+        openVersion2Database().use { connection ->
+            connection.migrateAll()
+            val columns = connection.columnNames()
+            for (expected in listOf("id", "title", "artist", "sourceUri", "cachedPath", "peaksPath", "energyPath")) {
+                assertTrue("the migrated table is missing `$expected`", expected in columns)
+            }
+        }
+    }
+
     // --- The thing that actually broke ---
 
     @Test

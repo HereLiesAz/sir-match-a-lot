@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.hereliesaz.sirmatchalot.data.EngineSettings
+import com.hereliesaz.sirmatchalot.data.LocalCopyBudget
 import com.hereliesaz.sirmatchalot.data.MemoryBudget
 import com.hereliesaz.sirmatchalot.data.SampleRateOption
 import com.hereliesaz.sirmatchalot.data.VisualRefresh
@@ -58,9 +58,13 @@ fun SettingsScreen(
     // Held audio changes as tracks load and are evicted, and the whole point of
     // showing it is to make the budget legible while it is being chosen.
     var usage by remember { mutableStateOf(viewModel.memoryUsage()) }
+    // Bytes held and copies on disk, both of which change while this screen is
+    // open — a copy is made the first time a track is loaded or analysed.
+    var copies by remember { mutableStateOf(0L to 0) }
     LaunchedEffect(settings) {
         while (true) {
             usage = viewModel.memoryUsage()
+            copies = viewModel.localCopyUsage().first to viewModel.localCopyCount()
             delay(1_000)
         }
     }
@@ -109,6 +113,49 @@ fun SettingsScreen(
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.padding(top = 6.dp),
             )
+        }
+
+        Section(
+            title = "LOCAL COPIES",
+            explanation = "Imported audio is copied into the app so it plays from your own " +
+                "device. Without a copy, a cloud file is fetched over the network every time " +
+                "it is read, and any file can move or have its permission withdrawn while the " +
+                "library entry stays. Copies are of the original file — about a megabyte a minute.",
+        ) {
+            for (budget in LocalCopyBudget.entries) {
+                Choice(
+                    label = budget.label,
+                    detail = null,
+                    selected = settings.localCopies == budget,
+                    onClick = { viewModel.updateSettings { it.copy(localCopies = budget) } },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "${copies.second} ${if (copies.second == 1) "copy" else "copies"}, " +
+                        megabytes(copies.first),
+                    color = DIM,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.weight(1f),
+                )
+                if (copies.second > 0) {
+                    Text(
+                        text = "REMOVE ALL",
+                        color = Color(0xFFDC2626),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { viewModel.clearLocalCopies() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
         }
 
         Section(
