@@ -837,6 +837,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     title = _tracks.value.firstOrNull { it.id == clip.id }?.title
                         ?: clipTitles[clip.id]
                         ?: clip.id,
+                    startSeconds = clip.startFrame.toDouble() / clip.buffer.sampleRate,
                     durationSeconds = clip.frameCount.toDouble() / clip.buffer.sampleRate,
                     peaks = peaksCache[clip.id] ?: PeakEnvelope.compute(FloatArray(0)),
                     energy = energyCache[clip.id],
@@ -844,12 +845,114 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
 
+        fun cycleSecondsOf(deck: PlatterGeometry.Deck): Double =
+            (if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB)
+                .cycleSeconds
+
         val selected = _selectedTrackIds.value
         _platterState.value = _platterState.value.copy(
-            deckA = PlatterState.layout(inputsFor(PlatterGeometry.Deck.A), selected, PlatterGeometry.Deck.A),
-            deckB = PlatterState.layout(inputsFor(PlatterGeometry.Deck.B), selected, PlatterGeometry.Deck.B),
+            beatGridA = beatGridFor(PlatterGeometry.Deck.A),
+            beatGridB = beatGridFor(PlatterGeometry.Deck.B),
+            affinity = affinityBetweenDecks(),
+            deckA = PlatterState.layout(
+                clips = inputsFor(PlatterGeometry.Deck.A),
+                selectedIds = selected,
+                deck = PlatterGeometry.Deck.A,
+                cycleSeconds = cycleSecondsOf(PlatterGeometry.Deck.A),
+            ),
+            deckB = PlatterState.layout(
+                clips = inputsFor(PlatterGeometry.Deck.B),
+                selectedIds = selected,
+                deck = PlatterGeometry.Deck.B,
+                cycleSeconds = cycleSecondsOf(PlatterGeometry.Deck.B),
+            ),
             markers = buildMarkers(),
         )
+    }
+
+    /**
+     * Beat and bar lines for a deck's revolution.
+     *
+     * From the session reference's measured tempo, because every clip is
+     * conformed to it on load — so one grid describes the whole platter, and a
+     * per-clip grid would draw lines at tempos nothing is playing at.
+     */
+    private fun beatGridFor(
+        deck: PlatterGeometry.Deck,
+    ): com.hereliesaz.sirmatchalot.ui.platter.PlatterBeatGrid {
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val reference = _reference.value
+            ?: (_loadedTracksA.value + _loadedTracksB.value).firstOrNull { it.bpm != null }
+        return com.hereliesaz.sirmatchalot.ui.platter.PlatterBeatGrid.of(
+            bpm = reference?.bpm,
+            firstBeatSeconds = reference?.firstBeatSeconds,
+            cycleSeconds = engineDeck.cycleSeconds,
+            downbeatOffset = reference?.downbeatOffset ?: 0,
+        )
+    }
+
+    /**
+     * How well the two decks complement each other, angle by angle.
+     *
+     * The overall harmonic and tempo score sets the ceiling; the two energy
+     * curves decide where under it each moment of the revolution sits. A pair of
+     * tracks scoring 90% still has a minute that fights and a minute that locks,
+     * and this is the platter saying which is which — the one view in the app
+     * looking at both timelines at once.
+     */
+    private fun affinityBetweenDecks(): com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity {
+        val trackA = _loadedTracksA.value.firstOrNull()
+        val trackB = _loadedTracksB.value.firstOrNull()
+        if (trackA == null || trackB == null) {
+            // One deck, or none. There is nothing to complement.
+            return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.NONE
+        }
+
+        val match = HarmonicEngine.compareTracks(trackA, trackB)
+        if (!match.isComplete) {
+            // Unmeasured. A guessed compatibility would make the ring swell for
+            // reasons nothing measured.
+            return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.NONE
+        }
+
+        return com.hereliesaz.sirmatchalot.ui.platter.PlatterAffinity.of(
+            compatibility = match.overallScore / 100f,
+            energyA = { fraction -> deckEnergyAt(PlatterGeometry.Deck.A, fraction) },
+            energyB = { fraction -> deckEnergyAt(PlatterGeometry.Deck.B, fraction) },
+        )
+    }
+
+    /**
+     * Measured energy on [deck] at a fraction of its revolution, or null where
+     * the deck has nothing sounding there.
+     *
+     * Null rather than zero: silence between clips is not a quiet passage, and
+     * treating it as one would have two decks "agreeing" through a gap.
+     */
+    private fun deckEnergyAt(deck: PlatterGeometry.Deck, fraction: Float): Float? {
+        val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+        val cycle = engineDeck.cycleSeconds
+        if (cycle <= 0.0) return null
+        val seconds = fraction.toDouble() * cycle
+
+        for (clip in engineDeck.clips) {
+            val rate = clip.buffer.sampleRate
+            val start = clip.startFrame.toDouble() / rate
+            val length = clip.frameCount.toDouble() / rate
+            val within = if (clip.loop) {
+                if (length <= 0.0) continue
+                var offset = (seconds - start) % length
+                if (offset < 0) offset += length
+                offset
+            } else {
+                val offset = seconds - start
+                if (offset < 0.0 || offset > length) continue
+                offset
+            }
+            val curve = energyCache[clip.id] ?: continue
+            return curve.at(within).coerceIn(0f, 1f)
+        }
+        return null
     }
 
     /**

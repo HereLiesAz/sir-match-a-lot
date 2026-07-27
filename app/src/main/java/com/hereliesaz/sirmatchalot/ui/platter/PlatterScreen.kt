@@ -143,6 +143,12 @@ fun PlatterScreen(
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
+    // The rotation the platter is actually drawn at — the three-finger transform
+    // plus the playhead lock's continuous turn. Computed once and used for both
+    // drawing and hit-testing, because a finger has to land on what is on screen
+    // rather than on where it would have been had the platter never turned.
+    val drawnRotation = rotation + if (playheadLocked) -state.playheadFraction * TWO_PI else 0f
+
     // Drag-and-drop from the strip onto the circle. The state lives here rather
     // than in TrackStrip because the drop target is the platter, which is a
     // sibling: the strip cannot hit-test something it does not contain.
@@ -178,10 +184,12 @@ fun PlatterScreen(
         }
         val cx = canvasSize.width / 2f
         val cy = canvasSize.height / 2f
-        val baseRadius = minOf(canvasSize.width, canvasSize.height) * 0.30f * scale
+        val baseRadius = PlatterGeometry.baseRadius(
+            canvasSize.width.toFloat(), canvasSize.height.toFloat(), scale,
+        )
         val radius = PlatterGeometry.radiusOf(local.x, local.y, cx, cy)
         return PlatterGeometry.deckAt(radius, baseRadius) to
-            PlatterGeometry.fractionOf(local.x, local.y, cx, cy)
+            PlatterGeometry.fractionOf(local.x, local.y, cx, cy, drawnRotation)
     }
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
@@ -267,11 +275,13 @@ fun PlatterScreen(
                             if (single != null && canvasSize.width > 0) {
                                 val cx = canvasSize.width / 2f
                                 val cy = canvasSize.height / 2f
-                                val baseRadius =
-                                    minOf(canvasSize.width, canvasSize.height) * 0.30f * scale
+                                val baseRadius = PlatterGeometry.baseRadius(
+                                    canvasSize.width.toFloat(), canvasSize.height.toFloat(), scale,
+                                )
                                 val radius = PlatterGeometry.radiusOf(single.x, single.y, cx, cy)
-                                val fraction =
-                                    PlatterGeometry.fractionOf(single.x, single.y, cx, cy)
+                                val fraction = PlatterGeometry.fractionOf(
+                                    single.x, single.y, cx, cy, drawnRotation,
+                                )
 
                                 if (heldClipId == null) {
                                     if (PlatterGeometry.isOnRing(radius, baseRadius)) {
@@ -295,10 +305,34 @@ fun PlatterScreen(
                                 }
                             }
 
+                            // A third finger is the platter, not the clip.
+                            //
+                            // Holding a clip used to swallow every gesture with
+                            // two *or more* fingers, and skip the gesture engine
+                            // entirely for as long as the clip was held. Since a
+                            // clip is grabbed by the one finger that starts on
+                            // the ring — which is most of the platter — the
+                            // three-finger zoom and rotate could not be reached
+                            // at all in the ordinary case. They were not rare or
+                            // fiddly; they were unreachable.
+                            //
+                            // The arity is now what it reads as: one finger
+                            // moves a clip, two stretch it, three take hold of
+                            // the whole platter. Letting go of the clip on the
+                            // third finger, without applying a stretch, because
+                            // spreading three fingers is not a request to
+                            // re-render the audio.
+                            if (heldClipId != null && pointers.size >= 3) {
+                                heldClipId = null
+                                heldClipOffCircle = false
+                                pinchStartSpan = 0f
+                                pinchRatio = 1f
+                            }
+
                             // A second finger on a held clip turns the drag into
                             // a pinch that stretches it: same gesture, one more
                             // finger, so the clip never has to be let go of.
-                            if (heldClipId != null && pointers.size >= 2) {
+                            if (heldClipId != null && pointers.size == 2) {
                                 val a = pointers[0]
                                 val b = pointers[1]
                                 val span = hypot(a.x - b.x, a.y - b.y)
@@ -363,8 +397,12 @@ fun PlatterScreen(
                             val cx = size.width / 2f
                             val cy = size.height / 2f
                             val radius = PlatterGeometry.radiusOf(position.x, position.y, cx, cy)
-                            val baseRadius = min(size.width, size.height) * 0.30f * scale
-                            val fraction = PlatterGeometry.fractionOf(position.x, position.y, cx, cy)
+                            val baseRadius = PlatterGeometry.baseRadius(
+                                size.width.toFloat(), size.height.toFloat(), scale,
+                            )
+                            val fraction = PlatterGeometry.fractionOf(
+                                position.x, position.y, cx, cy, drawnRotation,
+                            )
                             actions.onSelectAt(
                                 PlatterGeometry.deckAt(radius, baseRadius),
                                 fraction,
@@ -376,7 +414,9 @@ fun PlatterScreen(
                             val cx = size.width / 2f
                             val cy = size.height / 2f
                             actions.onSelectBothAt(
-                                PlatterGeometry.fractionOf(position.x, position.y, cx, cy),
+                                PlatterGeometry.fractionOf(
+                                    position.x, position.y, cx, cy, drawnRotation,
+                                ),
                             )
                         },
                         // Long press removes the selected track(s).
@@ -405,11 +445,7 @@ fun PlatterScreen(
                 // Locking the playhead is the same thing as turning the platter
                 // by the playhead's own position: the mark then always lands at
                 // the top and the waveform sweeps past it.
-                rotation = rotation + if (playheadLocked) {
-                    -state.playheadFraction * TWO_PI
-                } else {
-                    0f
-                },
+                rotation = drawnRotation,
                 pulse = elapsedMillis % PULSE_PERIOD_MS / PULSE_PERIOD_MS.toFloat() * TWO_PI,
             )
 
@@ -489,12 +525,14 @@ fun PlatterScreen(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val cx = size.width / 2f
                         val cy = size.height / 2f
-                        val baseRadius = minOf(size.width, size.height) * 0.30f * scale
-                        val ringRadius = if (deck == PlatterGeometry.Deck.A) {
-                            baseRadius * 1.35f
-                        } else {
-                            baseRadius * 0.65f
-                        }
+                        val baseRadius = PlatterGeometry.baseRadius(
+                            size.width.toFloat(), size.height.toFloat(), scale,
+                        )
+                        // The same radius the waveform is drawn at. These were
+                        // 1.35 and 0.65 against the canvas's 1.25 and 0.75, so
+                        // the ring promising where a drop would land was not the
+                        // ring the clip appeared on.
+                        val ringRadius = PlatterGeometry.ringRadius(deck, baseRadius)
                         val colour =
                             if (deck == PlatterGeometry.Deck.A) Color(0xFF06B6D4) else Color(0xFFF59E0B)
                         drawCircle(
@@ -591,7 +629,9 @@ private fun GestureLabelOverlay(
 
     val cx = canvasSize.width / 2f
     val cy = canvasSize.height / 2f
-    val radius = min(canvasSize.width, canvasSize.height) * 0.30f * scale * 1.45f
+    val radius = PlatterGeometry.baseRadius(
+        canvasSize.width.toFloat(), canvasSize.height.toFloat(), scale,
+    ) * 1.45f
 
     for (label in labels) {
         val fraction = GestureLabels.CLOCK_SLOTS[label.slot]
@@ -619,7 +659,7 @@ private fun GestureLabelOverlay(
     }
 }
 
-private const val TWO_PI = (2.0 * Math.PI).toFloat()
+private val TWO_PI = PlatterGeometry.TWO_PI
 
 /**
  * How often the parked frame loop checks whether it should start again.

@@ -176,7 +176,7 @@ private fun DrawScope.drawLights(bands: SpectrumBands, phase: Float) {
 fun rigPhase(elapsedMillis: Long): Float =
     (elapsedMillis % ROTATION_PERIOD_MS) / ROTATION_PERIOD_MS.toFloat() * TWO_PI
 
-private const val TWO_PI = (2.0 * Math.PI).toFloat()
+private val TWO_PI = PlatterGeometry.TWO_PI
 
 /** One full sweep of the slowest light. Slow: this is ambience, not an effect. */
 private const val ROTATION_PERIOD_MS = 24_000L

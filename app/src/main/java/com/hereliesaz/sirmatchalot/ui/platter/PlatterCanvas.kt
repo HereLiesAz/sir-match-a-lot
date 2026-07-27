@@ -53,7 +53,7 @@ fun PlatterCanvas(
     Canvas(modifier = modifier.fillMaxSize()) {
         val cx = size.width / 2f + offsetX
         val cy = size.height / 2f + offsetY
-        val baseRadius = min(size.width, size.height) * 0.30f * scale
+        val baseRadius = PlatterGeometry.baseRadius(size.width, size.height, scale)
         // Headroom for peaks to overshoot into.
         val maxHeight = baseRadius * 0.85f
 
@@ -94,9 +94,61 @@ fun PlatterCanvas(
 
         // Under the playhead, so the playhead is never hidden behind a cue that
         // happens to sit at the same angle.
+        // Under everything: the grid is what the music is measured against, not
+        // a thing in its own right.
+        drawBeatGrid(state, cx, cy, baseRadius, rotation)
         drawMarkers(state, cx, cy, baseRadius, rotation)
         drawPlayhead(state, cx, cy, baseRadius, maxHeight, lengthScale, glow, rotation)
         drawPending(state, cx, cy, baseRadius, rotation, pulse)
+    }
+}
+
+/**
+ * Draws beat and bar lines around each deck's ring.
+ *
+ * The grid every clip placement snaps to, and until now the only evidence it
+ * existed was a clip jumping slightly on release — towards a line nobody could
+ * see. Bars are longer and brighter than beats, because "how fast" and "where
+ * the phrase starts" are different questions and a grid of identical ticks only
+ * answers the first.
+ *
+ * Faint, and inside the band the waveform occupies, so it reads as ruling on the
+ * page rather than as another signal.
+ */
+private fun DrawScope.drawBeatGrid(
+    state: PlatterState,
+    cx: Float,
+    cy: Float,
+    baseRadius: Float,
+    rotation: Float,
+) {
+    for (deck in PlatterGeometry.Deck.entries) {
+        val grid = state.beatGridFor(deck)
+        if (grid.isEmpty) continue
+
+        val ring = PlatterGeometry.ringRadius(deck, baseRadius)
+        val outward = deck == PlatterGeometry.Deck.A
+        val direction = if (outward) 1f else -1f
+        val downbeats = grid.downbeats.toHashSet()
+
+        for (fraction in grid.beats) {
+            val isBar = fraction in downbeats
+            val length = if (isBar) baseRadius * 0.16f else baseRadius * 0.07f
+            val alpha = if (isBar) 0.30f else 0.14f
+            val angle = PlatterGeometry.screenAngleForFraction(fraction) + rotation
+            val cosine = cos(angle)
+            val sine = sin(angle)
+
+            drawLine(
+                color = Color.White.copy(alpha = alpha),
+                start = Offset(cx + cosine * ring, cy + sine * ring),
+                end = Offset(
+                    cx + cosine * (ring + direction * length),
+                    cy + sine * (ring + direction * length),
+                ),
+                strokeWidth = if (isBar) 2f else 1f,
+            )
+        }
     }
 }
 
@@ -127,7 +179,7 @@ private fun DrawScope.drawPending(
 
     for (clip in state.pending) {
         val outward = clip.deck == PlatterGeometry.Deck.A
-        val radius = if (outward) baseRadius * 1.25f else baseRadius * 0.75f
+        val radius = PlatterGeometry.ringRadius(clip.deck, baseRadius)
         val colour = Color.hsl(
             hue = ClipPalette.hueFor(clip.deck, 0),
             saturation = ClipPalette.saturationFor(),
@@ -262,6 +314,9 @@ private fun DrawScope.drawDeck(
                 clipSpanFraction = clip.spanFraction,
                 maxHeight = maxHeight,
                 levelScale = lengthScale,
+                // Where the two decks agree, the ring reaches further. The
+                // matchiest minute of a mix is the tallest part of the circle.
+                affinity = state.affinity.at(fraction),
             )
             if (height <= 0.5f) continue
 
@@ -318,6 +373,7 @@ private fun DrawScope.drawPlayhead(
             clipSpanFraction = clip.spanFraction,
             maxHeight = maxHeight,
             levelScale = lengthScale,
+            affinity = state.affinity.at(fraction),
         )
     }
 
