@@ -63,6 +63,21 @@ fun LibraryScreen(
     )
 
     val backgroundAnalysis by viewModel.backgroundAnalysis.collectAsState()
+    val missingFromSession by viewModel.missingFromSession.collectAsState()
+
+    // CreateDocument rather than a path of our own: the user decides where a
+    // session they may want to send someone actually lives.
+    val saveSessionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+        onResult = { uri: Uri? ->
+            uri?.let { viewModel.saveSession(it, viewModel.suggestedSessionName()) }
+        },
+    )
+
+    val openSessionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri: Uri? -> uri?.let { viewModel.openSession(it) } },
+    )
 
     Column(
         modifier = modifier
@@ -307,6 +322,80 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Black,
                 fontSize = 10.sp,
             )
+        }
+
+        // A session is the set as arranged — the lineup, where every clip sits on
+        // its deck, the pads and their takes. Saving it is the difference between
+        // an evening's work and an evening.
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Button(
+                onClick = { saveSessionLauncher.launch("${viewModel.suggestedSessionName()}.sir") },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("SAVE SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+            Button(
+                // Any type: a `.sir` has no registered MIME type, and filtering on
+                // one the system has never heard of hides the file the user is
+                // looking straight at.
+                onClick = { openSessionLauncher.launch(arrayOf("*/*")) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("OPEN SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+            }
+        }
+
+        // Naming what a restored session could not find. The feedback line says it
+        // once and vanishes; this is the list the user has to actually act on.
+        if (missingFromSession.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF3F1D1D))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = "NOT IN YOUR LIBRARY — ${missingFromSession.size}",
+                    color = Color(0xFFFCA5A5),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.sp,
+                )
+                for (track in missingFromSession.take(6)) {
+                    Text(
+                        text = "${track.title}${if (track.artist.isBlank()) "" else " — ${track.artist}"}",
+                        color = Color(0xFFFECACA),
+                        fontSize = 10.sp,
+                    )
+                }
+                if (missingFromSession.size > 6) {
+                    Text(
+                        text = "and ${missingFromSession.size - 6} more",
+                        color = Color(0xFFFCA5A5),
+                        fontSize = 10.sp,
+                    )
+                }
+                Text(
+                    text = "DISMISS",
+                    color = Color(0xFFFCA5A5),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { viewModel.clearMissingFromSession() }
+                        .padding(top = 4.dp, end = 6.dp),
+                )
+            }
         }
 
         nowPlaying?.let { current ->

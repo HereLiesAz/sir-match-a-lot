@@ -159,6 +159,7 @@ class BackgroundWork {
         const val IMPORT = "import"
         const val SYNC = "sync"
         const val PADS = "pads"
+        const val SESSION = "session"
         const val SERVICE_ANALYSIS = "service-analysis"
     }
 }

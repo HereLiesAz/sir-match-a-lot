@@ -31,7 +31,19 @@ import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.domain.LoopHarvest
 import com.hereliesaz.sirmatchalot.domain.TrackStructure
+import com.hereliesaz.sirmatchalot.domain.TransitionRecord
 import com.hereliesaz.sirmatchalot.domain.TransitionStyle
+import com.hereliesaz.sirmatchalot.domain.TransitionTaste
+import com.hereliesaz.sirmatchalot.session.SessionArchive
+import com.hereliesaz.sirmatchalot.session.SessionClip
+import com.hereliesaz.sirmatchalot.session.SessionDocument
+import com.hereliesaz.sirmatchalot.session.SessionPad
+import com.hereliesaz.sirmatchalot.session.SessionReference
+import com.hereliesaz.sirmatchalot.session.SessionResolver
+import com.hereliesaz.sirmatchalot.session.SessionStep
+import com.hereliesaz.sirmatchalot.session.SessionTrack
+import com.hereliesaz.sirmatchalot.session.WavCodec
+import com.hereliesaz.sirmatchalot.session.toSessionTrack
 import com.hereliesaz.sirmatchalot.audio.PcmBuffer
 import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterMarker
@@ -449,6 +461,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         deck: PlatterGeometry.Deck,
         startSilent: Boolean = false,
         atFraction: Float? = null,
+        /** Exact position on the deck timeline, used when restoring a session. */
+        atSeconds: Double? = null,
     ) {
         val onDeck = if (deck == PlatterGeometry.Deck.A) _loadedTracksA else _loadedTracksB
         if (onDeck.value.any { it.id == track.id }) return
@@ -562,8 +576,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             // to unwind the load and take the process with it.
                             runCatching {
                                 val grid = track.measuredBeatGrid()
+                                // Measured here, from the audio that is already in
+                                // hand, rather than persisted: three bands is three
+                                // times the energy curve on disk for every track,
+                                // and the decode this would save has just happened
+                                // anyway. Landmarks are only ever needed while a
+                                // track is loaded.
+                                val bands = com.hereliesaz.sirmatchalot.dsp.BandEnergyCurve
+                                    .compute(mono(), pcm.sampleRate)
                                 val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
-                                    .findPointsOfInterest(curve, grid)
+                                    .findPointsOfInterest(curve, grid, bands = bands)
                                 // Vocal entry needs the audio rather than the energy curve
                                 // — it is a pitch measurement, not an amplitude one — so it
                                 // runs here where the decoded buffer is still in hand.
@@ -594,6 +616,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     // it starts at zero and loops however it was dropped.
                     val cycle = engineDeck.cycleFrames
                     val startFrame = when {
+                        // A restored session says exactly where the clip was, and
+                        // that is the whole value of having saved it — a lineup
+                        // whose second track lands wherever it happens to fit is
+                        // not the lineup that was saved. Placed verbatim, and not
+                        // snapped: it was already on the grid when it was written,
+                        // and re-snapping against a grid this deck has not
+                        // finished assembling would move it.
+                        atSeconds != null ->
+                            (atSeconds * playable.sampleRate).toInt().coerceAtLeast(0)
+
                         existing.isEmpty() -> 0
                         atFraction != null && cycle > 0 ->
                             // Snapped, exactly as a drag is. A drop that landed off the
@@ -1804,6 +1836,261 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _transitionStyle = MutableStateFlow<TransitionStyle?>(null)
     val transitionStyle: StateFlow<TransitionStyle?> = _transitionStyle
 
+    // --- Sessions ---
+
+    /**
+     * Everything about the current session, ready to be written to a `.sir` file.
+     *
+     * Positions in **seconds** rather than frames: a frame index means nothing at
+     * a different engine sample rate, and the rate is a setting the user can
+     * change between saving a session and opening it.
+     */
+    fun captureSession(name: String, nowMillis: Long = System.currentTimeMillis()): SessionDocument {
+        fun clipsOf(deck: com.hereliesaz.sirmatchalot.audio.Deck, loaded: List<Track>) =
+            deck.clips.mapNotNull { clip ->
+                val track = loaded.firstOrNull { it.id == clip.id } ?: return@mapNotNull null
+                SessionClip(
+                    track = track.toSessionTrack(),
+                    startSeconds = clip.startFrame.toDouble() / clip.buffer.sampleRate,
+                    loop = clip.loop,
+                    gain = clip.gain,
+                )
+            }
+
+        val reference = _reference.value
+        return SessionDocument(
+            name = name.ifBlank { "Session" },
+            savedAtMillis = nowMillis,
+            writtenBy = appVersionName(),
+            reference = reference?.let {
+                SessionReference(it.id, it.bpm, it.camelotKey)
+            },
+            lineup = _mixPlan.value?.steps.orEmpty().map { step ->
+                SessionStep(
+                    track = step.track.toSessionTrack(),
+                    matchScore = step.transition?.overallScore,
+                )
+            },
+            deckA = clipsOf(audioEngine.deckA, _loadedTracksA.value),
+            deckB = clipsOf(audioEngine.deckB, _loadedTracksB.value),
+            pads = audioEngine.sampler.pads.mapNotNull { pad ->
+                val buffer = pad.buffer ?: return@mapNotNull null
+                SessionPad(
+                    index = pad.index,
+                    label = pad.label,
+                    loop = pad.loop,
+                    gain = pad.gain,
+                    takeFile = SessionArchive.takeFileName(pad.index),
+                    durationSeconds = buffer.durationSeconds,
+                )
+            },
+            crossfade = audioEngine.mixer.crossfade,
+        )
+    }
+
+    /**
+     * The pads' audio, as WAV, keyed by the names the manifest refers to.
+     *
+     * Every pad is carried, not only the recorded ones. A pad sliced from a track
+     * could in principle be recut from its source, but only if that source is
+     * still in the library on the machine the session is opened on — and the
+     * whole reason a session names its tracks by description is that it might not
+     * be. Pads are seconds of audio; carrying them is cheap and losing them is not.
+     */
+    fun captureTakes(): Map<String, ByteArray> {
+        val takes = LinkedHashMap<String, ByteArray>()
+        for (pad in audioEngine.sampler.pads) {
+            val buffer = pad.buffer ?: continue
+            takes[SessionArchive.takeFileName(pad.index)] = WavCodec.encode(
+                interleaved = buffer.toInterleavedShorts(),
+                sampleRate = buffer.sampleRate,
+                channels = buffer.channelCount,
+            )
+        }
+        return takes
+    }
+
+    /**
+     * Puts a session back: the decks, the pads, the running order, the fader.
+     *
+     * Tracks are matched against the library by [SessionResolver] rather than by
+     * the file each came from. What could not be found is reported by name — a
+     * session that opens two tracks short and says nothing looks like the app
+     * failing, where the same session naming the seven it could not find is a job
+     * the user can finish.
+     */
+    fun restoreSession(archive: SessionArchive.Archive) {
+        val restore = SessionResolver.resolve(archive.document, _tracks.value)
+        val byId = _tracks.value.associateBy { it.id }
+
+        stopAutomatchicMix()
+        clearDecks()
+
+        fun load(clips: List<SessionClip>, deck: PlatterGeometry.Deck) {
+            for (clip in clips) {
+                val id = restore.resolved[clip.track.id] ?: continue
+                val track = byId[id] ?: continue
+                // Placed where it was, not appended: a session's whole value is
+                // that the second track sits eight bars in rather than after.
+                loadOntoDeck(track, deck, startSilent = true, atSeconds = clip.startSeconds)
+            }
+        }
+        load(archive.document.deckA, PlatterGeometry.Deck.A)
+        load(archive.document.deckB, PlatterGeometry.Deck.B)
+
+        for (saved in archive.document.pads) {
+            val wav = archive.take(saved.takeFile) ?: continue
+            val pad = audioEngine.sampler.pads.getOrNull(saved.index) ?: continue
+            pad.gain = saved.gain
+            pad.load(
+                buffer = com.hereliesaz.sirmatchalot.audio.PcmBuffer(wav.channels(), wav.sampleRate),
+                label = saved.label,
+                loop = saved.loop,
+            )
+            clipTitles[padClipId(saved.index)] = saved.label ?: "Pad ${saved.index + 1}"
+        }
+
+        applyCrossfade(archive.document.crossfade)
+        _feedbackMsg.value = restore.summary()
+        _missingFromSession.value = restore.missing
+    }
+
+    /**
+     * Tracks the last opened session referred to and could not find.
+     *
+     * Kept rather than only announced, because the feedback line is gone in a few
+     * seconds and the list is the thing the user has to act on.
+     */
+    private val _missingFromSession = MutableStateFlow<List<SessionTrack>>(emptyList())
+    val missingFromSession: StateFlow<List<SessionTrack>> = _missingFromSession
+
+    fun clearMissingFromSession() { _missingFromSession.value = emptyList() }
+
+    /**
+     * Writes the current session to [destination] as a `.sir` file.
+     *
+     * On the IO dispatcher because the takes are encoded here: a couple of pads
+     * of stereo audio is megabytes of `ShortArray` to interleave, and doing that
+     * on the main thread would drop frames in the middle of a set.
+     */
+    fun saveSession(destination: Uri, name: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            work.track(BackgroundWork.SESSION, "Saving $name") {
+                val document = captureSession(name)
+                val takes = captureTakes()
+                val written = runCatching {
+                    getApplication<android.app.Application>().contentResolver
+                        .openOutputStream(destination, "wt")
+                        ?.use { SessionArchive.write(document, takes, it) }
+                        ?: error("could not open $destination for writing")
+                }
+                _feedbackMsg.value = if (written.isSuccess) {
+                    val takeCount = takes.size
+                    "Saved $name — ${document.tracks().size} tracks" +
+                        if (takeCount > 0) ", $takeCount pads" else ""
+                } else {
+                    "Could not save $name: ${written.exceptionOrNull()?.message ?: "unknown error"}"
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens a `.sir` file and puts the session back.
+     *
+     * The read happens off the main thread and the restore on it, because
+     * restoring touches the decks and the pads — which the render thread is
+     * reading — and everything else that does so is already serialised there.
+     */
+    fun openSession(source: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            work.track(BackgroundWork.SESSION, "Opening session") {
+                val archive = runCatching {
+                    getApplication<android.app.Application>().contentResolver
+                        .openInputStream(source)
+                        ?.use { SessionArchive.read(it) }
+                }.getOrNull()
+
+                if (archive == null) {
+                    // Deliberately not "something went wrong". The two ways this
+                    // fails are a file that is not a session and a file written by
+                    // a newer version, and neither is the user's mistake.
+                    _feedbackMsg.value =
+                        "That is not a session file, or it was saved by a newer version"
+                    return@track
+                }
+                withContext(Dispatchers.Main) { restoreSession(archive) }
+            }
+        }
+    }
+
+    /** A filename for a new session, without the dot or the extension repeated. */
+    fun suggestedSessionName(): String {
+        val plan = _mixPlan.value?.steps?.firstOrNull()?.track?.title
+        val deck = _loadedTracksA.value.firstOrNull()?.title
+        val basis = plan ?: deck ?: "Session"
+        return basis.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().take(40).ifBlank { "Session" }
+    }
+
+    /**
+     * The app version, recorded in every session it writes.
+     *
+     * Read from the package rather than from `BuildConfig`, which this module
+     * does not generate. It is diagnostic only — a session that will not open is
+     * far easier to explain when the file says what wrote it — so a device that
+     * declines to answer costs nothing.
+     */
+    private fun appVersionName(): String = runCatching {
+        val context = getApplication<android.app.Application>()
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+    }.getOrDefault("")
+
+    // --- Learning what this person actually likes ---
+
+    /**
+     * The model of the user's taste in transitions, restored from disk.
+     *
+     * See [TransitionTaste]. It starts as an exact no-op and stays one until it
+     * has something to say, so the rules remain the behaviour until they are
+     * genuinely worth overriding.
+     */
+    private val taste = TransitionTaste.decode(settingsStore.loadTaste())
+
+    /** How many transitions have been learned from, and what they taught. */
+    private val _tasteSummary = MutableStateFlow(taste.observations to taste.strongestOpinions())
+    val tasteSummary: StateFlow<Pair<Int, List<String>>> = _tasteSummary
+
+    /**
+     * The transition being performed, held until the listener passes judgement.
+     *
+     * The label for a transition arrives after it: letting it play out is
+     * approval, reaching for the fader is not. So the decision has to outlive the
+     * moment it was made.
+     */
+    private var pendingTransition: TransitionRecord? = null
+
+    /**
+     * Learns from how the transition now running was received.
+     *
+     * @param approved true when it was allowed to finish.
+     */
+    private fun judgeTransition(approved: Boolean) {
+        val record = pendingTransition ?: return
+        pendingTransition = null
+        taste.learn(record.features(), if (approved) 1.0 else 0.0)
+        settingsStore.saveTaste(taste.encode())
+        _tasteSummary.value = taste.observations to taste.strongestOpinions()
+    }
+
+    /** Forgets everything learned, for someone whose taste has changed or who never asked. */
+    fun forgetTransitionTaste() {
+        taste.reset()
+        pendingTransition = null
+        settingsStore.saveTaste(taste.encode())
+        _tasteSummary.value = 0 to emptyList()
+        _feedbackMsg.value = "Forgot what it had learned about your transitions"
+    }
+
     private var autoMixJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -1833,9 +2120,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             plan = plan,
             structures = { track -> structureFor(track) },
             seed = System.nanoTime(),
+            taste = taste,
         )
         _mixDirector.value = director
         _transitionStyle.value = null
+        pendingTransition = null
         apply(director.start())
 
         autoMixJob = viewModelScope.launch {
@@ -1856,6 +2145,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     /** Stops performing a mix, leaving whatever is loaded where it is. */
     fun stopAutomatchicMix() {
+        // Stopping *during* a transition is a verdict on that transition.
+        // Stopping between them is just stopping, and teaches nothing — which is
+        // why this is guarded rather than applied to whatever ran last.
+        if (_transitionProgress.value > 0f) judgeTransition(approved = false)
+        pendingTransition = null
+
         autoMixJob?.cancel()
         autoMixJob = null
         _mixDirector.value = null
@@ -1927,13 +2222,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
             MixCommand.StopMixLoops -> audioEngine.mixSampler.stopAll()
 
-            is MixCommand.Performing -> _transitionStyle.value = command.style
+            is MixCommand.Performing -> {
+                _transitionStyle.value = command.style
+                pendingTransition = command.record
+            }
 
             is MixCommand.Retire -> {
                 val name = deckName(command.deck)
                 deckNamed(name).playing = false
                 removeTrackFromDecks(command.track.id)
                 _transitionStyle.value = null
+                // It ran to the end and nobody reached for anything. That is the
+                // only positive signal available, and it is a real one: a
+                // transition somebody disliked does not get to finish.
+                judgeTransition(approved = true)
             }
 
             is MixCommand.NowPlaying -> {
@@ -2313,6 +2615,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * audible as a lurch on every transition.
      */
     fun setCrossfaderValue(value: Int) {
+        // A hand on the fader in the middle of an automatic transition is the
+        // clearest disapproval there is — clearer than stopping, because the
+        // person is not leaving, they are correcting. Taken once per transition:
+        // a drag arrives as a stream of these, and one objection is one
+        // objection however many samples it was delivered in.
+        if (_transitionProgress.value > 0f && pendingTransition != null) {
+            judgeTransition(approved = false)
+            _transitionStyle.value = null
+        }
         applyCrossfade(value)
         syncClient.updateCrossfader(_crossfader.value, _roomCode.value)
     }

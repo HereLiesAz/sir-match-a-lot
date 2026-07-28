@@ -73,8 +73,14 @@ sealed interface MixCommand {
     /** Silence everything the mix sampler is playing. */
     data object StopMixLoops : MixCommand
 
-    /** What the transition now running is, so the UI can name it. */
-    data class Performing(val style: TransitionStyle) : MixCommand
+    /**
+     * What the transition now running is, so the UI can name it — and what was
+     * chosen, so the choice can be learned from once it has been judged.
+     */
+    data class Performing(
+        val style: TransitionStyle,
+        val record: TransitionRecord? = null,
+    ) : MixCommand
 
     /** The plan has run out. */
     data object Finished : MixCommand
@@ -142,6 +148,7 @@ class MixDirector(
     private val structures: TrackStructureProvider? = null,
     private val choreographer: TransitionChoreographer = TransitionChoreographer(),
     seed: Long = 0L,
+    private val taste: TransitionTaste? = null,
 ) {
     private val random = Random(seed)
     private val arc = SetArc.of(plan.steps)
@@ -291,7 +298,7 @@ class MixDirector(
                     commands.add(MixCommand.Preload(next.track, deck.other))
                 }
             }
-            script?.let { commands.add(MixCommand.Performing(it.style)) }
+            script?.let { commands.add(MixCommand.Performing(it.style, it.record)) }
             commands.add(
                 MixCommand.Start(
                     next.track,
@@ -385,6 +392,8 @@ class MixDirector(
                     phase = phase,
                     random = random,
                     recentStyles = recentStyles.toList(),
+                    taste = taste,
+                    energyDelta = (next.track.energyLevel ?: 5) - (step.track.energyLevel ?: 5),
                 )
             }
         }

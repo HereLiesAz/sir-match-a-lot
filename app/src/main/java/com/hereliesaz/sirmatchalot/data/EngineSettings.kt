@@ -201,6 +201,20 @@ class SettingsStore(private val store: KeyValueStore) {
         idleShutdown = store.getString(KEY_IDLE_SHUTDOWN)?.toBooleanStrictOrNull() ?: true,
     )
 
+    /**
+     * The learned transition model, as an opaque string.
+     *
+     * Kept out of [EngineSettings] on purpose. Everything in there is something
+     * the user chose and can see themselves choosing; this is a few dozen
+     * doubles that change on their own every time a set runs. Threading it
+     * through the same immutable value would mean a settings write on every
+     * transition, and a `requiresEngineRebuild` comparison against a field that
+     * has nothing to do with the engine.
+     */
+    fun loadTaste(): String? = store.getString(KEY_TASTE)
+
+    fun saveTaste(encoded: String) = store.putString(KEY_TASTE, encoded)
+
     fun save(settings: EngineSettings) {
         store.putString(KEY_SAMPLE_RATE, settings.sampleRate.name)
         store.putString(KEY_VISUAL_REFRESH, settings.visualRefresh.name)
@@ -219,6 +233,7 @@ class SettingsStore(private val store: KeyValueStore) {
         private const val KEY_LIGHT_SHOW = "light_show"
         private const val KEY_IDLE_SHUTDOWN = "idle_shutdown"
         private const val KEY_LOCAL_COPIES = "local_copies"
+        private const val KEY_TASTE = "transition_taste"
 
         /** A store backed by the app's own preferences file. */
         fun forContext(context: android.content.Context): SettingsStore {

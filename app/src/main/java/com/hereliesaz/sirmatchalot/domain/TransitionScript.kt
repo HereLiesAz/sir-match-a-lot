@@ -94,6 +94,9 @@ enum class FadeCurve {
  * @param entrySeconds where the incoming track starts playing from.
  * @param fadeSeconds how long the two overlap.
  * @param events actions during the fade, at times relative to its start.
+ * @param record what was chosen and why, carried so the choice can be learned
+ *   from once the listener has passed judgement on it. Null when the transition
+ *   was not choreographed.
  */
 data class TransitionScript(
     val style: TransitionStyle,
@@ -102,6 +105,7 @@ data class TransitionScript(
     val fadeSeconds: Double,
     val curve: FadeCurve,
     val events: List<ScriptEvent> = emptyList(),
+    val record: TransitionRecord? = null,
 ) {
     /** Track time on the outgoing deck when the transition is over. */
     val endSeconds: Double get() = exitSeconds + fadeSeconds
