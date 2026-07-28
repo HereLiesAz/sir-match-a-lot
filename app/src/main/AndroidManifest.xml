@@ -1,9 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+
+    <!--
+        firebase-analytics' own manifest declares both the legacy Play Services
+        advertising-ID permission and its Privacy Sandbox successor, for
+        advertising-ID-linked analytics features this app doesn't use — there is
+        no ad SDK anywhere in the source. Left in, Play rejects the upload
+        outright unless the Play Console data-safety form is amended to declare
+        an advertising ID the app does not actually read. Removed at merge
+        instead: the permissions simply aren't in the shipped manifest, so there
+        is nothing to declare.
+    -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
     <!--
         RECORD_AUDIO was declared here and requested on first launch, and nothing
         in the app ever used it: there is no AudioRecord, no MediaRecorder, and
