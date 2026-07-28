@@ -14,3 +14,6 @@
 .cxx
 local.properties
 /app/release/app-release.aab
+
+# Written from the GOOGLE_SERVICES secret by CI; never a checked-in file.
+/app/google-services.json
