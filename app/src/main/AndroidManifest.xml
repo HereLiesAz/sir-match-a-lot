@@ -37,6 +37,7 @@
         the ceiling raises the budget rather than deferring a leak.
     -->
     <application
+        android:name=".SirMatchALotApplication"
         android:allowBackup="true"
         android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"

@@ -13,6 +13,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.hereliesaz.sirmatchalot.crash.CrashReportPrompt
+import com.hereliesaz.sirmatchalot.crash.CrashReportStore
 import com.hereliesaz.sirmatchalot.theme.SirMatchALotTheme
 
 class MainActivity : ComponentActivity() {
@@ -38,6 +40,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     MainNavigation()
                 }
+                CrashReportPrompt(store = CrashReportStore.forContext(applicationContext))
             }
         }
     }
