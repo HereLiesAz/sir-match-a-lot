@@ -564,8 +564,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             // to unwind the load and take the process with it.
                             runCatching {
                                 val grid = track.measuredBeatGrid()
+                                // Measured here, from the audio that is already in
+                                // hand, rather than persisted: three bands is three
+                                // times the energy curve on disk for every track,
+                                // and the decode this would save has just happened
+                                // anyway. Landmarks are only ever needed while a
+                                // track is loaded.
+                                val bands = com.hereliesaz.sirmatchalot.dsp.BandEnergyCurve
+                                    .compute(mono(), pcm.sampleRate)
                                 val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
-                                    .findPointsOfInterest(curve, grid)
+                                    .findPointsOfInterest(curve, grid, bands = bands)
                                 // Vocal entry needs the audio rather than the energy curve
                                 // — it is a pitch measurement, not an amplitude one — so it
                                 // runs here where the decoded buffer is still in hand.

@@ -131,71 +131,28 @@ class StructureFinder(
     }
 
     /**
-     * Tags structural landmarks from the measured energy curve.
+     * Tags structural landmarks from the measured energy.
+     *
+     * The detection itself lives in [StructureSegmenter], which is the seam a
+     * learned model would slot into. This stays as the way the rest of the app
+     * asks the question, so callers do not each have to know which segmenter is
+     * current.
      *
      * @param grid optional; when present, points snap to bar lines, because a cue
      *   marker half a beat off is worse than useless.
+     * @param bands per-band energy. Strongly preferred — with it, drops, builds
+     *   and breakdowns are separate measurements rather than three guesses at the
+     *   slope of one curve. Null falls back to the broadband detector, which is
+     *   what a cached analysis from an earlier version can offer.
      */
     fun findPointsOfInterest(
         energy: EnergyCurve,
         grid: BeatGrid? = null,
         limit: Int = 12,
-    ): List<PointOfInterest> {
-        val values = energy.values
-        if (values.size < 6) return emptyList()
-
-        // Radius 1, not 2: with a +/-2 lookback as well, heavier smoothing flattens
-        // a genuine step change below the threshold meant to catch it.
-        val smoothed = smooth(values, radius = 1)
-        val mean = smoothed.average().toFloat()
-        val spread = sqrt(smoothed.map { (it - mean) * (it - mean) }.average()).toFloat()
-        if (spread <= 1e-4f) return emptyList()
-
-        val found = ArrayList<PointOfInterest>()
-
-        for (i in 2 until smoothed.size - 2) {
-            val before = smoothed[i - 2]
-            val here = smoothed[i]
-            val after = smoothed[i + 2]
-            val time = i * energy.windowSeconds
-
-            val rise = here - before
-            val fall = before - here
-            // Slightly under one standard deviation: a real drop or breakdown is
-            // large, but demanding a full deviation after smoothing misses it.
-            val threshold = spread * 0.8f
-
-            when {
-                // A drop: quiet before, loud now, and it stays loud.
-                rise > threshold && before < mean && after >= here - spread * 0.5f ->
-                    found.add(PointOfInterest(time, PointOfInterest.Kind.DROP, strength(rise, spread)))
-
-                // A breakdown: loud before, quiet now, and it stays quiet.
-                fall > threshold && here < mean && after < mean ->
-                    found.add(PointOfInterest(time, PointOfInterest.Kind.BREAKDOWN, strength(fall, spread)))
-
-                // A build: rising steadily without having arrived yet.
-                rise > spread * 0.5f && after > here ->
-                    found.add(PointOfInterest(time, PointOfInterest.Kind.BUILD, strength(rise, spread)))
-
-                // A peak: a local maximum well above average.
-                here > mean + spread && here >= before && here >= after ->
-                    found.add(PointOfInterest(time, PointOfInterest.Kind.PEAK, strength(here - mean, spread)))
-            }
-        }
-
-        val snapped = if (grid == null) found else found.map {
-            it.copy(timeSeconds = grid.nearestBarTime(it.timeSeconds).coerceAtLeast(0.0))
-        }
-
-        // Collapse points that snapped onto the same bar, keeping the strongest.
-        return snapped
-            .groupBy { it.timeSeconds to it.kind }
-            .map { (_, group) -> group.maxBy { it.strength } }
-            .sortedByDescending { it.strength }
-            .take(limit)
-            .sortedBy { it.timeSeconds }
-    }
+        bands: BandEnergyCurve? = null,
+        segmenter: StructureSegmenter = SpectralSegmenter(),
+    ): List<PointOfInterest> =
+        segmenter.segment(StructureInput(energy = energy, bands = bands, grid = grid, limit = limit))
 
     /** Root-mean-square level per feature frame — cheap, and enough to see structure. */
     private fun rmsFeatures(mono: FloatArray, sampleRate: Int): FloatArray {
