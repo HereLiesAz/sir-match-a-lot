@@ -19,10 +19,3 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
-
-# Dynamic feature entry points are instantiated reflectively by FeatureLoader using the class names
-# in core's FeatureModules, so R8 can't see them as used. Keep the classes and their no-arg
-# constructors (the implemented interfaces are kept by core's consumer rules).
--keep class com.hereliesaz.logkitty.feature.stats.StatsFeatureImpl { <init>(); }
--keep class com.hereliesaz.logkitty.feature.ads.AdsFeatureImpl { <init>(); }
--keep class com.hereliesaz.logkitty.feature.github.GitHubFeatureImpl { <init>(); }
