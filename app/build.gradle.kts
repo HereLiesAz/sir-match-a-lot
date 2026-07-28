@@ -181,6 +181,10 @@ dependencies {
     // itself with and Analytics stays inert at runtime rather than crashing.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.analytics)
+    // See androidxFragment in the version catalog: without this, play-services-basement's
+    // own transitive fragment:1.1.0 wins resolution and trips lint's
+    // InvalidFragmentVersionForActivityResult on MainActivity's registerForActivityResult.
+    implementation(libs.androidx.fragment)
 
     // Unit tests
     testImplementation(libs.junit)
