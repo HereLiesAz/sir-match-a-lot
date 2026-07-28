@@ -25,10 +25,18 @@ json = "20260719"
 ksp = "2.3.10"
 googleServicesPlugin = "4.5.0"
 firebaseBom = "34.16.0"
+# play-services-basement (pulled in transitively by firebase-analytics) depends on
+# fragment 1.1.0, and nothing else in the graph asks for anything newer — this app
+# has no Fragments of its own. 1.1.0 is exactly the version lint's
+# InvalidFragmentVersionForActivityResult check exists to flag: versions before
+# 1.3.0 can drop permission results silently. Pinned explicitly so Gradle's normal
+# highest-version-wins resolution lands above that line instead of at it.
+androidxFragment = "1.8.6"
 
 [libraries]
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-analytics = { module = "com.google.firebase:firebase-analytics" }
+androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidxFragment" }
 androidx-compose-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
