@@ -53,6 +53,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val settings by viewModel.settings.collectAsState()
+    val tasteSummary by viewModel.tasteSummary.collectAsState()
     val deviceRate = viewModel.audioEngine.output.sampleRate
 
     // Held audio changes as tracks load and are evicted, and the whole point of
@@ -170,6 +171,54 @@ fun SettingsScreen(
                     detail = null,
                     selected = settings.visualRefresh == refresh,
                     onClick = { viewModel.updateSettings { it.copy(visualRefresh = refresh) } },
+                )
+            }
+        }
+
+        Section(
+            title = "LEARNED TASTE",
+            explanation = "The Automatchic Mix watches which of its transitions you let " +
+                "run and which you cut short, and leans that way next time. It only ever " +
+                "adjusts its own rules — a move the music calls for stays available however " +
+                "often you have skipped it. Nothing leaves this device.",
+        ) {
+            val (learned, opinions) = tasteSummary
+            if (opinions.isEmpty()) {
+                Text(
+                    text = if (learned == 0) {
+                        "Nothing learned yet — run a mix"
+                    } else {
+                        "$learned transitions so far, nothing conclusive yet"
+                    },
+                    color = DIM,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            } else {
+                // Said in English, because a preference you cannot read is a
+                // preference you cannot disagree with.
+                for (opinion in opinions) {
+                    Text(text = "• $opinion", color = ACCENT, fontSize = 11.sp, lineHeight = 15.sp)
+                }
+                Text(
+                    text = "from $learned transitions",
+                    color = DIM,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            if (learned > 0) {
+                Text(
+                    text = "FORGET IT ALL",
+                    color = Color(0xFFDC2626),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { viewModel.forgetTransitionTaste() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
         }

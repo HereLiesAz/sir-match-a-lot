@@ -105,17 +105,34 @@ class TransitionChoreographer {
         phase: SetArc.Phase,
         random: Random,
         recentStyles: List<TransitionStyle> = emptyList(),
+        taste: TransitionTaste? = null,
+        energyDelta: Int = 0,
     ): TransitionScript {
         val exit = chooseExit(from, phase, random)
         val entry = chooseEntry(to, phase, random)
 
         val options = eligible(from, to, match, phase, exit, entry)
+        val bar = from.barSeconds.takeIf { it > 0.0 } ?: DEFAULT_BAR_SECONDS
         val weights = options.map { (style, weight) ->
-            weight * if (style in recentStyles) REPEAT_PENALTY else 1.0
+            val penalty = if (style in recentStyles) REPEAT_PENALTY else 1.0
+            // What has been learned adjusts the rules rather than replacing them.
+            // An untrained model returns exactly 1.0, so a fresh install picks
+            // styles precisely as it did before any of this existed.
+            val learned = taste?.influence(
+                TransitionFeatures.of(
+                    style = style,
+                    exit = exit.reason,
+                    phase = phase,
+                    matchScore = match?.overallScore,
+                    energyDelta = energyDelta,
+                    fadeBars = style.bars(phase),
+                    entered = entry > 0.0,
+                ),
+            ) ?: 1.0
+            weight * penalty * learned
         }
         val style = pick(options.map { it.first }, weights, random) ?: TransitionStyle.LONG_BLEND
 
-        val bar = from.barSeconds.takeIf { it > 0.0 } ?: DEFAULT_BAR_SECONDS
         val fade = (style.bars(phase) * bar)
             // A transition longer than a third of what it is leaving is not a
             // transition. Kept from the original director, which was right.
@@ -129,6 +146,15 @@ class TransitionChoreographer {
             fadeSeconds = fade,
             curve = style.curve,
             events = events(style, from, exit, fade, bar),
+            record = TransitionRecord(
+                style = style,
+                exit = exit.reason,
+                phase = phase,
+                matchScore = match?.overallScore,
+                energyDelta = energyDelta,
+                fadeBars = fade / bar,
+                enteredMidTrack = entry > 0.0,
+            ),
         )
     }
 

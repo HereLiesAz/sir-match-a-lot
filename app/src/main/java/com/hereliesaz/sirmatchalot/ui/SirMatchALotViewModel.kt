@@ -31,7 +31,9 @@ import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.domain.LoopHarvest
 import com.hereliesaz.sirmatchalot.domain.TrackStructure
+import com.hereliesaz.sirmatchalot.domain.TransitionRecord
 import com.hereliesaz.sirmatchalot.domain.TransitionStyle
+import com.hereliesaz.sirmatchalot.domain.TransitionTaste
 import com.hereliesaz.sirmatchalot.audio.PcmBuffer
 import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterMarker
@@ -1804,6 +1806,52 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _transitionStyle = MutableStateFlow<TransitionStyle?>(null)
     val transitionStyle: StateFlow<TransitionStyle?> = _transitionStyle
 
+    // --- Learning what this person actually likes ---
+
+    /**
+     * The model of the user's taste in transitions, restored from disk.
+     *
+     * See [TransitionTaste]. It starts as an exact no-op and stays one until it
+     * has something to say, so the rules remain the behaviour until they are
+     * genuinely worth overriding.
+     */
+    private val taste = TransitionTaste.decode(settingsStore.loadTaste())
+
+    /** How many transitions have been learned from, and what they taught. */
+    private val _tasteSummary = MutableStateFlow(taste.observations to taste.strongestOpinions())
+    val tasteSummary: StateFlow<Pair<Int, List<String>>> = _tasteSummary
+
+    /**
+     * The transition being performed, held until the listener passes judgement.
+     *
+     * The label for a transition arrives after it: letting it play out is
+     * approval, reaching for the fader is not. So the decision has to outlive the
+     * moment it was made.
+     */
+    private var pendingTransition: TransitionRecord? = null
+
+    /**
+     * Learns from how the transition now running was received.
+     *
+     * @param approved true when it was allowed to finish.
+     */
+    private fun judgeTransition(approved: Boolean) {
+        val record = pendingTransition ?: return
+        pendingTransition = null
+        taste.learn(record.features(), if (approved) 1.0 else 0.0)
+        settingsStore.saveTaste(taste.encode())
+        _tasteSummary.value = taste.observations to taste.strongestOpinions()
+    }
+
+    /** Forgets everything learned, for someone whose taste has changed or who never asked. */
+    fun forgetTransitionTaste() {
+        taste.reset()
+        pendingTransition = null
+        settingsStore.saveTaste(taste.encode())
+        _tasteSummary.value = 0 to emptyList()
+        _feedbackMsg.value = "Forgot what it had learned about your transitions"
+    }
+
     private var autoMixJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -1833,9 +1881,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             plan = plan,
             structures = { track -> structureFor(track) },
             seed = System.nanoTime(),
+            taste = taste,
         )
         _mixDirector.value = director
         _transitionStyle.value = null
+        pendingTransition = null
         apply(director.start())
 
         autoMixJob = viewModelScope.launch {
@@ -1856,6 +1906,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     /** Stops performing a mix, leaving whatever is loaded where it is. */
     fun stopAutomatchicMix() {
+        // Stopping *during* a transition is a verdict on that transition.
+        // Stopping between them is just stopping, and teaches nothing — which is
+        // why this is guarded rather than applied to whatever ran last.
+        if (_transitionProgress.value > 0f) judgeTransition(approved = false)
+        pendingTransition = null
+
         autoMixJob?.cancel()
         autoMixJob = null
         _mixDirector.value = null
@@ -1927,13 +1983,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
             MixCommand.StopMixLoops -> audioEngine.mixSampler.stopAll()
 
-            is MixCommand.Performing -> _transitionStyle.value = command.style
+            is MixCommand.Performing -> {
+                _transitionStyle.value = command.style
+                pendingTransition = command.record
+            }
 
             is MixCommand.Retire -> {
                 val name = deckName(command.deck)
                 deckNamed(name).playing = false
                 removeTrackFromDecks(command.track.id)
                 _transitionStyle.value = null
+                // It ran to the end and nobody reached for anything. That is the
+                // only positive signal available, and it is a real one: a
+                // transition somebody disliked does not get to finish.
+                judgeTransition(approved = true)
             }
 
             is MixCommand.NowPlaying -> {
@@ -2313,6 +2376,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * audible as a lurch on every transition.
      */
     fun setCrossfaderValue(value: Int) {
+        // A hand on the fader in the middle of an automatic transition is the
+        // clearest disapproval there is — clearer than stopping, because the
+        // person is not leaving, they are correcting. Taken once per transition:
+        // a drag arrives as a stream of these, and one objection is one
+        // objection however many samples it was delivered in.
+        if (_transitionProgress.value > 0f && pendingTransition != null) {
+            judgeTransition(approved = false)
+            _transitionStyle.value = null
+        }
         applyCrossfade(value)
         syncClient.updateCrossfader(_crossfader.value, _roomCode.value)
     }
