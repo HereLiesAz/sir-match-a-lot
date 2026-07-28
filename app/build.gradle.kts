@@ -9,6 +9,16 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// The Google Services plugin fails the build outright when google-services.json
+// is missing, which every local build and every fork without repo secrets would
+// be. CI writes the file from the GOOGLE_SERVICES secret before Gradle runs (see
+// build-and-release.yml / play-publish.yml); everywhere else this is left
+// unapplied, the same way release signing is left unregistered below without
+// KEYSTORE_FILE — Firebase is simply not wired up rather than the build failing.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val versionProps = Properties()
 val versionPropsFile = rootProject.file("version.properties")
 if (versionPropsFile.exists()) {
@@ -164,6 +174,13 @@ dependencies {
     // with the last ExoPlayer, because keeping a playback library nothing plays
     // through invites a second, competing audio path back in.
     implementation(libs.okhttp.core)
+
+    // Firebase. Compiles and links regardless of whether google-services.json is
+    // present — see the conditional plugin application above — but without that
+    // file and the resources it generates, FirebaseApp has nothing to configure
+    // itself with and Analytics stays inert at runtime rather than crashing.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.analytics)
 
     // Unit tests
     testImplementation(libs.junit)
