@@ -148,11 +148,8 @@ object BeatSync {
      * The bar line in [track] nearest to [seconds]. Loops and transitions belong
      * on bars, not on arbitrary beats.
      */
-    fun nearestBar(track: Track, seconds: Double): Double? {
-        val bpm = track.bpm ?: return null
-        val phase = track.firstBeatSeconds ?: return null
-        return BeatGrid(bpm, phase, downbeatOffset = track.downbeatOffset).nearestBarTime(seconds)
-    }
+    fun nearestBar(track: Track, seconds: Double): Double? =
+        track.measuredBeatGrid()?.nearestBarTime(seconds)
 
     /**
      * Length of [bars] bars in [track], for making a loop that stays musical.

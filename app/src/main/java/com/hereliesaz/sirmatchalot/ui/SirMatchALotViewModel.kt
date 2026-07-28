@@ -19,6 +19,7 @@ import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.BeatSync
+import com.hereliesaz.sirmatchalot.domain.measuredBeatGrid
 import com.hereliesaz.sirmatchalot.domain.DeckCapacity
 import com.hereliesaz.sirmatchalot.domain.HarmonicEngine
 import com.hereliesaz.sirmatchalot.domain.MixCommand
@@ -553,19 +554,27 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                         if (curve == null) {
                             emptyList()
                         } else {
-                            val grid = track.bpm?.let { bpm ->
-                                track.firstBeatSeconds?.let { first ->
-                                    com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, first, track.downbeatOffset)
-                                }
+                            // Landmarks are enrichment on a track that is already
+                            // decoded, conformed and ready to play. Losing them
+                            // must cost the drops and not the track — this pass
+                            // sits inside a `try` that catches OutOfMemoryError
+                            // and nothing else, so anything else thrown here used
+                            // to unwind the load and take the process with it.
+                            runCatching {
+                                val grid = track.measuredBeatGrid()
+                                val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                                    .findPointsOfInterest(curve, grid)
+                                // Vocal entry needs the audio rather than the energy curve
+                                // — it is a pitch measurement, not an amplitude one — so it
+                                // runs here where the decoded buffer is still in hand.
+                                val vocal = com.hereliesaz.sirmatchalot.dsp.VocalDetector()
+                                    .findVocalEntry(mono(), pcm.sampleRate)
+                                if (vocal == null) structural else structural + vocal
+                            }.getOrElse {
+                                _feedbackMsg.value =
+                                    "${track.title} loaded, but its structure could not be read"
+                                emptyList()
                             }
-                            val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
-                                .findPointsOfInterest(curve, grid)
-                            // Vocal entry needs the audio rather than the energy curve
-                            // — it is a pitch measurement, not an amplitude one — so it
-                            // runs here where the decoded buffer is still in hand.
-                            val vocal = com.hereliesaz.sirmatchalot.dsp.VocalDetector()
-                                .findVocalEntry(mono(), pcm.sampleRate)
-                            if (vocal == null) structural else structural + vocal
                         }
                     }
 
@@ -1041,14 +1050,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /** Loops in [track], measured now if the audio is to hand, or empty. */
     private fun loopsFor(track: Track): List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate> {
         loopCache[track.id]?.let { return it }
-        val bpm = track.bpm ?: return emptyList()
-        val firstBeat = track.firstBeatSeconds ?: return emptyList()
+        val grid = track.measuredBeatGrid() ?: return emptyList()
         val pcm = decoded[track.id] ?: return emptyList()
-        val found = com.hereliesaz.sirmatchalot.dsp.StructureFinder().findLoops(
-            pcm.toMonoFloat(),
-            pcm.sampleRate,
-            com.hereliesaz.sirmatchalot.dsp.BeatGrid(bpm, firstBeat, downbeatOffset = track.downbeatOffset),
-        )
+        // Called from the mix director while a set is running, so a failure here
+        // costs a transition its loop roll rather than stopping the music.
+        val found = runCatching {
+            com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                .findLoops(pcm.toMonoFloat(), pcm.sampleRate, grid)
+        }.getOrDefault(emptyList())
         loopCache[track.id] = found
         return found
     }
@@ -1098,9 +1107,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             _feedbackMsg.value = "Load a track on Deck A first"
             return
         }
-        val bpm = track.bpm
-        val firstBeat = track.firstBeatSeconds
-        if (bpm == null || firstBeat == null) {
+        val grid = track.measuredBeatGrid()
+        if (grid == null) {
             _feedbackMsg.value = "${track.title} has no measured beat grid to find loops on"
             return
         }
@@ -1112,11 +1120,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
         viewModelScope.launch(Dispatchers.Default) {
           work.track(BackgroundWork.PADS, "Finding loops in ${track.title}") {
-            val grid = com.hereliesaz.sirmatchalot.dsp.BeatGrid(
-                bpm = bpm,
-                firstBeatSeconds = firstBeat,
-                downbeatOffset = track.downbeatOffset,
-            )
             val loops = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
                 .findLoops(pcm.toMonoFloat(), pcm.sampleRate, grid)
             val filled = audioEngine.sampler.autoFill(loops, pcm, track.title)
@@ -1187,15 +1190,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     progress = (index + 1).toFloat() / usable.size,
                 )
                 val pcm = decodeForHarvest(track) ?: return@forEachIndexed
-                val candidates = finder.findLoops(
-                    pcm.toMonoFloat(),
-                    pcm.sampleRate,
-                    com.hereliesaz.sirmatchalot.dsp.BeatGrid(
-                        bpm = track.bpm!!,
-                        firstBeatSeconds = track.firstBeatSeconds!!,
-                        downbeatOffset = track.downbeatOffset,
-                    ),
-                )
+                val grid = track.measuredBeatGrid() ?: return@forEachIndexed
+                val candidates = finder.findLoops(pcm.toMonoFloat(), pcm.sampleRate, grid)
                 if (candidates.isNotEmpty()) {
                     sources.add(LoopHarvest.Source(track.id, track.title, candidates))
                 }

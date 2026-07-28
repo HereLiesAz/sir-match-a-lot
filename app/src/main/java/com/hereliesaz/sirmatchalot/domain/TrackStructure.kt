@@ -36,7 +36,13 @@ data class TrackStructure(
     /** The measured grid, or null when the tempo was never found. */
     val grid: BeatGrid? = bpm
         ?.takeIf { it > 0.0 }
-        ?.let { BeatGrid(it, firstBeatSeconds, downbeatOffset = downbeatOffset.coerceIn(0, 3)) }
+        ?.let {
+            BeatGrid(
+                bpm = it,
+                firstBeatSeconds = firstBeatSeconds,
+                downbeatOffset = BeatGrid.sanitiseDownbeat(downbeatOffset),
+            )
+        }
 
     /** Seconds in one bar, or 0 when there is no grid to measure it against. */
     val barSeconds: Double get() = grid?.barDuration ?: 0.0
