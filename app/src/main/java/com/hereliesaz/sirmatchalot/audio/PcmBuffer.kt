@@ -133,6 +133,34 @@ class PcmBuffer private constructor(
     }
 
     /**
+     * Interleaved 16-bit samples, the layout a WAV file wants.
+     *
+     * A float buffer is rounded on the way out. That is a real loss, and it is
+     * the right trade here: this exists to write takes into a saved session, and
+     * a 24-bit take is stereo minutes of audio inside a document the user may
+     * mail to somebody. Sixteen bits opens everywhere.
+     */
+    fun toInterleavedShorts(): ShortArray {
+        val out = ShortArray(frameCount * channelCount)
+        for (channel in 0 until channelCount) {
+            if (isFloat) {
+                val source = floatChannel(channel)
+                for (frame in 0 until frameCount) {
+                    val scaled = (source[frame] * Short.MAX_VALUE).toInt()
+                    out[frame * channelCount + channel] =
+                        scaled.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                }
+            } else {
+                val source = channel(channel)
+                for (frame in 0 until frameCount) {
+                    out[frame * channelCount + channel] = source[frame]
+                }
+            }
+        }
+        return out
+    }
+
+    /**
      * A view of this buffer covering only `[startFrame, endFrame)`.
      *
      * Used to apply silence trimming without a second decode. Copies, because
