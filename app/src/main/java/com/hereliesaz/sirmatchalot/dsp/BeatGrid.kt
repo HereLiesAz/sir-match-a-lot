@@ -84,6 +84,24 @@ data class BeatGrid(
     }
 
     companion object {
+        /** Four four, unless something measured says otherwise. */
+        const val DEFAULT_BEATS_PER_BAR = 4
+
+        /**
+         * A stored [downbeatOffset] brought into range.
+         *
+         * The constructor's `require` is right for a value a programmer wrote and
+         * wrong for a value a database returned: an offset that arrived out of
+         * range from an old row should cost that track its downbeat phase, not
+         * throw on the thread that was loading it. Wrapping rather than clamping,
+         * because an offset is a residue class — 5 in four four is 1, and that is
+         * a better answer than 3.
+         */
+        fun sanitiseDownbeat(offset: Int, beatsPerBar: Int = DEFAULT_BEATS_PER_BAR): Int {
+            if (beatsPerBar <= 0) return 0
+            return ((offset % beatsPerBar) + beatsPerBar) % beatsPerBar
+        }
+
         /**
          * Infers which beat of the bar is the downbeat by asking which residue
          * class collects the most onset strength — kick drums land on beat one.
