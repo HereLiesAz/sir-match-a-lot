@@ -49,6 +49,8 @@ import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterMarker
 import com.hereliesaz.sirmatchalot.sync.SessionLink
 import com.hereliesaz.sirmatchalot.sync.SyncClient
+import com.hereliesaz.sirmatchalot.sync.DeviceIdentity
+import com.hereliesaz.sirmatchalot.sync.KnownDevices
 import com.hereliesaz.sirmatchalot.sync.SyncRole
 import com.hereliesaz.sirmatchalot.sync.SyncServer
 import kotlinx.coroutines.Dispatchers
@@ -1742,7 +1744,39 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         audioEngine.deckB.bassBoostDb = next
     }
 
-    val syncClient = SyncClient(this)
+    /**
+     * This device's long-term identity and the devices it has paired with.
+     *
+     * Both are persisted, which is the whole point: an ephemeral key makes a
+     * device a stranger at every connection, so two people who had already
+     * compared six digits were asked to compare them again every time the app
+     * opened. A remembered device rejoins silently — after proving, by
+     * signature over the current exchange, that it is the device that was
+     * remembered.
+     */
+    private val identityStore =
+        com.hereliesaz.sirmatchalot.data.SettingsStore.keyValueFor(application)
+
+    private val deviceIdentity = DeviceIdentity.load(identityStore)
+
+    val knownDevices = KnownDevices(identityStore)
+
+    /**
+     * The paired devices, for the settings screen.
+     *
+     * A snapshot refreshed at the moments the list can change, rather than a
+     * live view: `KnownDevices` is a few lines in a preferences file, written
+     * from the sync threads, and a list that redraws itself is not worth a
+     * observer on a file for.
+     */
+    private val _pairedDevices = MutableStateFlow(knownDevices.all())
+    val pairedDevices: StateFlow<Map<String, String>> = _pairedDevices
+
+    private fun refreshPairedDevices() {
+        _pairedDevices.value = knownDevices.all()
+    }
+
+    val syncClient = SyncClient(this, deviceIdentity, knownDevices)
 
     /**
      * Measures tempo, key, energy and peaks from decoded audio.
@@ -2858,7 +2892,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * connection on the same Wi-Fi possible with no infrastructure at all.
      * `SyncClient` has always broadcast for a server; nothing ever answered.
      */
-    private val syncServer = SyncServer()
+    private val syncServer = SyncServer(identity = deviceIdentity, known = knownDevices)
 
     private val _isHosting = MutableStateFlow(false)
     val isHosting: StateFlow<Boolean> = _isHosting
@@ -2883,6 +2917,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         syncServer.onPeersChanged = { _peerCount.value = it }
         syncServer.onPairingRequested = { peer ->
             _pendingPeers.update { waiting -> waiting.filterNot { it.id == peer.id } + peer }
+        }
+        syncServer.onKnownPeerRejoined = { name ->
+            _feedbackMsg.value = "$name rejoined — paired before"
+        }
+        syncServer.onPairingWithdrawn = { id ->
+            _pendingPeers.update { waiting -> waiting.filterNot { it.id == id } }
         }
         syncServer.onEvent = { event, payload ->
             when (event) {
@@ -3003,7 +3043,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _roomCode.value = code
         // The code goes into the key derivation as well as the join, so a device
         // that typed it wrong cannot reach the host's session at all.
-        syncClient.connect(wsUrl, code, DEVICE_NAME)
+        syncClient.connect(wsUrl, code, DEVICE_NAME, _role.value.wireName)
     }
 
     /**
@@ -3548,10 +3588,31 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _pendingHostPairing.value = pairingCode
     }
 
+    override fun onKnownHostRejoined(name: String) {
+        _pendingHostPairing.value = null
+        _feedbackMsg.value = "Rejoined a room paired with before"
+    }
+
+    /**
+     * Forgets every paired device, so each is asked for again.
+     *
+     * The revocation half. A trust list with no way to empty it is a list you
+     * cannot correct after approving the wrong thing.
+     */
+    fun forgetPairedDevices() {
+        val count = knownDevices.all().size
+        knownDevices.forgetAll()
+        refreshPairedDevices()
+        _feedbackMsg.value =
+            if (count == 0) "No paired devices to forget"
+            else "Forgot $count paired ${if (count == 1) "device" else "devices"}"
+    }
+
     /** This device's user confirms the digits match the host's screen. */
     fun approveHostPairing() {
         _pendingHostPairing.value = null
         syncClient.approvePairing(_roomCode.value, _role.value.wireName, DEVICE_NAME)
+        refreshPairedDevices()
     }
 
     /** This device's user says the digits do not match. */
@@ -3575,6 +3636,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     fun approvePeer(id: String) {
         syncServer.approvePeer(id)
         _pendingPeers.update { peers -> peers.filterNot { it.id == id } }
+        // After a short delay the device is admitted and written down; refresh
+        // so the settings list is not a session behind.
+        viewModelScope.launch {
+            delay(500)
+            refreshPairedDevices()
+        }
     }
 
     /** The host's user turns a device away. */

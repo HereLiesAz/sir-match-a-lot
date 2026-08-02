@@ -10,7 +10,13 @@ import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-class SyncClient(private val listener: SyncListener) {
+class SyncClient(
+    private val listener: SyncListener,
+    /** This device's long-term identity, or null to be a stranger every time. */
+    private val identity: DeviceIdentity? = null,
+    /** Hosts this device has paired with before, or null to remember none. */
+    private val known: KnownDevices? = null,
+) {
 
     interface SyncListener {
         fun onServerDiscovered(serverIp: String, wsUrl: String)
@@ -31,6 +37,15 @@ class SyncClient(private val listener: SyncListener) {
          * Nothing is sent to the room until [approvePairing] is called.
          */
         fun onPairingCode(pairingCode: String)
+
+        /**
+         * A host this device has paired with before, and which proved it,
+         * accepted the connection without asking anybody.
+         *
+         * For telling the user, not for asking them — a device that silently
+         * joins a room without ever saying so is one you cannot audit.
+         */
+        fun onKnownHostRejoined(name: String)
         fun onRoomStateReceived(json: JSONObject)
         fun onKaossMoveEvent(x: Float, y: Float, padId: Int)
         fun onSamplerTriggerEvent(padId: Int)
@@ -61,6 +76,37 @@ class SyncClient(private val listener: SyncListener) {
     @Volatile
     private var pendingRoomCode: String = ""
 
+    /** What this device joins as, once its user — or its memory — approves. */
+    @Volatile
+    private var pendingRole: String = ""
+
+    @Volatile
+    private var pendingName: String = "A device"
+
+    /** This exchange's transcript, which both identities sign. */
+    @Volatile
+    private var transcript: ByteArray? = null
+
+    /** The host's identity fingerprint, once it has presented a verifiable one. */
+    @Volatile
+    private var hostFingerprint: String? = null
+
+    /** The remembered name of this host, if it proved a known identity. */
+    private fun recogniseHost(message: JSONObject): String? {
+        val trusted = known ?: return null
+        val signed = transcript ?: return null
+        val identityBytes =
+            WebSocketProtocol.decodeBase64(message.optString("identity")) ?: return null
+        val signature =
+            WebSocketProtocol.decodeBase64(message.optString("signature")) ?: return null
+        val key = DeviceIdentity.decodePublicKey(identityBytes) ?: return null
+
+        hostFingerprint = DeviceIdentity.fingerprintOf(key)
+        if (!trusted.isKnown(hostFingerprint!!)) return null
+        if (!DeviceIdentity.verify(key, signed, signature)) return null
+        return trusted.all()[hostFingerprint!!] ?: "the host"
+    }
+
     /**
      * This device's user approves the pairing.
      *
@@ -72,12 +118,27 @@ class SyncClient(private val listener: SyncListener) {
     fun approvePairing(roomCode: String, role: String, name: String) {
         if (session == null) return
         approvedByUser = true
+        // Remembered on approval, and only for a host whose signature has
+        // already been checked — `recogniseHost` sets the fingerprint after
+        // verifying, never before, so an unverifiable identity is not written
+        // down and cannot be trusted next time.
+        hostFingerprint?.let { known?.remember(it, "the host") }
         sendSealed(
             JSONObject().apply {
                 put("type", "join")
                 put("roomCode", roomCode.uppercase())
                 put("role", role)
                 put("name", name)
+                // This device's proof, inside the sealed frame: the identity it
+                // claims, and a signature over this exchange. The host checks it
+                // against what it remembers before letting the join through
+                // without asking anybody.
+                val signer = identity
+                val signed = transcript
+                if (signer != null && signed != null) {
+                    put("identity", WebSocketProtocol.base64(signer.publicKey.encoded))
+                    put("signature", WebSocketProtocol.base64(signer.sign(signed)))
+                }
             },
         )
     }
@@ -174,12 +235,21 @@ class SyncClient(private val listener: SyncListener) {
      * @param deviceName shown on the host's approval prompt.
      */
     @JvmOverloads
-    fun connect(wsUrl: String, roomCode: String = "", deviceName: String = "A device") {
+    fun connect(
+        wsUrl: String,
+        roomCode: String = "",
+        deviceName: String = "A device",
+        role: String = "",
+    ) {
         disconnect()
 
         pendingRoomCode = roomCode.uppercase()
+        pendingName = deviceName
+        pendingRole = role
         approvedByUser = false
         session = null
+        transcript = null
+        hostFingerprint = null
         val ownKeys = RoomCrypto.newKeyPair()
         keys = ownKeys
 
@@ -198,6 +268,13 @@ class SyncClient(private val listener: SyncListener) {
                         put("type", "hello")
                         put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(ownKeys.public)))
                         put("name", deviceName)
+                        // The identity is sent before the host's key is known,
+                        // so the signature cannot be made yet. It follows in the
+                        // sealed `join`, which is the message that actually asks
+                        // for anything.
+                        identity?.let {
+                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                        }
                     }.toString(),
                 )
             }
@@ -212,6 +289,25 @@ class SyncClient(private val listener: SyncListener) {
                             val hostKey = RoomCrypto.decodePublicKey(hostKeyBytes) ?: return
                             val agreed = RoomCrypto.agree(ownKeys, hostKey, pendingRoomCode) ?: return
                             session = agreed
+                            transcript = RoomCrypto.transcriptOf(
+                                RoomCrypto.encodePublicKey(ownKeys.public),
+                                hostKeyBytes,
+                                pendingRoomCode,
+                            )
+
+                            // A host this device has paired with before, and can
+                            // prove it, is rejoined without a dialog. The
+                            // fingerprint only says which key to check; the
+                            // signature over this exchange's transcript is what
+                            // makes claiming somebody else's fingerprint
+                            // pointless, and what stops a recording of an earlier
+                            // exchange being replayed.
+                            val recognised = recogniseHost(outer)
+                            if (recognised != null) {
+                                listener.onKnownHostRejoined(recognised)
+                                approvePairing(pendingRoomCode, pendingRole, pendingName)
+                                return
+                            }
                             // Both users now hold the same six digits, and
                             // nothing further happens until this one approves.
                             listener.onPairingCode(agreed.sas)

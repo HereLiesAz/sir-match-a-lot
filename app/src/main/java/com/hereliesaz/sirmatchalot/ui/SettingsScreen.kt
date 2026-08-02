@@ -54,6 +54,7 @@ fun SettingsScreen(
 ) {
     val settings by viewModel.settings.collectAsState()
     val tasteSummary by viewModel.tasteSummary.collectAsState()
+    val pairedDevices by viewModel.pairedDevices.collectAsState()
     val deviceRate = viewModel.audioEngine.output.sampleRate
 
     // Held audio changes as tracks load and are evicted, and the whole point of
@@ -218,6 +219,52 @@ fun SettingsScreen(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .clickable { viewModel.forgetTransitionTaste() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+        }
+
+        Section(
+            title = "PAIRED DEVICES",
+            explanation = "Devices you have compared a pairing code with. A device on " +
+                "this list rejoins without asking either of you again — after proving, " +
+                "by signature, that it is the device you approved. Claiming to be one " +
+                "is not enough. Nothing here leaves this device.",
+        ) {
+            val paired = pairedDevices
+            if (paired.isEmpty()) {
+                Text(
+                    text = "None yet — pair a device to see it here",
+                    color = DIM,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            } else {
+                for ((fingerprint, name) in paired) {
+                    Text(
+                        text = "• $name",
+                        color = ACCENT,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                    )
+                    // The fingerprint, because "which Pixel 8?" is a question a
+                    // list of names cannot answer and a device may be renamed.
+                    Text(
+                        text = "  $fingerprint",
+                        color = DIM,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Text(
+                    text = "FORGET THEM ALL",
+                    color = Color(0xFFDC2626),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { viewModel.forgetPairedDevices() }
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }

@@ -235,6 +235,28 @@ class SettingsStore(private val store: KeyValueStore) {
         private const val KEY_LOCAL_COPIES = "local_copies"
         private const val KEY_TASTE = "transition_taste"
 
+        /**
+         * The raw store behind [forContext].
+         *
+         * Exposed because the sync package keeps its own things in it — a
+         * long-term identity key and the list of paired devices — and neither
+         * belongs in [EngineSettings], which is entirely things a user chose and
+         * can see themselves choosing.
+         */
+        fun keyValueFor(context: android.content.Context): KeyValueStore {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                android.content.Context.MODE_PRIVATE,
+            )
+            return object : KeyValueStore {
+                override fun getString(key: String): String? = preferences.getString(key, null)
+
+                override fun putString(key: String, value: String) {
+                    preferences.edit().putString(key, value).apply()
+                }
+            }
+        }
+
         /** A store backed by the app's own preferences file. */
         fun forContext(context: android.content.Context): SettingsStore {
             val preferences = context.getSharedPreferences(

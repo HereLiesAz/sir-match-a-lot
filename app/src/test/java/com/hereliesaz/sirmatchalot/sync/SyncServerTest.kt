@@ -46,10 +46,19 @@ class SyncServerTest {
     /** A port nothing is currently using. */
     private fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
-    private fun startServer(code: String = "TEST"): SyncServer {
+    private fun startServer(
+        code: String = "TEST",
+        identity: DeviceIdentity? = null,
+        known: KnownDevices? = null,
+    ): SyncServer {
         // A discovery port of its own: two tests binding 8888 at once would
         // make one of them fail for reasons that have nothing to do with it.
-        val instance = SyncServer(port = freePort(), discoveryPort = freePort())
+        val instance = SyncServer(
+            port = freePort(),
+            discoveryPort = freePort(),
+            identity = identity,
+            known = known,
+        )
         assertTrue("server should start", instance.start(code))
         server = instance
         return instance
@@ -114,13 +123,27 @@ class SyncServerTest {
 
         val pairingCode: String? get() = session?.sas
 
+        /** A long-term identity to present, when a test is about being known. */
+        var identity: DeviceIdentity? = null
+
+        /** An identity to *claim* while signing with another — the attack. */
+        var claimedIdentity: DeviceIdentity? = null
+
+        private var transcript: ByteArray? = null
+
         /** Says hello and waits for the host's key, exactly as the app does. */
         fun startPairing(roomCode: String) {
             send(
                 JSONObject()
                     .put("type", "hello")
                     .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
-                    .put("name", "A test device"),
+                    .put("name", "A test device")
+                    .apply {
+                        val claimed = claimedIdentity ?: identity
+                        claimed?.let {
+                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                        }
+                    },
             )
             val ack = nextOfType("hello_ack")
             assertNotNull("the host must answer hello", ack)
@@ -130,6 +153,31 @@ class SyncServerTest {
             assertNotNull(hostKey)
             session = RoomCrypto.agree(keys, hostKey!!, roomCode)
             assertNotNull("the exchange must produce a session", session)
+            transcript = RoomCrypto.transcriptOf(
+                RoomCrypto.encodePublicKey(keys.public),
+                WebSocketProtocol.decodeBase64(ack.getString("key"))!!,
+                roomCode,
+            )
+        }
+
+        /** A join carrying this peer's proof, as the real client sends it. */
+        fun sendSignedJoin(roomCode: String) {
+            val signed = transcript ?: throw AssertionError("no transcript")
+            sendSealed(
+                JSONObject()
+                    .put("type", "join")
+                    .put("roomCode", roomCode)
+                    .apply {
+                        // Claimed identity, signed by whoever `identity` is —
+                        // the same when honest, different when impersonating.
+                        val claimed = claimedIdentity ?: identity
+                        val signer = identity
+                        if (claimed != null && signer != null) {
+                            put("identity", WebSocketProtocol.base64(claimed.publicKey.encoded))
+                            put("signature", WebSocketProtocol.base64(signer.sign(signed)))
+                        }
+                    },
+            )
         }
 
         /** Sends [message] sealed, which is the only way the room accepts one. */
@@ -350,6 +398,117 @@ class SyncServerTest {
 
         assertNull("an unjoined peer must not reach the engine", acted.poll(1, TimeUnit.SECONDS))
         assertNull("nor change the room", stranger.next(500))
+    }
+
+    // --- Being remembered ---
+
+    @Test
+    fun `a device paired with before rejoins without asking anybody`() {
+        // The whole point of remembering one: two people who have already
+        // compared six digits should not be asked to compare them again every
+        // time the app opens.
+        val peerIdentity = DeviceIdentity.load(MemoryStore())
+        val known = KnownDevices(MemoryStore())
+        known.remember(peerIdentity.fingerprint, "Pixel 8")
+
+        val server = startServer(
+            code = "ABCD",
+            identity = DeviceIdentity.load(MemoryStore()),
+            known = known,
+        )
+        val asked = ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        server.onPairingRequested = { asked.offer(it) }
+
+        val peer = connect(server).also { it.identity = peerIdentity }
+        peer.startPairing("ABCD")
+        peer.sendSignedJoin("ABCD")
+
+        assertNotNull("a remembered device must be let in", peer.nextSealed("init_state"))
+        assertNull("and nobody must be asked about it", asked.poll(500, TimeUnit.MILLISECONDS))
+    }
+
+    @Test
+    fun `claiming a remembered fingerprint without the key proves nothing`() {
+        // The attack the trust list would otherwise invite. The fingerprint is
+        // public — it is on the wire every time that device connects — so if
+        // remembering one meant trusting whoever claims it, the memory would be
+        // worse than useless. The signature is what is actually checked.
+        val trusted = DeviceIdentity.load(MemoryStore())
+        val impostor = DeviceIdentity.load(MemoryStore())
+        val known = KnownDevices(MemoryStore())
+        known.remember(trusted.fingerprint, "Pixel 8")
+
+        val server = startServer(
+            code = "ABCD",
+            identity = DeviceIdentity.load(MemoryStore()),
+            known = known,
+        )
+        val asked = ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        server.onPairingRequested = { asked.offer(it) }
+
+        val peer = connect(server).also {
+            // Claims the remembered device's identity, signs with its own.
+            it.claimedIdentity = trusted
+            it.identity = impostor
+        }
+        peer.startPairing("ABCD")
+        peer.sendSignedJoin("ABCD")
+
+        assertNull("an impostor must not be admitted", peer.nextSealed("init_state", 800))
+        assertNotNull(
+            "and must be put in front of the user like any stranger",
+            asked.poll(1, TimeUnit.SECONDS),
+        )
+    }
+
+    @Test
+    fun `a device that has never paired is still asked about`() {
+        val known = KnownDevices(MemoryStore())
+        val server = startServer(
+            code = "ABCD",
+            identity = DeviceIdentity.load(MemoryStore()),
+            known = known,
+        )
+        val asked = ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        server.onPairingRequested = { asked.offer(it) }
+
+        val peer = connect(server).also { it.identity = DeviceIdentity.load(MemoryStore()) }
+        peer.startPairing("ABCD")
+        peer.sendSignedJoin("ABCD")
+
+        assertNotNull("a stranger must be asked about", asked.poll(1, TimeUnit.SECONDS))
+        assertNull("and admitted by nothing else", peer.nextSealed("init_state", 500))
+    }
+
+    @Test
+    fun `approving a device remembers it, and only then`() {
+        val peerIdentity = DeviceIdentity.load(MemoryStore())
+        val known = KnownDevices(MemoryStore())
+        val waiting = java.util.concurrent.ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        val server = startServer(
+            code = "ABCD",
+            identity = DeviceIdentity.load(MemoryStore()),
+            known = known,
+        )
+        server.onPairingRequested = { waiting.offer(it) }
+
+        val peer = connect(server).also { it.identity = peerIdentity }
+        peer.startPairing("ABCD")
+        val pending = waiting.poll(2, TimeUnit.SECONDS)
+        assertNotNull("a stranger must be asked about", pending)
+        peer.sendSignedJoin("ABCD")
+
+        assertTrue(
+            "nothing may be remembered before a person decides",
+            known.all().isEmpty(),
+        )
+
+        server.approvePeer(pending!!.id)
+        assertNotNull("approval admits", peer.nextSealed("init_state"))
+        assertTrue(
+            "and writes the device down for next time",
+            known.isKnown(peerIdentity.fingerprint),
+        )
     }
 
     @Test

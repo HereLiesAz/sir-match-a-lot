@@ -161,8 +161,14 @@ object RoomCrypto {
         )
     }.getOrNull()
 
-    /** The two public keys in a canonical order, with the room code appended. */
-    private fun transcriptOf(a: ByteArray, b: ByteArray, roomCode: String): ByteArray {
+    /**
+     * What both sides sign, and what the session key is salted with.
+     *
+     * Public because [DeviceIdentity] signs it: a signature over this proves the
+     * signer is taking part in *this* exchange, with these ephemeral keys and
+     * this room code, rather than replaying a recording of an earlier one.
+     */
+    fun transcriptOf(a: ByteArray, b: ByteArray, roomCode: String): ByteArray {
         val first: ByteArray
         val second: ByteArray
         if (compare(a, b) <= 0) {

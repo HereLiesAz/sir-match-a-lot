@@ -82,9 +82,22 @@ Exactly three message types travel unencrypted, and only during pairing:
 documented below — is carried inside a `sealed` envelope.
 
 ```
-peer → host   { "type": "hello", "key": "<base64 P-256 public key>", "name": "Pixel 8" }
-host → peer   { "type": "hello_ack", "key": "<base64 P-256 public key>" }
+peer → host   { "type": "hello", "key": "<base64 ephemeral P-256 public key>",
+                "name": "Pixel 8", "identity": "<base64 long-term public key>" }
+host → peer   { "type": "hello_ack", "key": "<base64 ephemeral P-256 public key>",
+                "identity": "<base64 long-term public key>",
+                "signature": "<base64 signature over the transcript>" }
 ```
+
+`identity` is a device's long-term key, kept between sessions; `key` is
+ephemeral and made fresh for every connection. The peer's `signature` follows in
+its sealed `join` rather than in `hello`, because it cannot sign the transcript
+until `hello_ack` has given it the host's ephemeral key.
+
+A device that has been paired with before — and whose signature verifies against
+the remembered key, over this exchange's transcript — is admitted without either
+user being asked. A claimed identity that does not verify gets the ordinary
+prompt.
 
 Both sides then derive, by ECDH over P-256 and HKDF-SHA256:
 
@@ -275,9 +288,9 @@ the roster means something.
 
 Stated plainly, because a documented limit is worth more than a surprise:
 
-- **No identity, and no memory of one.** Keys are ephemeral per connection, so
-  nothing is remembered between sessions: pairing happens again every time, and
-  the app cannot tell you that this is the same phone as yesterday.
+- **No identity beyond the device itself.** A long-term key names a *device*,
+  not a person, and there is no directory, no account and no revocation beyond
+  each device forgetting its own list.
 - **No protection from a user who approves without looking.** The six digits are
   only as good as the comparison, which is the standing limit of every scheme
   shaped like this one.

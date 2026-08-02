@@ -70,11 +70,31 @@ cannot express "cleartext to a phone whose address I will not know until I find
 it", and TLS to a self-signed certificate on an address discovered by broadcast
 authenticates nothing that the pairing code does not authenticate better.
 
+**Devices are remembered.** Alongside the ephemeral key each connection makes,
+every device holds one *long-term* identity key, generated once and kept. It
+encrypts nothing; its only job is to sign the exchange. A device that has been
+approved before is written down by the fingerprint of that key, and rejoins
+without either user being asked again.
+
+The signature is what makes that safe. A fingerprint is public — it is on the
+wire every time that device connects — so if remembering one meant trusting
+whoever claims it, the memory would be worse than no memory. What is checked is
+a signature over *this* exchange's transcript, verified against the key the
+fingerprint names: claiming somebody else's fingerprint proves nothing, and
+replaying a recording of an earlier exchange does not verify either. A device
+that claims a known identity and cannot back it up is treated as exactly what it
+is — a stranger — and gets the same six digits anybody else would.
+
+Settings lists the paired devices with their fingerprints and can forget them
+all. A trust list with no way to empty it is one you cannot correct after
+approving the wrong thing.
+
 **What this does not do.** It does not stop somebody who is standing next to you
 and approves the pairing on your own device. It does not survive a user pressing
 approve without looking at the digits, which is the failure mode every scheme of
-this shape has. And an ephemeral key per connection means no device is
-remembered: pairing happens again next time.
+this shape has. And forward secrecy is per connection but not per identity: the
+long-term key signs, so losing it lets someone impersonate the device in future
+exchanges — it does not decrypt any past one.
 
 **Why a pairing step at all**, given the requirement was one-press connection
 between phones in a booth: because one press was buying an open port. The
