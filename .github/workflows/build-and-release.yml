@@ -41,6 +41,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Nothing gated a release on the test suite. This workflow runs on a push
+      # to every branch and force-moves the release tag at the end of it, while
+      # `tests.yml` is a separate workflow with no `needs:` between them — so a
+      # commit that broke every unit test still produced a published release,
+      # because `bundleRelease` does not run tests. Run here, before the
+      # artifact exists, so a red suite means no artifact rather than a
+      # published one that happens to have a red check beside it.
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --build-cache
+
       - name: Prepare Keystore from Secrets
         env:
           KEYSTORE_PRIVATE: ${{ secrets.KEYSTORE_PRIVATE }}

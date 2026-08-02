@@ -397,6 +397,108 @@ class MixDirectorTest {
     }
 
     @Test
+    fun `the last track is retired, not left looping`() {
+        // `Finished` used to be the only command at the end of a set, so the
+        // final clip stayed playing on a deck it had to itself — and a clip
+        // alone on a deck loops. The set announced that it was over and then
+        // played the last track again, for ever.
+        val a = track("one", seconds = 90.0)
+        val b = track("two", seconds = 90.0)
+        val commands = run(MixDirector(planOf(a, b)), seconds = 400.0)
+
+        val finishedAt = commands.indexOfFirst { it is MixCommand.Finished }
+        assertTrue("the set must finish", finishedAt >= 0)
+        val retiredLast = commands.take(finishedAt + 1).any {
+            it is MixCommand.Retire && it.track.id == b.id
+        }
+        assertTrue("the final track must be stopped when the set ends", retiredLast)
+    }
+
+    @Test
+    fun `a scripted exit never runs the outgoing track past its own end`() {
+        // `chooseExit` always offers the track's end as its floor candidate, and
+        // with that chosen `leaveAt` was `duration + fade`: the outgoing deck
+        // kept playing a whole fade past the end of its material, which for a
+        // clip alone on a deck means looping back into its own intro underneath
+        // the incoming track.
+        val a = track("one", seconds = 200.0)
+        val b = track("two", seconds = 200.0)
+        // No points on `a`, so the only exit available is TRACK_END.
+        val director = MixDirector(
+            plan = planOf(a, b),
+            structures = provider(a to structure(a), b to structure(b)),
+            seed = 11,
+        )
+
+        director.start()
+        var elapsed = 0.0
+        var retiredAt = -1.0
+        while (!director.finished && elapsed < 1_000.0) {
+            val commands = director.advance(0.02)
+            elapsed += 0.02
+            if (commands.any { it is MixCommand.Retire && it.track.id == a.id }) {
+                retiredAt = elapsed
+                break
+            }
+        }
+
+        assertTrue("the outgoing track must be retired", retiredAt > 0.0)
+        assertTrue(
+            "retired at $retiredAt, past its own 200 s of material",
+            retiredAt <= 200.0 + 0.5,
+        )
+    }
+
+    @Test
+    fun `a track entered late is not skipped by an exit behind it`() {
+        // `chooseExit` measured its floor from frame zero, so on a track entered
+        // part way in, an exit earlier than the entry counted as valid — and
+        // every stage of the handover was then already due on the tick the
+        // script resolved. The track was announced and immediately replaced.
+        val a = track("one", seconds = 300.0)
+        val b = track("two", seconds = 300.0)
+        val c = track("three", seconds = 300.0)
+
+        // `b` has a drop at 150 s, so it is entered well after zero, and a
+        // breakdown at 60 s that would be behind that entry.
+        val bPoints = listOf(
+            PointOfInterest(150.0, PointOfInterest.Kind.DROP, 1f),
+            PointOfInterest(60.0, PointOfInterest.Kind.BREAKDOWN, 1f),
+        )
+        val director = MixDirector(
+            plan = planOf(a, b, c),
+            structures = provider(
+                a to structure(a, points = listOf(PointOfInterest(120.0, PointOfInterest.Kind.BREAKDOWN, 1f))),
+                b to structure(b, points = bPoints),
+                c to structure(c),
+            ),
+            seed = 5,
+        )
+
+        director.start()
+        var elapsed = 0.0
+        var secondStarted = -1.0
+        var secondRetired = -1.0
+        while (!director.finished && elapsed < 2_000.0) {
+            val commands = director.advance(0.02)
+            elapsed += 0.02
+            if (commands.any { it is MixCommand.Start && it.track.id == b.id }) secondStarted = elapsed
+            if (commands.any { it is MixCommand.Retire && it.track.id == b.id }) {
+                secondRetired = elapsed
+                break
+            }
+        }
+
+        assertTrue("the middle track must play", secondStarted > 0.0)
+        assertTrue("the middle track must be handed over", secondRetired > 0.0)
+        val played = secondRetired - secondStarted
+        assertTrue(
+            "played for only ${"%.1f".format(played)} s — that is a stab, not a track",
+            played >= TransitionChoreographer.MINIMUM_PLAY_SECONDS * 0.5,
+        )
+    }
+
+    @Test
     fun `a structured set leaves tracks at their musical exits`() {
         // The user asked for tracks to be cut at musical exits rather than played
         // to the end, so a set with structures is shorter than the same plan

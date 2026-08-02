@@ -93,6 +93,56 @@ abstract class AppDatabase : RoomDatabase() {
             "ALTER TABLE `tracks_new` RENAME TO `tracks`",
         )
 
+        /**
+         * The original schema, brought forward instead of destroyed.
+         *
+         * Version 1 shipped with `fallbackToDestructiveMigration()`, so a device
+         * that upgraded while that was still in the builder had its library
+         * wiped and landed on version 2. A device that did *not* upgrade in that
+         * window — one that has sat on an old build — now meets a builder with
+         * no fallback and no path from 1, and Room throws
+         * `IllegalStateException: A migration from 1 to 4 was required but not
+         * found` on the first query. That is not a wiped library; it is an app
+         * that cannot be opened at all, ever again, without clearing its data.
+         *
+         * What version 1 stored of any value is identity, titles, file
+         * locations and cue points. Its `bpm`, `camelotKey`, `progression`,
+         * `atmosphere` and `energyLevel` were derived from filenames and random
+         * numbers — see docs/AUDIT.md — which is why [MIGRATION_2_3] drops them
+         * a step later. They are carried across here anyway rather than
+         * special-cased, because the next migration already knows how to throw
+         * them away, and a migration that quietly does two jobs is how the first
+         * one gets forgotten.
+         *
+         * `mixTips`, `youtubeId` and version 1's `keyName` have no column in
+         * version 2 and are dropped here, which is what version 2 did to them.
+         */
+        val MIGRATION_1_2_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE `tracks` RENAME TO `tracks_v1`",
+            VERSION_2_TRACKS_SQL,
+            """
+            INSERT INTO `tracks` (
+                `id`, `title`, `artist`, `localPath`, `bpm`, `camelotKey`,
+                `progression`, `atmosphere`, `energy`, `durationMs`,
+                `trimStartMs`, `trimEndMs`, `peaksPath`, `isUserAdded`,
+                `cuePoint1`, `cuePoint2`, `cuePoint3`, `cuePoint4`
+            )
+            SELECT
+                `id`, `title`, `artist`, `localPath`, `bpm`, `camelotKey`,
+                `progression`, `atmosphere`, `energyLevel`, 0,
+                0, 0, NULL, `isUserAdded`,
+                `cuePoint1`, `cuePoint2`, `cuePoint3`, `cuePoint4`
+            FROM `tracks_v1`
+            """.trimIndent(),
+            "DROP TABLE `tracks_v1`",
+        )
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_1_2_STATEMENTS.forEach(db::execSQL)
+            }
+        }
+
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_2_3_STATEMENTS.forEach(db::execSQL)
@@ -122,6 +172,24 @@ abstract class AppDatabase : RoomDatabase() {
          * Kept beside the migration so the test can build the database the
          * migration actually has to read, rather than a guess at it.
          */
+        /**
+         * The version 1 `tracks` table, as shipped.
+         *
+         * Reconstructed from the entity at the commit that carried
+         * `@Database(version = 1)`, and kept beside [MIGRATION_1_2] for the same
+         * reason [VERSION_2_TRACKS_SQL] is kept beside the next one: a migration
+         * can only be tested against the table it actually has to read.
+         */
+        const val VERSION_1_TRACKS_SQL: String =
+            "CREATE TABLE IF NOT EXISTS `tracks` (" +
+                "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, " +
+                "`bpm` INTEGER NOT NULL, `keyName` TEXT NOT NULL, `camelotKey` TEXT NOT NULL, " +
+                "`progression` TEXT NOT NULL, `atmosphere` TEXT NOT NULL, " +
+                "`energyLevel` INTEGER NOT NULL, `mixTips` TEXT NOT NULL, " +
+                "`youtubeId` TEXT, `localPath` TEXT, `isUserAdded` INTEGER NOT NULL, " +
+                "`cuePoint1` REAL, `cuePoint2` REAL, `cuePoint3` REAL, `cuePoint4` REAL, " +
+                "PRIMARY KEY(`id`))"
+
         const val VERSION_2_TRACKS_SQL: String =
             "CREATE TABLE IF NOT EXISTS `tracks` (" +
                 "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, " +
@@ -143,7 +211,14 @@ abstract class AppDatabase : RoomDatabase() {
                     // A real migration, not fallbackToDestructiveMigration().
                     // The previous builder wiped the user's entire library on
                     // every schema change.
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                    //
+                    // From 1, not from 2. The chain started at 2 while the
+                    // schema was at 4, so a device still holding a version 1
+                    // database — a build that shipped, from a workflow that
+                    // publishes an installable APK on every push — hit "a
+                    // migration from 1 to 4 was required but not found" at first
+                    // query, and could not open the app again.
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

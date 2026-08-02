@@ -42,11 +42,17 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # Compiling the instrumented sources catches breakage that unit tests miss
-      # — a stale androidTest referencing a changed composable signature was
-      # failing on main before this workflow existed.
-      - name: Run unit tests and compile instrumented tests
-        run: ./gradlew testDebugUnitTest compileDebugAndroidTestKotlin
+      # `compileDebugAndroidTestKotlin` used to run here, described as catching
+      # breakage the unit tests miss. `app/src/androidTest` does not exist, so
+      # it compiled zero sources and could never fail — an always-green step
+      # presented as a safety net. Dropped rather than left in place: a check
+      # that cannot fail is worse than no check, because it is counted.
+      #
+      # It is worth restoring the moment there is an instrumented test to
+      # compile, and there is a real gap where one would go: everything in the
+      # platter's gesture layer is invisible to the unit suite.
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest
 
       - name: Upload test report
         if: always()

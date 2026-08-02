@@ -50,13 +50,23 @@ class TransitionChoreographer {
         phase: SetArc.Phase,
         random: Random,
         minimumSeconds: Double = MINIMUM_PLAY_SECONDS,
+        entrySeconds: Double = 0.0,
     ): TrackStructure.Exit {
         val duration = from.durationSeconds
         val fallback = TrackStructure.Exit(duration, TrackStructure.Exit.Reason.TRACK_END, 0.2)
         if (duration <= 0.0) return fallback
 
         // On a track too short to cut, there is nothing to choose: play it.
-        val floor = minimumSeconds.coerceAtMost(duration * SHORT_TRACK_FRACTION)
+        //
+        // The floor is measured from where the track came in, not from frame
+        // zero. `chooseEntry` may enter as much as half way through, and an exit
+        // behind the playhead is not an exit: every stage of the handover is
+        // already due, so the whole thing fires in the tick the script is
+        // resolved and the track is skipped. Measured from the entry, "played
+        // for at least a minimum" means what it says.
+        val floor = (entrySeconds + minimumSeconds)
+            .coerceAtMost(entrySeconds + (duration - entrySeconds) * SHORT_TRACK_FRACTION)
+            .coerceAtMost(duration)
         val candidates = from.exits(after = floor)
         if (candidates.isEmpty()) return fallback
 
@@ -107,8 +117,10 @@ class TransitionChoreographer {
         recentStyles: List<TransitionStyle> = emptyList(),
         taste: TransitionTaste? = null,
         energyDelta: Int = 0,
+        /** Where [from] itself came in, so its exit is chosen after that. */
+        fromEntrySeconds: Double = 0.0,
     ): TransitionScript {
-        val exit = chooseExit(from, phase, random)
+        val exit = chooseExit(from, phase, random, entrySeconds = fromEntrySeconds)
         val entry = chooseEntry(to, phase, random)
 
         val options = eligible(from, to, match, phase, exit, entry)
