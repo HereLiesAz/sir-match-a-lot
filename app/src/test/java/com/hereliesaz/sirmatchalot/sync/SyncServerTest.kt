@@ -105,6 +105,64 @@ class SyncServerTest {
             return builder.toString()
         }
 
+        /** This connection's own keys, and the session once one is agreed. */
+        private val keys = RoomCrypto.newKeyPair()
+        private var session: RoomCrypto.Session? = null
+
+        /** Set by [pair], so a test can approve the right connection. */
+        var peerId: String? = null
+
+        val pairingCode: String? get() = session?.sas
+
+        /** Says hello and waits for the host's key, exactly as the app does. */
+        fun startPairing(roomCode: String) {
+            send(
+                JSONObject()
+                    .put("type", "hello")
+                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                    .put("name", "A test device"),
+            )
+            val ack = nextOfType("hello_ack")
+            assertNotNull("the host must answer hello", ack)
+            val hostKey = RoomCrypto.decodePublicKey(
+                WebSocketProtocol.decodeBase64(ack!!.getString("key"))!!,
+            )
+            assertNotNull(hostKey)
+            session = RoomCrypto.agree(keys, hostKey!!, roomCode)
+            assertNotNull("the exchange must produce a session", session)
+        }
+
+        /** Sends [message] sealed, which is the only way the room accepts one. */
+        fun sendSealed(message: JSONObject) {
+            val current = session ?: throw AssertionError("no session; call startPairing first")
+            send(
+                JSONObject()
+                    .put("type", "sealed")
+                    .put(
+                        "data",
+                        WebSocketProtocol.base64(
+                            current.seal(message.toString().toByteArray(Charsets.UTF_8)),
+                        ),
+                    ),
+            )
+        }
+
+        /** The next sealed message of [type], opened. */
+        fun nextSealed(type: String, timeoutMs: Long = 2_000): JSONObject? {
+            val current = session ?: return null
+            val deadline = System.nanoTime() + timeoutMs * 1_000_000
+            while (System.nanoTime() < deadline) {
+                val envelope = next(200) ?: continue
+                if (envelope.optString("type") != "sealed") continue
+                val opened = current.open(
+                    WebSocketProtocol.decodeBase64(envelope.getString("data")) ?: continue,
+                ) ?: continue
+                val message = JSONObject(opened.toString(Charsets.UTF_8))
+                if (message.optString("type") == type) return message
+            }
+            return null
+        }
+
         /** Sends [message], masked, as a client must. */
         fun send(message: JSONObject) {
             val payload = message.toString().toByteArray(Charsets.UTF_8)
@@ -146,16 +204,36 @@ class SyncServerTest {
     private fun connect(server: SyncServer): Peer = Peer(server.port).also { peers.add(it) }
 
     /**
-     * Connects and joins, which is what a real client does on open.
+     * Connects, agrees a key, gets the host's approval, and joins.
      *
-     * These tests used to drive the server without ever sending `join`, and
-     * passed — which was the bug, stated as a fixture: nothing recorded whether
-     * a connection had joined, and nothing outside the `join` branch consulted
-     * the room code, so any socket on the network could command the room.
+     * What a real client does on open, in order. These tests used to drive the
+     * server with a bare `join` — and before that with no join at all, which was
+     * the hole stated as a fixture. Now nothing reaches the room without a key
+     * exchange, this host's user approving the digits, and a sealed join.
      */
     private fun join(server: SyncServer, code: String = "TEST"): Peer {
+        val peer = pair(server, code)
+        server.approvePeer(peer.peerId!!)
+        peer.sendSealed(JSONObject().put("type", "join").put("roomCode", code))
+        return peer
+    }
+
+    /** Connects and completes the key exchange, stopping short of approval. */
+    private fun pair(server: SyncServer, code: String = "TEST"): Peer {
+        val waiting = java.util.concurrent.ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        server.onPairingRequested = { waiting.offer(it) }
+
         val peer = connect(server)
-        peer.send(JSONObject().put("type", "join").put("roomCode", code))
+        peer.startPairing(code)
+
+        val pending = waiting.poll(2, TimeUnit.SECONDS)
+        assertNotNull("the host must be asked about a joining device", pending)
+        peer.peerId = pending!!.id
+        assertEquals(
+            "both sides must derive the same code, or no user can compare them",
+            pending.pairingCode,
+            peer.pairingCode,
+        )
         return peer
     }
 
@@ -165,7 +243,7 @@ class SyncServerTest {
         server.updateState(JSONObject().put("crossfader", 40))
 
         val peer = join(server)
-        val init = peer.nextOfType("init_state")
+        val init = peer.nextSealed("init_state")
 
         assertNotNull("a joiner must be told the current room state", init)
         assertEquals(40, init!!.getJSONObject("roomState").getInt("crossfader"))
@@ -176,17 +254,17 @@ class SyncServerTest {
         val server = startServer()
         server.updateState(JSONObject().put("crossfader", 40))
         val peer = join(server)
-        peer.nextOfType("init_state")
+        peer.nextSealed("init_state")
 
         // A device sending only isPlaying must not erase the crossfader.
-        peer.send(
+        peer.sendSealed(
             JSONObject()
                 .put("type", "update_state")
                 .put("roomCode", "TEST")
                 .put("state", JSONObject().put("isPlaying", true)),
         )
 
-        val synced = peer.nextOfType("state_synced")
+        val synced = peer.nextSealed("state_synced")
         assertNotNull("an update must be echoed back", synced)
         val state = synced!!.getJSONObject("state")
         assertTrue(state.getBoolean("isPlaying"))
@@ -198,10 +276,10 @@ class SyncServerTest {
         val server = startServer()
         val sender = join(server)
         val other = join(server)
-        sender.nextOfType("init_state")
-        other.nextOfType("init_state")
+        sender.nextSealed("init_state")
+        other.nextSealed("init_state")
 
-        sender.send(
+        sender.sendSealed(
             JSONObject()
                 .put("type", "update_state")
                 .put("roomCode", "TEST")
@@ -210,8 +288,8 @@ class SyncServerTest {
 
         // Converging on the host's value, rather than each device trusting its
         // own, is the whole difference between linked and merely notified.
-        assertEquals(-70, sender.nextOfType("state_synced")!!.getJSONObject("state").getInt("crossfader"))
-        assertEquals(-70, other.nextOfType("state_synced")!!.getJSONObject("state").getInt("crossfader"))
+        assertEquals(-70, sender.nextSealed("state_synced")!!.getJSONObject("state").getInt("crossfader"))
+        assertEquals(-70, other.nextSealed("state_synced")!!.getJSONObject("state").getInt("crossfader"))
     }
 
     @Test
@@ -222,10 +300,10 @@ class SyncServerTest {
 
         val sender = join(server)
         val other = join(server)
-        sender.nextOfType("init_state")
-        other.nextOfType("init_state")
+        sender.nextSealed("init_state")
+        other.nextSealed("init_state")
 
-        sender.send(
+        sender.sendSealed(
             JSONObject()
                 .put("type", "trigger_event")
                 .put("roomCode", "TEST")
@@ -238,7 +316,7 @@ class SyncServerTest {
         assertEquals("play_sampler_pad", handled!!.first)
         assertEquals(3, handled.second.getInt("padId"))
 
-        val relayed = other.nextOfType("event_triggered")
+        val relayed = other.nextSealed("event_triggered")
         assertNotNull("other devices must hear about it too", relayed)
         assertEquals("play_sampler_pad", relayed!!.getString("event"))
         assertEquals(3, relayed.getJSONObject("payload").getInt("padId"))
@@ -256,7 +334,7 @@ class SyncServerTest {
         server.onEvent = { event, payload -> acted.offer(event to payload) }
 
         val stranger = connect(server)
-        assertNull("nothing is handed out before a join", stranger.nextOfType("init_state", 500))
+        assertNull("nothing is handed out before a join", stranger.next(500))
 
         stranger.send(
             JSONObject()
@@ -271,41 +349,116 @@ class SyncServerTest {
         )
 
         assertNull("an unjoined peer must not reach the engine", acted.poll(1, TimeUnit.SECONDS))
-        assertNull("nor change the room", stranger.nextOfType("state_synced", 500))
+        assertNull("nor change the room", stranger.next(500))
+    }
+
+    @Test
+    fun `either user may approve first`() {
+        // Both prompts appear at the same moment and either person may tap
+        // first. The join used to be *refused* when it arrived before the
+        // host's approval, so whenever the joining user was quicker — a coin
+        // toss on two phones in a booth — the connection closed before the host
+        // had decided, and the host's approval then appeared to do nothing.
+        val server = startServer(code = "ABCD")
+
+        // Joining device first.
+        val eager = pair(server, "ABCD")
+        eager.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+        assertNull("nothing before the host answers", eager.nextSealed("init_state", 400))
+        server.approvePeer(eager.peerId!!)
+        assertNotNull("the host's approval must complete it", eager.nextSealed("init_state"))
+
+        // Host first, which was the only order that used to work.
+        val patient = pair(server, "ABCD")
+        server.approvePeer(patient.peerId!!)
+        patient.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+        assertNotNull("and this order must still work", patient.nextSealed("init_state"))
+    }
+
+    @Test
+    fun `a device the host has not approved reaches nothing`() {
+        // The approval is not decoration on top of the key exchange; it is the
+        // thing the key exchange cannot do for itself. A device that agrees a
+        // perfectly good key and is never approved must stay outside.
+        val server = startServer(code = "ABCD")
+        val acted = ArrayBlockingQueue<Pair<String, JSONObject>>(4)
+        server.onEvent = { event, payload -> acted.offer(event to payload) }
+
+        val peer = pair(server, "ABCD")
+        peer.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+
+        // Waiting, not refused — the host may still be looking at the digits.
+        // What matters is that waiting admits nothing.
+        assertNull("an unapproved device must not be given the room", peer.nextSealed("init_state", 800))
+
+        peer.sendSealed(
+            JSONObject()
+                .put("type", "trigger_event")
+                .put("event", "play_sampler_pad")
+                .put("payload", JSONObject().put("padId", 3)),
+        )
+        assertNull("nor reach the engine", acted.poll(1, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `both devices show the same pairing code`() {
+        // The property the whole scheme rests on: the digits agree exactly when
+        // the two devices agreed a key with each other. `pair` asserts it for a
+        // good exchange; this states it as the test it is.
+        val server = startServer(code = "ABCD")
+        val peer = pair(server, "ABCD")
+        assertEquals(RoomCrypto.SAS_DIGITS, peer.pairingCode!!.length)
     }
 
     @Test
     fun `a wrong room code is refused rather than ignored`() {
         val server = startServer(code = "ABCD")
-        val peer = connect(server)
-
-        peer.send(JSONObject().put("type", "join").put("roomCode", "WXYZ"))
+        // The code is mixed into the key derivation, so a peer that typed it
+        // wrong does not merely fail a comparison — it holds a different
+        // session, and its join does not open. The refusal it gets is for the
+        // code, because the host checks that first.
+        val peer = pair(server, "ABCD")
+        server.approvePeer(peer.peerId!!)
+        peer.sendSealed(JSONObject().put("type", "join").put("roomCode", "WXYZ"))
 
         val refusal = peer.nextOfType("join_refused")
         assertNotNull("a peer that typed the code wrong must be told", refusal)
         assertNull(
             "and must not be handed the room it was refused from",
-            peer.nextOfType("init_state", 500),
+            peer.nextSealed("init_state", 500),
         )
     }
 
     @Test
     fun `a correct room code is accepted, whatever its case`() {
         val server = startServer(code = "ABCD")
-        val peer = connect(server)
-
-        peer.send(JSONObject().put("type", "join").put("roomCode", "abcd"))
+        val peer = pair(server, "abcd")
+        server.approvePeer(peer.peerId!!)
+        peer.sendSealed(JSONObject().put("type", "join").put("roomCode", "abcd"))
 
         // Asserting only the absence of a refusal would also pass against a
         // server that ignores `join` entirely — which is what this one used to
-        // do. The reply itself is the evidence: a join is answered with the
-        // room, a refusal with `join_refused`, and never both.
-        val reply = peer.next()
-        assertNotNull("a joined peer must be answered", reply)
-        assertEquals(
-            "a matching code must not be refused",
-            "init_state",
-            reply!!.optString("type"),
+        // do. The room coming back is the evidence.
+        assertNotNull("a matching code must not be refused", peer.nextSealed("init_state"))
+    }
+
+    @Test
+    fun `nothing the room sends is readable on the wire`() {
+        // Everything after the handshake is sealed. A listener on the network
+        // sees the two public keys and then frames it cannot open — not
+        // crossfader positions, not track ids, not what anybody is playing.
+        val server = startServer()
+        val peer = join(server)
+        peer.nextSealed("init_state")
+
+        server.updateState(JSONObject().put("crossfader", 40))
+
+        val envelope = peer.next()
+        assertNotNull(envelope)
+        assertEquals("sealed", envelope!!.optString("type"))
+        assertTrue(
+            "the room state must not be legible in the frame",
+            !envelope.toString().contains("crossfader"),
         )
     }
 
@@ -316,7 +469,7 @@ class SyncServerTest {
         server.onPeersChanged = { counts.offer(it) }
 
         val peer = join(server)
-        peer.nextOfType("init_state")
+        peer.nextSealed("init_state")
         assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
 
         peer.close()

@@ -19,6 +19,18 @@ class SyncClient(private val listener: SyncListener) {
 
         /** The room turned this device away — a wrong code, or no code at all. */
         fun onJoinRefused(reason: String)
+
+        /**
+         * A key has been agreed with the host and both users must now check it.
+         *
+         * [pairingCode] is shown on this device and, at the same moment, on the
+         * host's. Identical digits mean the two devices agreed a key with each
+         * other and nothing is sitting between them; a device in the middle
+         * holds two different exchanges and cannot make both screens match.
+         *
+         * Nothing is sent to the room until [approvePairing] is called.
+         */
+        fun onPairingCode(pairingCode: String)
         fun onRoomStateReceived(json: JSONObject)
         fun onKaossMoveEvent(x: Float, y: Float, padId: Int)
         fun onSamplerTriggerEvent(padId: Int)
@@ -33,6 +45,68 @@ class SyncClient(private val listener: SyncListener) {
         .build()
 
     private var webSocket: WebSocket? = null
+
+    /** This connection's ephemeral keys, made fresh for every connect. */
+    private var keys: java.security.KeyPair? = null
+
+    /** Agreed when `hello_ack` arrives; null until then. */
+    @Volatile
+    private var session: RoomCrypto.Session? = null
+
+    /** Set when this device's own user approves the digits. */
+    @Volatile
+    private var approvedByUser = false
+
+    /** The room code this device is trying to join, for the key derivation. */
+    @Volatile
+    private var pendingRoomCode: String = ""
+
+    /**
+     * This device's user approves the pairing.
+     *
+     * Until this is called nothing at all is sent to the room, which is the
+     * whole point: the host's approval says the host recognises this device, and
+     * this says this device recognises the host. Either one alone leaves a
+     * device in the middle somewhere to stand.
+     */
+    fun approvePairing(roomCode: String, role: String, name: String) {
+        if (session == null) return
+        approvedByUser = true
+        sendSealed(
+            JSONObject().apply {
+                put("type", "join")
+                put("roomCode", roomCode.uppercase())
+                put("role", role)
+                put("name", name)
+            },
+        )
+    }
+
+    /** This device's user rejects the pairing, and the connection with it. */
+    fun refusePairing() {
+        approvedByUser = false
+        session = null
+        disconnect()
+    }
+
+    /**
+     * Sends [message] sealed under the agreed key.
+     *
+     * Every room message goes this way. A message sent before a key is agreed,
+     * or before this device's user has approved it, is dropped rather than sent
+     * in the clear — there is no path here that falls back to plaintext, because
+     * a fallback is what an attacker would arrange.
+     */
+    private fun sendSealed(message: JSONObject) {
+        val current = session ?: return
+        val sealed = current.seal(message.toString().toByteArray(Charsets.UTF_8))
+        webSocket?.send(
+            JSONObject().apply {
+                put("type", "sealed")
+                put("data", WebSocketProtocol.base64(sealed))
+            }.toString(),
+        )
+    }
     private var udpSocket: DatagramSocket? = null
     private val isDiscovering = AtomicBoolean(false)
 
@@ -91,8 +165,23 @@ class SyncClient(private val listener: SyncListener) {
         udpSocket = null
     }
 
-    fun connect(wsUrl: String) {
+    /**
+     * Opens a connection and starts the key exchange.
+     *
+     * @param roomCode mixed into the derivation, so a device that typed the
+     *   wrong code cannot reach the host's session even if the exchange itself
+     *   succeeds — it fails as a mismatched code rather than as a wrong key.
+     * @param deviceName shown on the host's approval prompt.
+     */
+    @JvmOverloads
+    fun connect(wsUrl: String, roomCode: String = "", deviceName: String = "A device") {
         disconnect()
+
+        pendingRoomCode = roomCode.uppercase()
+        approvedByUser = false
+        session = null
+        val ownKeys = RoomCrypto.newKeyPair()
+        keys = ownKeys
 
         val request = Request.Builder()
             .url(wsUrl)
@@ -101,11 +190,49 @@ class SyncClient(private val listener: SyncListener) {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 listener.onConnected()
+                // The first thing on the wire, and the only thing this device
+                // sends in the clear: an ephemeral public key nobody can do
+                // anything with on its own.
+                webSocket.send(
+                    JSONObject().apply {
+                        put("type", "hello")
+                        put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(ownKeys.public)))
+                        put("name", deviceName)
+                    }.toString(),
+                )
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
-                    val data = JSONObject(text)
+                    val outer = JSONObject(text)
+                    when (outer.optString("type")) {
+                        "hello_ack" -> {
+                            val hostKeyBytes =
+                                WebSocketProtocol.decodeBase64(outer.optString("key")) ?: return
+                            val hostKey = RoomCrypto.decodePublicKey(hostKeyBytes) ?: return
+                            val agreed = RoomCrypto.agree(ownKeys, hostKey, pendingRoomCode) ?: return
+                            session = agreed
+                            // Both users now hold the same six digits, and
+                            // nothing further happens until this one approves.
+                            listener.onPairingCode(agreed.sas)
+                            return
+                        }
+                        // Sent in the clear, because a refused device may have no
+                        // session to open anything with.
+                        "join_refused" -> {
+                            listener.onJoinRefused(
+                                outer.optString("reason").ifBlank { "the room refused the join" },
+                            )
+                            return
+                        }
+                    }
+
+                    val current = session ?: return
+                    if (outer.optString("type") != "sealed") return
+                    val sealed = WebSocketProtocol.decodeBase64(outer.optString("data")) ?: return
+                    val opened = current.open(sealed) ?: return
+
+                    val data = JSONObject(opened.toString(Charsets.UTF_8))
                     val type = data.optString("type")
 
                     when (type) {
@@ -115,11 +242,6 @@ class SyncClient(private val listener: SyncListener) {
                         // server puts it, was true of the wire and false of the
                         // app. A refused join looked exactly like a working one
                         // until nothing responded.
-                        "join_refused" -> {
-                            listener.onJoinRefused(
-                                data.optString("reason").ifBlank { "the room refused the join" },
-                            )
-                        }
                         "init_state" -> {
                             val roomState = data.getJSONObject("roomState")
                             listener.onRoomStateReceived(roomState)
@@ -201,6 +323,13 @@ class SyncClient(private val listener: SyncListener) {
         stopLanDiscovery()
     }
 
+    /**
+     * Kept for the discovery flow, which knows the code before a key exists.
+     *
+     * The join itself is now sent by [approvePairing], because it must not go
+     * out until this device's user has seen the digits — sending it on connect
+     * would mean joining a host nobody had confirmed.
+     */
     fun joinRoom(roomCode: String, role: String, name: String) {
         val payload = JSONObject().apply {
             put("type", "join")
@@ -208,7 +337,7 @@ class SyncClient(private val listener: SyncListener) {
             put("role", role)
             put("name", name)
         }
-        webSocket?.send(payload.toString())
+        sendSealed(payload)
     }
 
     fun updateCrossfader(crossfaderVal: Int, roomCode: String) {
@@ -286,7 +415,7 @@ class SyncClient(private val listener: SyncListener) {
             put("roomCode", roomCode.uppercase())
             put("state", stateJson)
         }
-        webSocket?.send(msg.toString())
+        sendSealed(msg)
     }
 
     private fun sendTriggerEvent(event: String, payload: JSONObject, roomCode: String) {
@@ -296,6 +425,6 @@ class SyncClient(private val listener: SyncListener) {
             put("event", event)
             put("payload", payload)
         }
-        webSocket?.send(msg.toString())
+        sendSealed(msg)
     }
 }

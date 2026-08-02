@@ -35,27 +35,56 @@ These are design decisions, documented rather than hidden. Reporting them is
 welcome as a discussion; they will not be treated as vulnerabilities in
 themselves.
 
-### The room protocol is unencrypted and unauthenticated
+### The room is paired, and encrypted after that
 
-A hosted session accepts commands from anyone on the same local network who
-joins it. There is no pairing, no key, and no transport security. A room code is
-a *label*, not a credential — it identifies the session; it does not protect it.
-The one thing it now does is force a connection to *say* something: a peer that
-never sends `join`, or sends the wrong code, is refused and reaches neither the
-engine nor the room state. Until recently it did not even do that — every
-command was dispatched without any check that a join had happened.
+Joining a room takes three things, and no two of them are enough:
 
-The traffic is cleartext by design, and the manifest permits it explicitly
-(`usesCleartextTraffic`). Without that the platform blocks `ws://` at
-targetSdk 28 and above, and joining a room cannot work at all. Anyone on the
-network can read what the room sends.
+1. **A key exchange.** The joining device and the host each generate an
+   ephemeral P-256 key pair, exchange public keys, and derive a session key by
+   ECDH. Nothing else in the conversation travels in the clear.
+2. **Six digits, compared by two people.** Both devices derive the same six
+   digits from the exchange and show them. A key exchange on its own stops a
+   passive listener and *nothing else* — anyone in the middle can run one
+   exchange with each side and read everything — so the exchange has to be
+   authenticated by a channel the attacker is not on. The two people looking at
+   each other's screens are that channel. A device in the middle holds two
+   different exchanges and cannot make both screens agree.
+3. **Both users pressing approve.** The host's approval says "this is the device
+   I meant to admit". The joining device's approval says "this is the host I
+   meant to join". Either alone leaves the middle open.
 
-**Why:** the requirement is one-press connection between phones in a booth, with
-no accounts and no server. Every mechanism that would fix this properly adds a
-step or a service.
+Everything after that is AES-256-GCM, with a fresh nonce per frame: a listener
+on the network sees two public keys and then frames that do not open. Tampering
+fails to authenticate rather than decrypting to something plausible.
 
-**What it means in practice:** host on a network you control. What an attacker on
-your network can do, once joined, is move the crossfader, trigger pads, load
+The room code is still not a credential — it is broadcast in the clear by
+discovery — but it is no longer only a label either: it is mixed into the key
+derivation, so two devices holding different codes cannot reach the same
+session even if their exchange otherwise succeeds.
+
+The transport underneath is cleartext `ws://`, and the manifest permits that
+explicitly (`usesCleartextTraffic`). Without it the platform blocks `ws://` at
+targetSdk 28 and above and joining cannot work at all. That is why the
+confidentiality is at the application layer instead: a network security config
+cannot express "cleartext to a phone whose address I will not know until I find
+it", and TLS to a self-signed certificate on an address discovered by broadcast
+authenticates nothing that the pairing code does not authenticate better.
+
+**What this does not do.** It does not stop somebody who is standing next to you
+and approves the pairing on your own device. It does not survive a user pressing
+approve without looking at the digits, which is the failure mode every scheme of
+this shape has. And an ephemeral key per connection means no device is
+remembered: pairing happens again next time.
+
+**Why a pairing step at all**, given the requirement was one-press connection
+between phones in a booth: because one press was buying an open port. The
+compromise is that discovery is still automatic — a device finds the room by
+itself — and the only thing added is one screen on each side with the same six
+digits on it. No accounts, no server, and no typing.
+
+**What it means in practice:** an attacker on your network can do nothing until
+somebody approves them on the host's screen. Once approved — which is to say,
+once you have let them in — they can move the crossfader, trigger pads, load
 tracks that are already in your library, and seek the decks.
 
 They cannot read your files or write to them, and they cannot make the app fetch

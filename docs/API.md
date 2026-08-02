@@ -75,6 +75,39 @@ host-to-peer frames are never masked and peer-to-host frames always are.
 Ping and pong are handled: a ping is answered with a pong carrying the same
 payload. Close ends the connection.
 
+### Pairing, and what is in the clear
+
+Exactly three message types travel unencrypted, and only during pairing:
+`hello`, `hello_ack` and `join_refused`. Everything else — every message
+documented below — is carried inside a `sealed` envelope.
+
+```
+peer → host   { "type": "hello", "key": "<base64 P-256 public key>", "name": "Pixel 8" }
+host → peer   { "type": "hello_ack", "key": "<base64 P-256 public key>" }
+```
+
+Both sides then derive, by ECDH over P-256 and HKDF-SHA256:
+
+- a session key, used for AES-256-GCM;
+- **six decimal digits**, from the same derivation, which both devices display.
+
+The digits are the authentication. A bare key exchange is agreed just as happily
+with a device in the middle, which is why one is not enough on its own: the
+middle device holds two separate exchanges and cannot make the two screens
+match. Both users compare and approve. The joining device sends `join` only
+after its own user approves; the host honours it only after its own user does.
+
+Every message after `hello_ack` is:
+
+```json
+{ "type": "sealed", "data": "<base64 nonce ‖ AES-256-GCM ciphertext>" }
+```
+
+The plaintext inside is the JSON documented below, unchanged. A frame that does
+not authenticate is dropped without a reply. The room code is mixed into the
+key derivation, so two devices holding different codes never reach the same
+session.
+
 ### The room state
 
 The host holds one authoritative state object. A peer's update is **shallow
@@ -130,8 +163,11 @@ a newer peer talking to an older host degrades instead of failing.
 { "type": "join", "roomCode": "K7QW", "role": "pads", "name": "Alex's phone" }
 ```
 
-Sent immediately on connect, and required: `update_state` and `trigger_event`
-from a connection that has not joined are dropped. If the host has a room code
+Sent inside a `sealed` envelope, once this device's own user has approved the
+pairing code — not on connect, because a join sent before the digits are
+compared is a join to a host nobody has confirmed. Required: `update_state` and
+`trigger_event` from a connection that has not joined are dropped, as is a join
+from a device the host's user has not approved. If the host has a room code
 set and this one does not match, case-insensitively, the host replies with
 `{"type": "join_refused", "reason": "room code does not match"}` and closes.
 Refused rather than ignored — a peer that typed the code wrong should learn
@@ -239,10 +275,16 @@ the roster means something.
 
 Stated plainly, because a documented limit is worth more than a surprise:
 
-- **No authentication.** The room code keeps the wrong person out by accident,
-  not on purpose. Anyone on the network who can reach port 8890 and guess four
-  characters can drive the instrument.
-- **No encryption.** `ws://`, not `wss://`. A LAN session is in the clear.
+- **No identity, and no memory of one.** Keys are ephemeral per connection, so
+  nothing is remembered between sessions: pairing happens again every time, and
+  the app cannot tell you that this is the same phone as yesterday.
+- **No protection from a user who approves without looking.** The six digits are
+  only as good as the comparison, which is the standing limit of every scheme
+  shaped like this one.
+- **Transport is still `ws://`, not `wss://`.** Confidentiality is at the
+  application layer instead — see docs/SECURITY.md for why, and for what a
+  listener on the network can still see (two public keys, and the size and
+  timing of everything after).
 - **No audio.** Only control messages travel. Every device renders its own
   audio from its own library, which is why `load_track_direct` needs a shared
   library and a session link does not.
@@ -250,6 +292,9 @@ Stated plainly, because a documented limit is worth more than a surprise:
 
 These are the right trade-offs for a room of phones on one Wi-Fi network and the
 wrong ones for anything reachable from the internet. Do not port-forward 8890.
+
+The section above used to read "No authentication. No encryption." Both are now
+wrong, which is the better direction for a limits section to be wrong in.
 
 ---
 
