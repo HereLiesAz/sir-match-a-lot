@@ -50,6 +50,35 @@ class SyncServer(
     /** Called when the roster changes. */
     var onPeersChanged: ((Int) -> Unit)? = null
 
+    /**
+     * Called when a device has agreed a key and wants in.
+     *
+     * The host's user is expected to compare [PendingPeer.pairingCode] against
+     * the digits on the other device's screen and then call [approvePeer] or
+     * [refusePeer]. Nothing admits itself: a connection that is never approved
+     * reaches nothing, and one that is refused is told so and closed.
+     */
+    var onPairingRequested: ((PendingPeer) -> Unit)? = null
+
+    /**
+     * A device waiting at the door.
+     *
+     * @param pairingCode the six digits both users compare. Equal on the two
+     *   screens exactly when the two devices agreed a key with each other and
+     *   nothing sits between them.
+     */
+    data class PendingPeer(val id: String, val name: String, val pairingCode: String)
+
+    /** Admits the peer with [id], if it is still connected. */
+    fun approvePeer(id: String) {
+        clients.firstOrNull { it.id == id }?.approve()
+    }
+
+    /** Turns away the peer with [id], telling it why. */
+    fun refusePeer(id: String, reason: String = "the host did not approve this device") {
+        clients.firstOrNull { it.id == id }?.refuse(reason)
+    }
+
     private val running = AtomicBoolean(false)
     private val clients = CopyOnWriteArrayList<ClientConnection>()
 
@@ -67,12 +96,13 @@ class SyncServer(
     /**
      * Room code peers must present to join.
      *
-     * A label, not a credential — it travels in the clear and the room is
-     * discoverable, so anyone who can see the broadcast can read it. What it
-     * does buy is that a connection has to say something before it can do
-     * anything, which is the difference between a mistake and an open port.
-     * `docs/SECURITY.md` states the limit; this comment used to state a
-     * guarantee the code did not make at all.
+     * Still not a credential on its own — it travels in the clear on the
+     * discovery reply, so anyone on the network can read it. It is one of three
+     * things a peer needs, and the weakest: it names the room, the key exchange
+     * proves who agreed it, and the host's user pressing approve on six digits
+     * is what actually admits anybody. It is also mixed into the key
+     * derivation, so two devices holding different codes cannot reach the same
+     * session even if their exchange otherwise succeeds.
      */
     var roomCode: String = ""
         private set
@@ -249,12 +279,71 @@ class SyncServer(
          * consulted the room code — so a peer that simply never sent `join` was
          * never checked at all, and could load tracks, seek decks and drive the
          * filter pad on somebody else's instrument from anywhere on the Wi-Fi.
-         * The room code is still not a credential (see docs/SECURITY.md); it is
-         * a label, and this makes it at least the label it claims to be.
          */
         private var joined = false
 
+        /** This connection's own ephemeral keys, never reused. */
+        private val keys = RoomCrypto.newKeyPair()
+
+        /** Agreed once `hello` arrives. Null before that, and after a failure. */
+        @Volatile
+        private var session: RoomCrypto.Session? = null
+
+        /** Set when this device's own user approves the pairing. */
+        @Volatile
+        private var approvedByHost = false
+
+        /** What the roster calls this peer, and what the approval prompt shows. */
+        @Volatile
+        private var peerName: String = "A device"
+
+        val id: String = java.util.UUID.randomUUID().toString()
+
+        /** The six digits this connection's user is asked to compare, if any. */
+        val pairingCode: String? get() = session?.sas
+
+        /**
+         * The host's user approved this peer.
+         *
+         * Approval alone admits nothing: the peer still has to present a `join`
+         * sealed under the agreed key and carrying the right room code, which is
+         * what ties the approval to the device the digits were shown for.
+         */
+        fun approve() {
+            approvedByHost = true
+        }
+
+        fun refuse(reason: String) {
+            sendPlain(
+                JSONObject().apply {
+                    put("type", "join_refused")
+                    put("reason", reason)
+                }.toString(),
+            )
+            close()
+        }
+
+        /** Sealed under the session, which is the only way anything is sent. */
         fun send(text: String) {
+            val current = session ?: return
+            val sealed = current.seal(text.toByteArray(Charsets.UTF_8))
+            sendPlain(
+                JSONObject().apply {
+                    put("type", "sealed")
+                    put("data", WebSocketProtocol.base64(sealed))
+                }.toString(),
+            )
+        }
+
+        /**
+         * Unencrypted, for the handshake and for refusals.
+         *
+         * Exactly three messages travel this way — `hello_ack`, `join_refused`
+         * and nothing else — and none of them says anything a listener does not
+         * already know: the host's ephemeral public key, and that somebody was
+         * turned away.
+         */
+        private fun sendPlain(text: String) {
             runCatching { synchronized(output) { WebSocketProtocol.sendText(output, text) } }
                 .onFailure { close() }
         }
@@ -316,22 +405,74 @@ class SyncServer(
             }
         }
 
+        /**
+         * Everything arriving on this connection.
+         *
+         * Exactly one message is accepted in the clear — `hello`, which carries
+         * the peer's ephemeral public key. After that the only thing this reads
+         * is `sealed`, and what is inside a sealed frame is the protocol as it
+         * always was.
+         */
         private fun handle(text: String) {
             val message = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (message.optString("type")) {
+                "hello" -> beginPairing(message)
+                "sealed" -> {
+                    val current = session ?: return
+                    val bytes = runCatching {
+                        WebSocketProtocol.decodeBase64(message.optString("data"))
+                    }.getOrNull() ?: return
+                    val opened = current.open(bytes) ?: return
+                    handleSealed(opened.toString(Charsets.UTF_8))
+                }
+            }
+        }
+
+        /**
+         * Answers `hello`: agrees a key, and asks this device's user about it.
+         *
+         * The reply goes out before either user has approved anything, and has
+         * to: until the peer has this host's public key it cannot derive the
+         * code, and until it can derive the code there is nothing for its user
+         * to compare. What the reply does not do is admit anybody.
+         */
+        private fun beginPairing(message: JSONObject) {
+            if (session != null) return
+            val peerKeyBytes = runCatching {
+                WebSocketProtocol.decodeBase64(message.optString("key"))
+            }.getOrNull() ?: return
+            val peerKey = RoomCrypto.decodePublicKey(peerKeyBytes) ?: return
+            val agreed = RoomCrypto.agree(keys, peerKey, roomCode) ?: return
+
+            peerName = message.optString("name").ifBlank { "A device" }
+            session = agreed
+
+            sendPlain(
+                JSONObject().apply {
+                    put("type", "hello_ack")
+                    put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                }.toString(),
+            )
+            onPairingRequested?.invoke(PendingPeer(id, peerName, agreed.sas))
+        }
+
+        private fun handleSealed(text: String) {
+            val message = runCatching { JSONObject(text) }.getOrNull() ?: return
+            when (message.optString("type")) {
                 "join" -> {
-                    // A wrong code is refused rather than ignored, so a peer that
-                    // typed it wrong learns that rather than sitting in silence.
+                    // Three things have to hold, and each covers what the others
+                    // cannot: the frame opened, so it came from whoever agreed
+                    // this key; the code matches, so it is this room; and this
+                    // device's own user pressed approve on the digits, so it is
+                    // the device they meant.
                     if (roomCode.isNotEmpty() &&
                         !message.optString("roomCode").equals(roomCode, ignoreCase = true)
                     ) {
-                        send(
-                            JSONObject().apply {
-                                put("type", "join_refused")
-                                put("reason", "room code does not match")
-                            }.toString(),
-                        )
-                        close()
+                        refuse("room code does not match")
+                        return
+                    }
+                    if (!approvedByHost) {
+                        refuse("the host has not approved this device")
                         return
                     }
                     joined = true

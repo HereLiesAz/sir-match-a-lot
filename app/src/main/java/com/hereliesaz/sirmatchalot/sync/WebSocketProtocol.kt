@@ -217,6 +217,37 @@ object WebSocketProtocol {
         return out.toString()
     }
 
+    /**
+     * The inverse of [base64], for the keys and sealed frames the pairing
+     * handshake carries.
+     *
+     * Hand-written for the same reasons: `java.util.Base64` needs API 26 and
+     * this app supports 24, and `android.util.Base64` is a stub under unit
+     * test — which for a decoder is worse than for an encoder, since it would
+     * make every "this frame did not open" assertion pass for the wrong reason.
+     *
+     * @return null on anything that is not valid base64, because every caller
+     *   is reading bytes from the network and has the same answer to all of it.
+     */
+    internal fun decodeBase64(text: String): ByteArray? {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        val trimmed = text.trimEnd('=')
+        val out = java.io.ByteArrayOutputStream(trimmed.length * 3 / 4 + 3)
+        var buffer = 0
+        var bits = 0
+        for (character in trimmed) {
+            val value = alphabet.indexOf(character)
+            if (value < 0) return null
+            buffer = (buffer shl 6) or value
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out.write((buffer shr bits) and 0xFF)
+            }
+        }
+        return out.toByteArray()
+    }
+
     /** Room messages are small JSON; anything larger is a mistake or an attack. */
     const val MAX_PAYLOAD = 1 shl 20
 }

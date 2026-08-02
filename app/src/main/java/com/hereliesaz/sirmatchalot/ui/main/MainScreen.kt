@@ -347,6 +347,40 @@ fun MainScreen(
         }
     }
 
+    // --- Pairing, on both sides of it ---
+    //
+    // The same six digits appear here and on the other device. Two people
+    // comparing them is the only channel in this app that an attacker on the
+    // network is not on, which is what makes it the one that can authenticate
+    // the key exchange: a device in the middle holds two different exchanges
+    // and cannot make both screens agree.
+
+    val pendingHostPairing by viewModel.pendingHostPairing.collectAsState()
+    pendingHostPairing?.let { code ->
+        PairingDialog(
+            title = "Is this the room?",
+            body = "Check this code against the one on the hosting device. " +
+                "If they do not match, something is between you.",
+            code = code,
+            confirmLabel = "They match — join",
+            onConfirm = { viewModel.approveHostPairing() },
+            onDismiss = { viewModel.refuseHostPairing() },
+        )
+    }
+
+    val pendingPeers by viewModel.pendingPeers.collectAsState()
+    pendingPeers.firstOrNull()?.let { peer ->
+        PairingDialog(
+            title = "Let ${peer.name} in?",
+            body = "Check this code against the one on ${peer.name}. " +
+                "If they do not match, that device is not the one you are looking at.",
+            code = peer.pairingCode,
+            confirmLabel = "They match — approve",
+            onConfirm = { viewModel.approvePeer(peer.id) },
+            onDismiss = { viewModel.refusePeer(peer.id) },
+        )
+    }
+
     if (showWork) {
         AlertDialog(
             onDismissRequest = { showWork = false },
@@ -675,6 +709,61 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
             ) = viewModel.scaleClip(clipId, deck, ratio.toDouble())
         }
     }
+
+/**
+ * Shows a pairing code and asks one user to confirm it.
+ *
+ * Deliberately not dismissable by tapping outside: this is the one decision in
+ * the app where "I did not read it" and "I approve" must not be the same
+ * gesture. Both buttons are explicit, and the dismissal path refuses rather
+ * than deferring — a pairing left hanging is a device sitting in a room nobody
+ * decided to admit.
+ */
+@Composable
+private fun PairingDialog(
+    title: String,
+    body: String,
+    code: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF18181B),
+        title = { Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(body, color = Color(0xFF9CA3AF), fontSize = 12.sp)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    // Spaced, because six digits read as three pairs are
+                    // compared across a booth far faster than six run together.
+                    text = code.chunked(2).joinToString(" "),
+                    color = Color(0xFF22D3EE),
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 4.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
+            ) {
+                Text(confirmLabel, color = Color.White, fontWeight = FontWeight.Black)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("They do not match", color = Color(0xFFF87171), fontWeight = FontWeight.Bold)
+            }
+        },
+    )
+}
 
 /**
  * The one place the app says it is busy, in the bar every tab shares.

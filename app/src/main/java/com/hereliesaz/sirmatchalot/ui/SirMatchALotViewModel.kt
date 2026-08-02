@@ -57,6 +57,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -2880,6 +2881,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val code = _roomCode.value.takeIf { it.isNotBlank() } ?: SyncServer.generateRoomCode()
 
         syncServer.onPeersChanged = { _peerCount.value = it }
+        syncServer.onPairingRequested = { peer ->
+            _pendingPeers.update { waiting -> waiting.filterNot { it.id == peer.id } + peer }
+        }
         syncServer.onEvent = { event, payload ->
             when (event) {
                 "play_sampler_pad" -> onSamplerTriggerEvent(payload.optInt("padId"))
@@ -2923,6 +2927,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         syncServer.stop()
         _isHosting.value = false
         _peerCount.value = 0
+        _pendingPeers.value = emptyList()
         _hostUrl.value = null
         _feedbackMsg.value = "Stopped hosting"
     }
@@ -2996,7 +3001,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     fun connectToRoom(wsUrl: String, code: String) {
         _roomCode.value = code
-        syncClient.connect(wsUrl)
+        // The code goes into the key derivation as well as the join, so a device
+        // that typed it wrong cannot reach the host's session at all.
+        syncClient.connect(wsUrl, code, DEVICE_NAME)
     }
 
     /**
@@ -3495,8 +3502,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     override fun onConnected() {
         _isWsConnected.value = true
-        _feedbackMsg.value = "Linked to Sync Server!"
-        syncClient.joinRoom(_roomCode.value, _role.value.wireName, "Android Device")
+        // Connected is not joined. The key exchange runs next, then both users
+        // compare six digits, and the join goes out from `approveHostPairing`.
+        // Joining here — as this used to — would mean joining a host nobody had
+        // confirmed, which is exactly what the digits exist to prevent.
+        _feedbackMsg.value = "Linked — waiting for the pairing code"
     }
 
     override fun onDisconnected() {
@@ -3506,7 +3516,71 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     override fun onJoinRefused(reason: String) {
         _isWsConnected.value = false
+        _pendingHostPairing.value = null
         _feedbackMsg.value = "Room refused this device — $reason"
+    }
+
+    /**
+     * The host this device is being asked to confirm, or null.
+     *
+     * Both devices show the same six digits and both users must approve. The
+     * host's approval says "this is the device I meant to let in"; this one says
+     * "this is the room I meant to join". Only both together rule out somebody
+     * sitting in the middle running one exchange with each side — which a key
+     * exchange on its own does nothing whatsoever about.
+     */
+    /**
+     * What this device calls itself on another device's approval prompt.
+     *
+     * The model, so "Pixel 8 wants to join" is a sentence somebody can act on —
+     * "Android Device", which is what every device used to send, is not.
+     */
+    private val DEVICE_NAME: String =
+        listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank { "A device" }
+
+    private val _pendingHostPairing = MutableStateFlow<String?>(null)
+    val pendingHostPairing: StateFlow<String?> = _pendingHostPairing
+
+    override fun onPairingCode(pairingCode: String) {
+        _pendingHostPairing.value = pairingCode
+    }
+
+    /** This device's user confirms the digits match the host's screen. */
+    fun approveHostPairing() {
+        _pendingHostPairing.value = null
+        syncClient.approvePairing(_roomCode.value, _role.value.wireName, DEVICE_NAME)
+    }
+
+    /** This device's user says the digits do not match. */
+    fun refuseHostPairing() {
+        _pendingHostPairing.value = null
+        syncClient.refusePairing()
+        _isWsConnected.value = false
+        _feedbackMsg.value = "Pairing rejected — the codes did not match"
+    }
+
+    /**
+     * Devices waiting for this host's approval.
+     *
+     * Emptied when hosting stops, because a prompt for a room that no longer
+     * exists is a dialog with nothing behind its buttons.
+     */
+    private val _pendingPeers = MutableStateFlow<List<SyncServer.PendingPeer>>(emptyList())
+    val pendingPeers: StateFlow<List<SyncServer.PendingPeer>> = _pendingPeers
+
+    /** The host's user confirms a joining device's digits. */
+    fun approvePeer(id: String) {
+        syncServer.approvePeer(id)
+        _pendingPeers.update { peers -> peers.filterNot { it.id == id } }
+    }
+
+    /** The host's user turns a device away. */
+    fun refusePeer(id: String) {
+        syncServer.refusePeer(id)
+        _pendingPeers.update { peers -> peers.filterNot { it.id == id } }
     }
 
     /**
