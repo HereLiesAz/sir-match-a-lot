@@ -344,6 +344,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     // leaves behind — would otherwise hold the frame clock open
                     // for an image that never changes.
                     isPlaying = engine.deckA.isSounding || engine.deckB.isSounding,
+                    reverseProgress = engine.scratchReverseProgress(),
                     bands = com.hereliesaz.sirmatchalot.ui.platter.SpectrumBands(
                         low = engine.spectrum.low,
                         mid = engine.spectrum.mid,

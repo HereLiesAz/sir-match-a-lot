@@ -19,9 +19,13 @@ import kotlin.math.sqrt
  * by a fixed filter bank, and the spline is cheap and stays continuous.
  *
  * It is the wrong tool for sample-rate conversion, and until this class existed
- * it was doing that job too. `Deck.rateScale` divides the clip's rate by the
- * output rate, so a 44.1 kHz track on a 48 kHz device played at rate 0.919
- * *permanently* — every track, every moment, not just while scratching. A
+ * it was doing that job too: the deck divided the clip's rate by the output
+ * rate, so a 44.1 kHz track on a 48 kHz device played at rate 0.919
+ * *permanently* — every track, every moment, not just while scratching. (That
+ * correction is now per clip, in `Deck.localPosition`, rather than one ratio
+ * taken from the first clip and applied to the playhead; either way it is a
+ * fallback, and the conversion at load time is what keeps the render loop at
+ * rate 1.0.) A
  * 4-point spline has no stopband: its images fold back as aliases, and its
  * passband droops well before Nyquist. That was the largest of the four gaps in
  * `docs/AUDIT.md`'s quality section.

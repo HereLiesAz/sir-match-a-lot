@@ -70,11 +70,23 @@ class Deck(
             val snapshot = clips
             var longest = 0
             for (index in 0 until snapshot.size) {
-                val end = snapshot[index].endFrame
+                val clip = snapshot[index]
+                val end = clip.startFrame + timelineFrames(clip)
                 if (end > longest) longest = end
             }
             return longest
         }
+
+    /**
+     * How many frames of *this deck's* timeline [clip] occupies.
+     *
+     * The timeline is measured in output frames, so a clip decoded at another
+     * rate covers a different number of them than it has samples: 4,800 frames
+     * of 48 kHz audio is 4,410 frames of a 44.1 kHz timeline, and is a tenth of
+     * a second either way.
+     */
+    private fun timelineFrames(clip: Clip): Int =
+        (clip.frameCount * outputSampleRate.toDouble() / clip.buffer.sampleRate).toInt()
 
     /**
      * True when this deck can produce sound: running, with material on it.
@@ -131,8 +143,7 @@ class Deck(
      * `List` compiles to `List.iterator()`: one iterator object per output frame
      * per deck, which at 512-frame blocks and two decks is on the order of
      * 88,000 objects a second, on the thread whose own contract is that it must
-     * not allocate. Indexed loops here and in [cycleFrames], and `rateScale`
-     * hoisted out of the loop it did not vary within.
+     * not allocate. Indexed loops here and in [cycleFrames].
      */
     fun render(out: FloatArray, frames: Int) {
         require(out.size >= frames * CHANNELS) { "output buffer too small" }
@@ -147,7 +158,9 @@ class Deck(
 
         val snapshot = clips
         var position = playhead
-        val step = rate * rateScale(snapshot)
+        // The playhead moves in output frames. Nothing about the material scales
+        // it any more — `localPosition` converts per clip.
+        val step = rate
         val clipCount = snapshot.size
 
         for (frame in 0 until frames) {
@@ -203,28 +216,27 @@ class Deck(
      */
     private fun localPosition(clip: Clip, position: Double, cycle: Int): Double {
         if (clip.frameCount <= 0) return SILENT_HERE
+        // Source frames per timeline frame, for this clip alone. The correction
+        // used to be taken once from `clips.first()` and applied to the playhead
+        // itself, which put the whole timeline in one clip's frame domain: a
+        // 44.1 kHz clip sharing a deck with a 48 kHz one played 8.8% fast — a
+        // semitone and a half sharp, drifting off the beat grid — while the KDoc
+        // on `rateScale` claimed this was exactly the case it handled.
+        val scale = clip.buffer.sampleRate.toDouble() / outputSampleRate
+        val span = timelineFrames(clip)
+        if (span <= 0) return SILENT_HERE
         if (clip.loop) {
             // A looping clip sounds everywhere on the timeline.
-            var offset = (position - clip.startFrame) % clip.frameCount
-            if (offset < 0) offset += clip.frameCount
-            return offset
+            var offset = (position - clip.startFrame) % span
+            if (offset < 0) offset += span
+            return offset * scale
         }
-        if (position < clip.startFrame || position >= clip.endFrame) return SILENT_HERE
-        return position - clip.startFrame
+        if (position < clip.startFrame || position >= clip.startFrame + span) return SILENT_HERE
+        return (position - clip.startFrame) * scale
     }
 
-    /**
-     * Converts the deck's rate into frames of source per frame of output. Clips
-     * decoded at a different sample rate than the output are corrected here, so
-     * a 48 kHz sample and a 44.1 kHz sample play at the same musical speed.
-     */
     /** Returned by [localPosition] when the clip is not sounding at that point. */
     private val SILENT_HERE = Double.NaN
-
-    private fun rateScale(snapshot: List<Clip>): Double {
-        val sourceRate = snapshot.firstOrNull()?.buffer?.sampleRate ?: outputSampleRate
-        return sourceRate.toDouble() / outputSampleRate
-    }
 
     private fun applyEq(out: FloatArray, frames: Int) {
         val bass = bassBoostDb

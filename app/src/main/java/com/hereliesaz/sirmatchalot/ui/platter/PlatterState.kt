@@ -268,6 +268,19 @@ data class PlatterState(
     val playheadFraction: Float = 0f,
     val outputLevel: Float = 0f,
     val isPlaying: Boolean = false,
+
+    /**
+     * How far a reverse scratch has travelled toward its threshold, 0..1.
+     *
+     * `ScratchModel` has accumulated this since it was written and exposed it
+     * through `AudioEngine.scratchReverseProgress`, which had no caller anywhere
+     * outside its own test: the accumulator's only live output was the boolean
+     * that fires the easter egg, so dragging the record backwards told you
+     * nothing until the instant it told you everything. Drawn as a trail behind
+     * the playhead, it is the one thing a performer holding a record back
+     * actually wants to know — how much further.
+     */
+    val reverseProgress: Float = 0f,
     val markers: List<PlatterMarker> = emptyList(),
     /**
      * Band levels off the master bus, for the background light show. Measured

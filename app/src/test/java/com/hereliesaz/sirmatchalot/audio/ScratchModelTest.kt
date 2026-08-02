@@ -180,4 +180,35 @@ class ScratchModelTest {
         assertTrue(runUntilFired())
         assertTrue("a second gesture should be able to fire it again", runUntilFired())
     }
+
+    @Test
+    fun `reverse progress is reported all the way, not only at the threshold`() {
+        // The accumulator existed and `reverseProgress` was tested, but
+        // `AudioEngine.scratchReverseProgress` — its only route out of the audio
+        // package — had no caller anywhere in the app. Holding a record
+        // backwards reported nothing until the instant the easter egg fired.
+        // It now reaches `PlatterState.reverseProgress` and is drawn as a trail,
+        // so this asserts the shape that display depends on: monotonic, bounded,
+        // and back to nothing when the gesture ends.
+        val threshold = 44_100.0 * 6
+        val model = ScratchModel(easterEggReverseFrames = threshold)
+        model.begin(1.0)
+        // Dragging away from the resting rate far enough to pass through zero:
+        // `rate = restingRate - shaped`, so a positive displacement reverses.
+        model.update(2_000f)
+        assertTrue("a reverse gesture must give a negative rate", model.rate < 0.0)
+
+        var previous = 0f
+        repeat(20) {
+            model.accountForRenderedFrames(4_410)
+            val progress = model.reverseProgress()
+            assertTrue("progress went backwards: $previous -> $progress", progress >= previous)
+            assertTrue("progress left 0..1: $progress", progress in 0f..1f)
+            previous = progress
+        }
+        assertTrue("nothing accumulated at all", previous > 0f)
+
+        model.end()
+        assertEquals(0f, model.reverseProgress(), 0f)
+    }
 }

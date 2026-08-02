@@ -356,6 +356,53 @@ private fun DrawScope.drawDeck(
 }
 
 /**
+ * Draws how far a reverse scratch has travelled, as a trail behind the playhead.
+ *
+ * `ScratchModel` has accumulated this since it was written, and
+ * `AudioEngine.scratchReverseProgress` exposed it to nothing: the accumulator's
+ * only live output was the boolean that fires at the threshold, so holding a
+ * record backwards told the performer nothing at all until the instant it told
+ * them everything.
+ *
+ * It is drawn *behind* the playhead in the literal sense — the arc runs
+ * clockwise back from the playhead's angle, the direction the audio has come
+ * from — and it brightens as it fills, so "nearly there" looks like nearly
+ * there. Nothing is drawn at zero, which is almost always.
+ */
+private fun DrawScope.drawReverseTrail(
+    state: PlatterState,
+    cx: Float,
+    cy: Float,
+    baseRadius: Float,
+    rotation: Float,
+    colour: Color,
+) {
+    val progress = state.reverseProgress.coerceIn(0f, 1f)
+    if (progress <= 0.01f) return
+
+    // A third of the circle at full, which is far enough to read as a distance
+    // travelled and short enough not to be mistaken for a clip.
+    val span = progress * 0.33f
+    val steps = (span * 96).toInt().coerceAtLeast(2)
+    val radius = baseRadius
+
+    for (step in 0 until steps) {
+        val along = step / (steps - 1f)
+        val fraction = state.playheadFraction - span * along
+        val angle = PlatterGeometry.screenAngleForFraction(fraction) + rotation
+        // Brightest at the playhead, fading away behind it, and the whole trail
+        // brighter the closer the threshold gets.
+        val alpha = (1f - along) * (0.25f + 0.55f * progress)
+        drawCircle(
+            color = colour.copy(alpha = alpha.coerceIn(0f, 1f)),
+            radius = 2f + 2f * progress,
+            center = Offset(cx + cos(angle) * radius, cy + sin(angle) * radius),
+            blendMode = BlendMode.Plus,
+        )
+    }
+}
+
+/**
  * Draws the playhead: a glowing red slash centred on the ring whose total length
  * is twice the combined waveform height at its angle, so it bounces over the
  * hills and valleys. Collapses to a dot when there is no waveform.
@@ -372,6 +419,8 @@ private fun DrawScope.drawPlayhead(
 ) {
     val fraction = state.playheadFraction
     val red = Color(0xFFFF1744)
+
+    drawReverseTrail(state, cx, cy, baseRadius, rotation, red)
 
     fun heightAt(deck: PlatterGeometry.Deck): Float {
         val clip = state.clipAt(deck, fraction) ?: return 0f
