@@ -16,6 +16,9 @@ class SyncClient(private val listener: SyncListener) {
         fun onServerDiscovered(serverIp: String, wsUrl: String)
         fun onConnected()
         fun onDisconnected()
+
+        /** The room turned this device away — a wrong code, or no code at all. */
+        fun onJoinRefused(reason: String)
         fun onRoomStateReceived(json: JSONObject)
         fun onKaossMoveEvent(x: Float, y: Float, padId: Int)
         fun onSamplerTriggerEvent(padId: Int)
@@ -106,6 +109,17 @@ class SyncClient(private val listener: SyncListener) {
                     val type = data.optString("type")
 
                     when (type) {
+                        // The server has always sent this on a wrong room code,
+                        // and nothing read it — so "a peer that typed it wrong
+                        // learns that rather than sitting in silence", as the
+                        // server puts it, was true of the wire and false of the
+                        // app. A refused join looked exactly like a working one
+                        // until nothing responded.
+                        "join_refused" -> {
+                            listener.onJoinRefused(
+                                data.optString("reason").ifBlank { "the room refused the join" },
+                            )
+                        }
                         "init_state" -> {
                             val roomState = data.getJSONObject("roomState")
                             listener.onRoomStateReceived(roomState)

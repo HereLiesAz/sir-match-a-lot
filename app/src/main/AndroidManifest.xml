@@ -51,8 +51,29 @@
         DecodedCache, which is sized from the runtime's heap ceiling, so raising
         the ceiling raises the budget rather than deferring a leak.
     -->
+    <!--
+        Cleartext is permitted because the feature that needs it is the point of
+        the app's networking, not an oversight in it.
+
+        `targetSdk` is 37 and the platform default for targetSdk >= 28 is to
+        refuse cleartext outright, with no attribute here to say otherwise. So
+        `SyncClient` handing OkHttp a `ws://192.168.x.y:8890` URL threw
+        `UnknownServiceException: CLEARTEXT communication ... not permitted`, and
+        the user saw "Sync Disconnected" with no reason given. Hosting was
+        unaffected — that is a raw `ServerSocket` the platform does not police —
+        so the half that appeared to work was the half nobody could join. The
+        same default blocked every `http://` playlist link.
+
+        A network security config cannot express what would be preferable here
+        ("cleartext to private ranges only"): it matches domains, and a room is
+        found at whatever address the host happens to have. So this is the blunt
+        instrument, and the limit is stated in docs/SECURITY.md rather than
+        implied: traffic on the room socket is unencrypted and anyone on the
+        network can read it.
+    -->
     <application
         android:name=".SirMatchALotApplication"
+        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"

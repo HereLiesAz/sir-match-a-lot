@@ -3368,9 +3368,39 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             connection.connectTimeout = 15_000
             connection.readTimeout = 15_000
             connection.setRequestProperty("User-Agent", "SirMatchALot")
-            connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            // Bounded. This was `readBytes()` on whatever the far end sent: a
+            // pasted link to a large file, or a server that streams without
+            // ending, allocated the whole body plus a String of roughly twice
+            // that — on a device given `largeHeap` precisely because two decks
+            // of PCM already fill it. The timeouts are per-read, not total, so a
+            // slow drip held the import open indefinitely as well; the cap is
+            // what actually ends it.
+            //
+            // A playlist that does not fit in a megabyte is not a playlist this
+            // app can use, so the cap is a refusal rather than a truncation:
+            // half an XML document parses to nothing useful and would report
+            // "nothing recognisable" instead of "too big".
+            connection.inputStream.use { stream ->
+                val buffer = ByteArray(8 * 1024)
+                val collected = java.io.ByteArrayOutputStream()
+                while (true) {
+                    val read = stream.read(buffer)
+                    if (read < 0) break
+                    if (collected.size() + read > MAXIMUM_PLAYLIST_BYTES) return@runCatching null
+                    collected.write(buffer, 0, read)
+                }
+                collected.toString(Charsets.UTF_8.name())
+            }
         }.getOrNull()
     }
+
+    /**
+     * How much of a link the app will read before giving up on it.
+     *
+     * A megabyte is a very large playlist — tens of thousands of entries — and a
+     * very small fraction of the heap two loaded decks want.
+     */
+    private val MAXIMUM_PLAYLIST_BYTES = 1024 * 1024
 
     /** Re-measures every track whose stored analysis predates the current analyser. */
     /**
@@ -3471,6 +3501,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     override fun onDisconnected() {
         _isWsConnected.value = false
         _feedbackMsg.value = "Sync Disconnected"
+    }
+
+    override fun onJoinRefused(reason: String) {
+        _isWsConnected.value = false
+        _feedbackMsg.value = "Room refused this device — $reason"
     }
 
     /**
