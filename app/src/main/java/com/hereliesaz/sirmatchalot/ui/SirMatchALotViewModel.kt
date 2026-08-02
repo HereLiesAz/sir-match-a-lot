@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ln
@@ -461,6 +462,24 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      *   enters and applies the alignment its plan already computed, so a load
      *   that started playback or aligned on its own would fight it.
      */
+    /**
+     * Held while a deck's clip list is changed.
+     *
+     * `engineDeck.clips = evictForCapacity(...) + Clip(...)` is a read of the
+     * list, a decision taken from it, and a write back — and `loadOntoDeck`
+     * launches one coroutine per call on the IO pool, which is many threads.
+     * `restoreSession` calls it once per saved clip in a loop, so a restored
+     * session raced against itself by construction: two loads finishing near
+     * each other both read the same list, both wrote it, and one clip vanished
+     * — after which `restore.summary()` cheerfully reported every track as
+     * resolved. `placePadsOnDeck` writes the same field from the default pool
+     * and joins the same race.
+     *
+     * A mutex rather than atomics because the section is a read, several
+     * decisions and a write across two StateFlows, not a single compare-and-set.
+     */
+    private val deckMutation = kotlinx.coroutines.sync.Mutex()
+
     fun loadOntoDeck(
         track: Track,
         deck: PlatterGeometry.Deck,
@@ -614,6 +633,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     val playable = conformToReference(track, pcm)
 
                     val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
+
+                    // One loader at a time from here down: everything below reads
+                    // the deck's clip list, decides from it, and writes it back.
+                    deckMutation.withLock {
+                    // Re-checked under the lock. The guard before the coroutine
+                    // reads a list that is not written until the end of this
+                    // block, so two taps inside the decode window both passed it
+                    // and put the same track on the deck twice.
+                    if (onDeck.value.any { it.id == track.id }) return@withLock
                     val existing = engineDeck.clips
                     // A drop names a point on the circle, and angle is time — so the
                     // fraction dropped at *is* the frame the clip starts on. With an
@@ -664,6 +692,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     republishPlatter()
                     if (!startSilent) reportConformed(track)
                     syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
+                    }
                 }
             } catch (e: OutOfMemoryError) {
                 // Caught deliberately, and only here. Everything large is
@@ -863,8 +892,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             peaksCache.remove(id)
             energyCache.remove(id)
         }
+        val remaining = engineDeck.clips.filterNot { it.id in evictions }
+        // Applied before the trim, not after it. `pinnedTrackIds()` reads the
+        // deck's clip list, and the caller does not assign the new one until
+        // this returns — so trimming here found the evicted clips still on the
+        // deck, treated their audio as pinned, and kept every byte of it. The
+        // memory came back on the next unrelated trim, which is to say at no
+        // predictable moment.
+        engineDeck.clips = remaining
         decoded.trim(pinnedTrackIds())
-        return engineDeck.clips.filterNot { it.id in evictions }
+        return remaining
     }
 
     /** The clip the playhead is currently inside, which must never be evicted. */
@@ -1450,7 +1487,14 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
             if (added.isEmpty()) return@track
 
-            engineDeck.clips = engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) } + added
+            // Under the same lock a load takes: this reads the clip list and
+            // writes it back, and a load finishing in between would either lose
+            // the pads or be lost by them, with "Placed N loops" already on
+            // screen either way.
+            deckMutation.withLock {
+                engineDeck.clips =
+                    engineDeck.clips.filterNot { it.id.startsWith(PAD_CLIP_PREFIX) } + added
+            }
             republishPlatter()
             _feedbackMsg.value = "Placed ${added.size} loops on Deck ${deckLabel(deck)}"
           }
