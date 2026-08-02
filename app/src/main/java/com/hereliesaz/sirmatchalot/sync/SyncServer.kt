@@ -64,7 +64,16 @@ class SyncServer(
      */
     private val roomState = JSONObject()
 
-    /** Room code peers must present to join. */
+    /**
+     * Room code peers must present to join.
+     *
+     * A label, not a credential — it travels in the clear and the room is
+     * discoverable, so anyone who can see the broadcast can read it. What it
+     * does buy is that a connection has to say something before it can do
+     * anything, which is the difference between a mistake and an open port.
+     * `docs/SECURITY.md` states the limit; this comment used to state a
+     * guarantee the code did not make at all.
+     */
     var roomCode: String = ""
         private set
 
@@ -233,6 +242,18 @@ class SyncServer(
         private val output = socket.getOutputStream()
         private val input = socket.getInputStream().buffered()
 
+        /**
+         * Whether this peer has completed a `join`.
+         *
+         * Nothing recorded this before, and nothing outside the `join` branch
+         * consulted the room code — so a peer that simply never sent `join` was
+         * never checked at all, and could load tracks, seek decks and drive the
+         * filter pad on somebody else's instrument from anywhere on the Wi-Fi.
+         * The room code is still not a credential (see docs/SECURITY.md); it is
+         * a label, and this makes it at least the label it claims to be.
+         */
+        private var joined = false
+
         fun send(text: String) {
             runCatching { synchronized(output) { WebSocketProtocol.sendText(output, text) } }
                 .onFailure { close() }
@@ -241,14 +262,10 @@ class SyncServer(
         fun run() {
             try {
                 if (!handshake()) return
-                // A joiner needs the room as it stands, not only what changes
-                // after it arrives.
-                send(
-                    JSONObject().apply {
-                        put("type", "init_state")
-                        put("roomState", roomState)
-                    }.toString(),
-                )
+                // The room state used to go out here, before any `join` could
+                // have been sent — so refusing a join was a courtesy message
+                // attached to a connection that had already been handed
+                // everything. It now waits for the join.
                 readLoop()
             } catch (e: Exception) {
                 // A peer disconnecting is ordinary.
@@ -315,13 +332,25 @@ class SyncServer(
                             }.toString(),
                         )
                         close()
+                        return
                     }
+                    joined = true
+                    // A joiner needs the room as it stands, not only what
+                    // changes after it arrives.
+                    send(
+                        JSONObject().apply {
+                            put("type", "init_state")
+                            put("roomState", roomState)
+                        }.toString(),
+                    )
                 }
                 "update_state" -> {
+                    if (!joined) return
                     val state = message.optJSONObject("state") ?: return
                     updateState(state)
                 }
                 "trigger_event" -> {
+                    if (!joined) return
                     val event = message.optString("event")
                     val payload = message.optJSONObject("payload") ?: JSONObject()
                     onEvent?.invoke(event, payload)

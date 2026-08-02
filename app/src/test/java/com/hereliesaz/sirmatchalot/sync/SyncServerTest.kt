@@ -145,12 +145,26 @@ class SyncServerTest {
 
     private fun connect(server: SyncServer): Peer = Peer(server.port).also { peers.add(it) }
 
+    /**
+     * Connects and joins, which is what a real client does on open.
+     *
+     * These tests used to drive the server without ever sending `join`, and
+     * passed — which was the bug, stated as a fixture: nothing recorded whether
+     * a connection had joined, and nothing outside the `join` branch consulted
+     * the room code, so any socket on the network could command the room.
+     */
+    private fun join(server: SyncServer, code: String = "TEST"): Peer {
+        val peer = connect(server)
+        peer.send(JSONObject().put("type", "join").put("roomCode", code))
+        return peer
+    }
+
     @Test
     fun `a joining peer is sent the room as it stands`() {
         val server = startServer()
         server.updateState(JSONObject().put("crossfader", 40))
 
-        val peer = connect(server)
+        val peer = join(server)
         val init = peer.nextOfType("init_state")
 
         assertNotNull("a joiner must be told the current room state", init)
@@ -161,7 +175,7 @@ class SyncServerTest {
     fun `an update is merged rather than replacing the room`() {
         val server = startServer()
         server.updateState(JSONObject().put("crossfader", 40))
-        val peer = connect(server)
+        val peer = join(server)
         peer.nextOfType("init_state")
 
         // A device sending only isPlaying must not erase the crossfader.
@@ -182,8 +196,8 @@ class SyncServerTest {
     @Test
     fun `an update reaches every device including the one that sent it`() {
         val server = startServer()
-        val sender = connect(server)
-        val other = connect(server)
+        val sender = join(server)
+        val other = join(server)
         sender.nextOfType("init_state")
         other.nextOfType("init_state")
 
@@ -206,8 +220,8 @@ class SyncServerTest {
         val acted = ArrayBlockingQueue<Pair<String, JSONObject>>(4)
         server.onEvent = { event, payload -> acted.offer(event to payload) }
 
-        val sender = connect(server)
-        val other = connect(server)
+        val sender = join(server)
+        val other = join(server)
         sender.nextOfType("init_state")
         other.nextOfType("init_state")
 
@@ -231,26 +245,68 @@ class SyncServerTest {
     }
 
     @Test
+    fun `a peer that never joined commands nothing`() {
+        // The hole this closes: `handle` dispatched update_state and
+        // trigger_event unconditionally, and the room state went out on
+        // handshake, so a socket that simply never sent `join` was never
+        // checked against the room code at all. Anything on the Wi-Fi could
+        // load tracks and drive the filter on somebody else's instrument.
+        val server = startServer(code = "ABCD")
+        val acted = ArrayBlockingQueue<Pair<String, JSONObject>>(4)
+        server.onEvent = { event, payload -> acted.offer(event to payload) }
+
+        val stranger = connect(server)
+        assertNull("nothing is handed out before a join", stranger.nextOfType("init_state", 500))
+
+        stranger.send(
+            JSONObject()
+                .put("type", "trigger_event")
+                .put("event", "play_sampler_pad")
+                .put("payload", JSONObject().put("padId", 3)),
+        )
+        stranger.send(
+            JSONObject()
+                .put("type", "update_state")
+                .put("state", JSONObject().put("crossfader", -70)),
+        )
+
+        assertNull("an unjoined peer must not reach the engine", acted.poll(1, TimeUnit.SECONDS))
+        assertNull("nor change the room", stranger.nextOfType("state_synced", 500))
+    }
+
+    @Test
     fun `a wrong room code is refused rather than ignored`() {
         val server = startServer(code = "ABCD")
         val peer = connect(server)
-        peer.nextOfType("init_state")
 
         peer.send(JSONObject().put("type", "join").put("roomCode", "WXYZ"))
 
         val refusal = peer.nextOfType("join_refused")
         assertNotNull("a peer that typed the code wrong must be told", refusal)
+        assertNull(
+            "and must not be handed the room it was refused from",
+            peer.nextOfType("init_state", 500),
+        )
     }
 
     @Test
     fun `a correct room code is accepted, whatever its case`() {
         val server = startServer(code = "ABCD")
         val peer = connect(server)
-        peer.nextOfType("init_state")
 
         peer.send(JSONObject().put("type", "join").put("roomCode", "abcd"))
 
-        assertNull("a matching code must not be refused", peer.nextOfType("join_refused", 500))
+        // Asserting only the absence of a refusal would also pass against a
+        // server that ignores `join` entirely — which is what this one used to
+        // do. The reply itself is the evidence: a join is answered with the
+        // room, a refusal with `join_refused`, and never both.
+        val reply = peer.next()
+        assertNotNull("a joined peer must be answered", reply)
+        assertEquals(
+            "a matching code must not be refused",
+            "init_state",
+            reply!!.optString("type"),
+        )
     }
 
     @Test
@@ -259,7 +315,7 @@ class SyncServerTest {
         val counts = ArrayBlockingQueue<Int>(8)
         server.onPeersChanged = { counts.offer(it) }
 
-        val peer = connect(server)
+        val peer = join(server)
         peer.nextOfType("init_state")
         assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
 
