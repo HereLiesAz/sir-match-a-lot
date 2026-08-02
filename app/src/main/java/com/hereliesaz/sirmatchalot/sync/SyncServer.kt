@@ -40,6 +40,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SyncServer(
     val port: Int = DEFAULT_PORT,
     private val discoveryPort: Int = DISCOVERY_PORT,
+    /**
+     * This host's long-term identity, or null to pair afresh every time.
+     *
+     * Null is the honest default for a constructor used by tests: without an
+     * identity nothing is signed, nothing can be recognised, and every
+     * connection is a stranger — which is exactly the behaviour that existed
+     * before this parameter did.
+     */
+    private val identity: DeviceIdentity? = null,
+    /** Devices this host has paired with before, or null to remember none. */
+    private val known: KnownDevices? = null,
 ) {
     /** Called when the room's state changes, so the host's own UI can follow. */
     var onStateChanged: ((JSONObject) -> Unit)? = null
@@ -59,6 +70,24 @@ class SyncServer(
      * reaches nothing, and one that is refused is told so and closed.
      */
     var onPairingRequested: ((PendingPeer) -> Unit)? = null
+
+    /**
+     * Called when a device that has paired before rejoins, having proved it.
+     *
+     * For telling the user it happened, not for asking them: this is the case
+     * where no dialog appears, and a room that silently admits a device without
+     * ever saying so is a room you cannot audit.
+     */
+    var onKnownPeerRejoined: ((String) -> Unit)? = null
+
+    /**
+     * Called when a pending prompt no longer needs an answer.
+     *
+     * Raised with the peer's id when a device turns out to be one this host
+     * already knows — the prompt went up on the exchange, and the proof arrives
+     * with the join a moment later.
+     */
+    var onPairingWithdrawn: ((String) -> Unit)? = null
 
     /**
      * A device waiting at the door.
@@ -297,6 +326,18 @@ class SyncServer(
         @Volatile
         private var pendingJoin = false
 
+        /** The peer's identity fingerprint, once it has *proved* one. */
+        @Volatile
+        private var peerFingerprint: String? = null
+
+        /** What both identities sign, kept from the exchange until the join. */
+        @Volatile
+        private var signedTranscript: ByteArray? = null
+
+        /** Set when the prompt is being held back pending a claimed identity. */
+        @Volatile
+        private var promptDeferred = false
+
         /** What the roster calls this peer, and what the approval prompt shows. */
         @Volatile
         private var peerName: String = "A device"
@@ -329,6 +370,16 @@ class SyncServer(
         private fun admitIfReady() {
             if (joined || !pendingJoin || !approvedByHost) return
             joined = true
+
+            // Remembered here rather than in `approve`, because the fingerprint
+            // is only known once the join has arrived and its signature has
+            // verified — and the host's user may well tap approve first. Doing
+            // it on approval meant that in that ordering, which is a coin toss,
+            // the device was admitted and then forgotten, and turned up as a
+            // stranger the next time. Only a *proved* identity is written down:
+            // `recogniseIdentity` sets the fingerprint after checking the
+            // signature and never before.
+            peerFingerprint?.let { known?.remember(it, peerName) }
             // A joiner needs the room as it stands, not only what changes after
             // it arrives.
             send(
@@ -464,22 +515,95 @@ class SyncServer(
          */
         private fun beginPairing(message: JSONObject) {
             if (session != null) return
-            val peerKeyBytes = runCatching {
-                WebSocketProtocol.decodeBase64(message.optString("key"))
-            }.getOrNull() ?: return
+            val peerKeyBytes = WebSocketProtocol.decodeBase64(message.optString("key")) ?: return
             val peerKey = RoomCrypto.decodePublicKey(peerKeyBytes) ?: return
             val agreed = RoomCrypto.agree(keys, peerKey, roomCode) ?: return
 
             peerName = message.optString("name").ifBlank { "A device" }
             session = agreed
 
+            val transcript = RoomCrypto.transcriptOf(
+                RoomCrypto.encodePublicKey(keys.public),
+                peerKeyBytes,
+                roomCode,
+            )
+
             sendPlain(
                 JSONObject().apply {
                     put("type", "hello_ack")
                     put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                    identity?.let {
+                        put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                        put("signature", WebSocketProtocol.base64(it.sign(transcript)))
+                    }
                 }.toString(),
             )
+
+            signedTranscript = transcript
+
+            // The prompt goes up now, on the exchange, so both users are looking
+            // at the same digits at the same moment — *unless* this device
+            // claims an identity this host already knows, in which case it waits
+            // for the join to make good on the claim.
+            //
+            // Waiting rather than raising-and-withdrawing, because a dialog that
+            // appears for a third of a second and vanishes is worse than either:
+            // it is read as a glitch, and the one time it matters — a device
+            // whose claim does not check out — it has already trained the user
+            // to ignore it. A claim that fails simply gets the prompt a moment
+            // later, which is the same prompt a stranger gets.
+            if (claimsKnownIdentity(message)) {
+                promptDeferred = true
+                return
+            }
             onPairingRequested?.invoke(PendingPeer(id, peerName, agreed.sas))
+        }
+
+        /**
+         * Whether this peer says it is a device this host remembers.
+         *
+         * A claim and nothing more — no signature has been seen at this point,
+         * and none could have been: the peer cannot sign the transcript until
+         * `hello_ack` gives it this host's ephemeral key. So this decides only
+         * whether to *wait* before asking the user, never whether to admit.
+         */
+        private fun claimsKnownIdentity(message: JSONObject): Boolean {
+            val trusted = known ?: return false
+            val identityBytes =
+                WebSocketProtocol.decodeBase64(message.optString("identity")) ?: return false
+            val key = DeviceIdentity.decodePublicKey(identityBytes) ?: return false
+            return trusted.isKnown(DeviceIdentity.fingerprintOf(key))
+        }
+
+        /**
+         * Checks the proof in a `join`, and says whether it is one we know.
+         *
+         * Recognition happens here rather than at `hello` for a plain reason:
+         * the peer cannot sign the transcript until it has this host's
+         * ephemeral key, which `hello_ack` is what gives it. So the identity
+         * arrives with the hello and the signature with the join.
+         *
+         * The signature is verified *first*, and the fingerprint is only
+         * recorded once it has. Recording a fingerprint the peer merely claimed
+         * would mean that approving an impostor writes down somebody else's
+         * name — and the fingerprint is public, since it is on the wire every
+         * time that device connects. Trusting a claim to one would make "we have
+         * paired before" mean "anyone who has watched us pair before".
+         */
+        private fun recogniseIdentity(message: JSONObject): String? {
+            val transcript = signedTranscript ?: return null
+            val identityBytes =
+                WebSocketProtocol.decodeBase64(message.optString("identity")) ?: return null
+            val signature =
+                WebSocketProtocol.decodeBase64(message.optString("signature")) ?: return null
+            val key = DeviceIdentity.decodePublicKey(identityBytes) ?: return null
+            if (!DeviceIdentity.verify(key, transcript, signature)) return null
+
+            val fingerprint = DeviceIdentity.fingerprintOf(key)
+            peerFingerprint = fingerprint
+            val trusted = known ?: return null
+            if (!trusted.isKnown(fingerprint)) return null
+            return trusted.all()[fingerprint] ?: peerName
         }
 
         private fun handleSealed(text: String) {
@@ -507,6 +631,24 @@ class SyncServer(
                     // booth it is a coin toss, and the failure looks like the
                     // host's approval doing nothing.
                     pendingJoin = true
+
+                    // A device this host has paired with before, and which has
+                    // just proved it, is let in without anybody being asked —
+                    // and its prompt is taken back down, because a dialog for a
+                    // decision that has already been made is a dialog whose
+                    // buttons do nothing.
+                    val recognised = recogniseIdentity(message)
+                    if (recognised != null && !approvedByHost) {
+                        approvedByHost = true
+                        onPairingWithdrawn?.invoke(id)
+                        onKnownPeerRejoined?.invoke(recognised)
+                    } else if (recognised == null && promptDeferred) {
+                        // It claimed to be somebody we know and could not prove
+                        // it. That is exactly a stranger, and gets what a
+                        // stranger gets.
+                        promptDeferred = false
+                        session?.let { onPairingRequested?.invoke(PendingPeer(id, peerName, it.sas)) }
+                    }
                     admitIfReady()
                 }
                 "update_state" -> {
