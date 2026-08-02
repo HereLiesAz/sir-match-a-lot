@@ -29,18 +29,32 @@ class ScratchModel(
     /** Reverse frames that must accumulate before the easter egg fires. */
     private val easterEggReverseFrames: Double = 44_100.0 * 6,
 ) {
+    // Every field below is written by the gesture, on the UI thread, and read —
+    // and in two cases read-modify-written — by the audio callback. `Deck` says
+    // as much about its own controls and marks them volatile; this sits on the
+    // same boundary and did not, so the audio thread had no guarantee of ever
+    // seeing a scratch begin, and `accumulatedReverseFrames` is a `Double`,
+    // which the JLS permits to be written as two 32-bit halves. A reader could
+    // see a value from neither the before nor the after state.
+
     /** Rate to apply while the gesture is active. */
+    @Volatile
     var rate: Double = 1.0
         private set
 
     /** True between [begin] and [end]. */
+    @Volatile
     var active: Boolean = false
         private set
 
+    @Volatile
     private var accumulatedReverseFrames = 0.0
+
+    @Volatile
     private var easterEggFired = false
 
     /** Rate the deck should return to once the gesture ends. */
+    @Volatile
     private var restingRate: Double = 1.0
 
     /**

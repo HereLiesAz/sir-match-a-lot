@@ -72,7 +72,10 @@ and every sample. This is the common case on Android, not an edge case.
 
 Measured, at 0.5 amplitude, comparing the spline against the windowed-sinc
 converter now in `dsp/SincResampler` (THD+N after least-squares removal of the
-test tone; the measurement floor is -154 dB):
+test tone; the measurement floor is -154 dB). This table was taken offline and
+is not reproduced by any test in the repository — unlike the passband and alias
+figures below it, which are: treat the exact decibels here as indicative and the
+orders of magnitude as the point.
 
 | Signal | Catmull-Rom | Windowed sinc |
 | :--- | ---: | ---: |
@@ -93,10 +96,20 @@ inter-phase interpolation. The cutoff is pulled back by half the transition widt
 so the stopband, not the middle of the skirt, begins where folding begins.
 Passband is flat to 20 kHz within 0.08 dB.
 
+Those two figures — and the alias rejection below — are now asserted by
+`SincResamplerTest.the figures docs AUDIO_QUALITY cites are the figures this
+filter gives`, so the filter cannot quietly regress away from what this page
+claims. They had been stated here and nowhere else, with the surrounding tests
+asserting only `< 0.1 dB` and `< -90 dB`: a drop from 108 dB to 91 dB would have
+passed everything.
+
 Kernel length was chosen by measurement, not by the "32–64 taps" guess above,
 which was wrong: 64 taps gives only ~20 dB of alias rejection at this cutoff.
-128 taps is the knee — 108 dB rejection, 0.08 dB at 20 kHz, 279 ms per 60 s of
-mono audio.
+128 taps is the knee — 107.5 dB rejection and 0.08 dB at 20 kHz, both measured
+by the test named above. (This said 108 dB; it is 107.5, rounded the generous
+way.) Conversion cost was about 279 ms per 60 s of mono audio on the machine it
+was measured on — indicative only, and deliberately not asserted, because a
+timing bound in CI fails for reasons that have nothing to do with this filter.
 
 The payoff compounds: with the clip already at the output rate, the render loop
 runs at rate exactly 1.0, where the interpolating read lands on integer positions

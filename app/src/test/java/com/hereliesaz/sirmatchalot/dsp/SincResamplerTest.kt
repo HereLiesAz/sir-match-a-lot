@@ -137,6 +137,45 @@ class SincResamplerTest {
     }
 
     @Test
+    fun `the figures docs AUDIO_QUALITY cites are the figures this filter gives`() {
+        // AUDIO_QUALITY.md quoted "108 dB alias rejection" and "flat to 20 kHz
+        // within 0.08 dB", and cited itself as the source — while the tests
+        // around this one assert only < -90 dB and < 0.1 dB. Nothing in the
+        // repository would have noticed the filter regressing from 108 dB to
+        // 91 dB, which is exactly the range that looser bound allows.
+        //
+        // Measured here: 107.5 dB and 0.08 dB. The doc's figures were rounded
+        // the generous way, by half a dB and by a hair respectively, and now
+        // say what this measures.
+        //
+        // This is the doc's own claim, asserted. If the kernel is shortened or
+        // the cutoff moved, this fails and the number in the doc has to change
+        // with it.
+        val worstRipple = listOf(100.0, 1_000.0, 5_000.0, 10_000.0, 15_000.0, 18_000.0, 20_000.0)
+            .flatMap {
+                listOf(
+                    abs(gainOf(it, from = 44_100, to = 48_000)),
+                    abs(gainOf(it, from = 48_000, to = 44_100)),
+                )
+            }
+            .max()
+        assertTrue(
+            "passband ripple is ${"%.4f".format(worstRipple)} dB, doc says 0.09",
+            worstRipple <= 0.09,
+        )
+
+        val alias = levelAt(
+            resampler.resample(tone(23_000.0, 48_000, 16_384), 48_000, 44_100),
+            21_100.0,
+            44_100,
+        )
+        assertTrue(
+            "alias rejection is ${"%.1f".format(-alias)} dB, doc says 107",
+            alias <= -107.0,
+        )
+    }
+
+    @Test
     fun `Catmull-Rom folds the alias that sinc rejects`() {
         // The comparison that justifies this class existing. Reading the same
         // 23 kHz tone at rate 48000/44100 through the render-loop spline is what

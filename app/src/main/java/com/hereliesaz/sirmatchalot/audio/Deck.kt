@@ -63,7 +63,18 @@ class Deck(
      * timeline is exactly as long as the material on it.
      */
     val cycleFrames: Int
-        get() = clips.maxOfOrNull { it.endFrame } ?: 0
+        get() {
+            // Indexed rather than `maxOfOrNull`, which iterates and so allocates.
+            // Once per render block rather than once per frame, but the block is
+            // still the audio callback.
+            val snapshot = clips
+            var longest = 0
+            for (index in 0 until snapshot.size) {
+                val end = snapshot[index].endFrame
+                if (end > longest) longest = end
+            }
+            return longest
+        }
 
     /**
      * True when this deck can produce sound: running, with material on it.
@@ -114,7 +125,14 @@ class Deck(
      * Renders [frames] frames into [out], which is interleaved stereo and must
      * hold at least `frames * 2` values. Existing content is overwritten.
      *
-     * Allocates nothing.
+     * Allocates nothing — and now really does not.
+     *
+     * `for (clip in snapshot)` sat inside the per-frame loop, and a `for` over a
+     * `List` compiles to `List.iterator()`: one iterator object per output frame
+     * per deck, which at 512-frame blocks and two decks is on the order of
+     * 88,000 objects a second, on the thread whose own contract is that it must
+     * not allocate. Indexed loops here and in [cycleFrames], and `rateScale`
+     * hoisted out of the loop it did not vary within.
      */
     fun render(out: FloatArray, frames: Int) {
         require(out.size >= frames * CHANNELS) { "output buffer too small" }
@@ -129,13 +147,17 @@ class Deck(
 
         val snapshot = clips
         var position = playhead
+        val step = rate * rateScale(snapshot)
+        val clipCount = snapshot.size
 
         for (frame in 0 until frames) {
             var left = 0f
             var right = 0f
 
-            for (clip in snapshot) {
-                val local = localPosition(clip, position, cycle) ?: continue
+            for (clipIndex in 0 until clipCount) {
+                val clip = snapshot[clipIndex]
+                val local = localPosition(clip, position, cycle)
+                if (local.isNaN()) continue
                 // One branch per clip per frame on the depth, rather than a
                 // conversion per sample. A hi-res clip is read from its float
                 // storage directly; a 16-bit one from its Short storage. The
@@ -156,7 +178,7 @@ class Deck(
             out[base] = left
             out[base + 1] = right
 
-            position += rate * rateScale(snapshot)
+            position += step
             // Wrap in whichever direction the playhead is travelling.
             if (position >= cycle) position -= cycle
             else if (position < 0.0) position += cycle
@@ -170,18 +192,24 @@ class Deck(
     }
 
     /**
-     * Position within [clip]'s own buffer for a deck-timeline [position], or null
-     * if the clip is not sounding there.
+     * Position within [clip]'s own buffer for a deck-timeline [position], or
+     * [SILENT_HERE] if the clip is not sounding there.
+     *
+     * A `Double?` would read better and box: Kotlin's nullable `Double` is a
+     * `java.lang.Double` on the heap, and this is called once per clip per
+     * frame, so it was the largest single allocation source in a render loop
+     * whose contract is that it allocates nothing. NaN is the natural sentinel
+     * here — it is not a position, and every comparison against it is false.
      */
-    private fun localPosition(clip: Clip, position: Double, cycle: Int): Double? {
-        if (clip.frameCount <= 0) return null
+    private fun localPosition(clip: Clip, position: Double, cycle: Int): Double {
+        if (clip.frameCount <= 0) return SILENT_HERE
         if (clip.loop) {
             // A looping clip sounds everywhere on the timeline.
             var offset = (position - clip.startFrame) % clip.frameCount
             if (offset < 0) offset += clip.frameCount
             return offset
         }
-        if (position < clip.startFrame || position >= clip.endFrame) return null
+        if (position < clip.startFrame || position >= clip.endFrame) return SILENT_HERE
         return position - clip.startFrame
     }
 
@@ -190,6 +218,9 @@ class Deck(
      * decoded at a different sample rate than the output are corrected here, so
      * a 48 kHz sample and a 44.1 kHz sample play at the same musical speed.
      */
+    /** Returned by [localPosition] when the clip is not sounding at that point. */
+    private val SILENT_HERE = Double.NaN
+
     private fun rateScale(snapshot: List<Clip>): Double {
         val sourceRate = snapshot.firstOrNull()?.buffer?.sampleRate ?: outputSampleRate
         return sourceRate.toDouble() / outputSampleRate

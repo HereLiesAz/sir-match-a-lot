@@ -44,6 +44,21 @@ class SetArcTest {
     }
 
     @Test
+    fun `a library with no energy spread still gets an opening and a build`() {
+        // Equal energies make `maxByOrNull` answer index 0, which is not a peak
+        // — it is the absence of one. That zeroed the opening and started the
+        // set at PEAK, so a genre-consistent library, which is an ordinary
+        // thing to have, opened at full boldness and cut every track at 55%.
+        val arc = arcOf(5, 5, 5, 5, 5, 5, 5, 5, 5, 5)
+        val phases = (0 until arc.size).map { arc.phaseAt(it) }
+
+        assertTrue("no opening in $phases", phases.contains(SetArc.Phase.OPENING))
+        assertTrue("no build in $phases", phases.contains(SetArc.Phase.BUILD))
+        assertEquals("the set must not open at the peak", SetArc.Phase.OPENING, phases.first())
+        assertTrue("the peak must come after the opening", arc.peakIndex > 0)
+    }
+
+    @Test
     fun `phases only ever move forwards`() {
         val arc = arcOf(1, 2, 4, 5, 7, 9, 8, 6, 4, 2)
         val order = listOf(

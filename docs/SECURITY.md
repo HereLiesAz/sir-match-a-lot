@@ -38,18 +38,34 @@ themselves.
 ### The room protocol is unencrypted and unauthenticated
 
 A hosted session accepts commands from anyone on the same local network who
-knows the port. There is no pairing, no key, and no transport security. A room
-code is a *label*, not a credential — it identifies the session; it does not
-protect it.
+joins it. There is no pairing, no key, and no transport security. A room code is
+a *label*, not a credential — it identifies the session; it does not protect it.
+The one thing it now does is force a connection to *say* something: a peer that
+never sends `join`, or sends the wrong code, is refused and reaches neither the
+engine nor the room state. Until recently it did not even do that — every
+command was dispatched without any check that a join had happened.
+
+The traffic is cleartext by design, and the manifest permits it explicitly
+(`usesCleartextTraffic`). Without that the platform blocks `ws://` at
+targetSdk 28 and above, and joining a room cannot work at all. Anyone on the
+network can read what the room sends.
 
 **Why:** the requirement is one-press connection between phones in a booth, with
 no accounts and no server. Every mechanism that would fix this properly adds a
 step or a service.
 
 **What it means in practice:** host on a network you control. What an attacker on
-your network can do is move the crossfader, trigger pads, load tracks that are
-already in your library, and seek the decks. They cannot read your files, reach
-your library database, or make the app fetch arbitrary URLs.
+your network can do, once joined, is move the crossfader, trigger pads, load
+tracks that are already in your library, and seek the decks.
+
+They cannot read your files or write to them, and they cannot make the app fetch
+a URL of their choosing. Two narrower statements, because the sentence here used
+to be broader than the truth: `load_track_direct` carries a track id that
+reaches `trackDao.getTrackById`, which *is* a query against the library database
+driven by an attacker-chosen string, and a track imported from a playlist keeps
+its remote `sourceUri`, so loading one can cause an outbound fetch to an address
+the attacker chose only in the sense that they chose which of your own rows to
+play.
 
 **If this is not acceptable for your use**, do not start hosting — it is off
 unless you turn it on, and the rest of the app is unaffected.

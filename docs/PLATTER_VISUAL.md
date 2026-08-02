@@ -49,7 +49,12 @@ and C contributing the bar treatment and the amplitude faithfulness respectively
    Reference A's drama comes from **contrast** — a short, fairly even body with a
    dozen rays shooting far out — not from raising the whole ring. So the gamma is
    only mildly below 1 (0.75), lifting quiet detail just enough to be visible,
-   paired with a large 2.4x overshoot so genuine transients careen past the body.
+   paired with a large overshoot so genuine transients careen past the body. The
+   overshoot is no longer one number: `PlatterGeometry.overshootFor` blends
+   `BASE_OVERSHOOT` (1.5) to `MATCHED_OVERSHOOT` (2.9) by how well the two decks
+   agree at that angle, so the tallest part of the ring is the part of the mix
+   that is working. This section said "2.4x" long after that constant stopped
+   existing.
 
 4. **Dense hairline rays.** Reference A reads as several hundred very thin rays,
    so default spacing is 2 px with a 2048 cap, and the bright core stroke is

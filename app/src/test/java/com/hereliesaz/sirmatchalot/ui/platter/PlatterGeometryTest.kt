@@ -257,6 +257,21 @@ class PlatterGeometryTest {
     }
 
     @Test
+    fun `the far corner of the screen is not on the platter`() {
+        // `deckAt` answers A for any radius at or beyond the base radius, with
+        // no outer bound, and tap-to-select consulted it directly. A tap in the
+        // black corner of the screen selected a clip spanning the revolution,
+        // and a long press there removed it. `isOnRing` is the definition of an
+        // outside, and it now guards the taps as well as the drags.
+        val base = PlatterGeometry.baseRadius(1080f, 1920f)
+        val corner = PlatterGeometry.radiusOf(0f, 0f, 540f, 960f)
+        assertTrue("corner is $corner against a base of $base", corner > base)
+        assertTrue(!PlatterGeometry.isOnRing(corner, base))
+        // And a point on Deck A's own ring still is.
+        assertTrue(PlatterGeometry.isOnRing(base * PlatterGeometry.DECK_A_RING, base))
+    }
+
+    @Test
     fun `a platter with no size has no transport button`() {
         assertTrue(!PlatterGeometry.isOnCentreButton(0f, 0f, 60f))
     }

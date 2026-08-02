@@ -72,13 +72,33 @@ class AnalysisService : Service() {
             }
             ACTION_STOP -> {
                 AnalysisProgressBus.requestStop()
+                // Stopping a run that is not running has to end the service, not
+                // start one. Pressing Stop while idle delivered an intent, this
+                // returned START_STICKY without ever calling `startForeground`,
+                // and the result was a service doing no work, in no foreground,
+                // that never stopped itself — and, being sticky, one the system
+                // would recreate.
+                if (worker?.isActive != true) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 return START_STICKY
             }
         }
 
         if (worker?.isActive == true) return START_STICKY
 
-        val rescan = intent?.getBooleanExtra(EXTRA_RESCAN, false) ?: false
+        // A null intent is the system restarting a sticky service after a kill,
+        // and that restart is background-initiated: calling `startForeground`
+        // from it throws `ForegroundServiceStartNotAllowedException` on Android
+        // 12 and up. There is nothing to resume from anyway — the queue is
+        // recomputed from the database when the user asks again.
+        if (intent == null) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val rescan = intent.getBooleanExtra(EXTRA_RESCAN, false)
         startForegroundCompat(buildNotification(AnalysisState(total = 1, current = "Starting...")))
         worker = scope.launch { run(rescan) }
         return START_STICKY

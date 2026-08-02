@@ -19,11 +19,20 @@ object Crossfade {
      *
      * @return gain for A and gain for B.
      */
-    fun equalPower(position: Float): Pair<Float, Float> {
-        val x = position.coerceIn(0f, 1f).toDouble()
-        val angle = x * Math.PI / 2
-        return cos(angle).toFloat() to sin(angle).toFloat()
-    }
+    fun equalPower(position: Float): Pair<Float, Float> = gainA(position) to gainB(position)
+
+    // The render path takes the two gains separately, because a `Pair<Float,
+    // Float>` is an object and two boxed floats — three allocations per block,
+    // on the thread that must not allocate. `equalPower` stays for callers and
+    // tests that want them together.
+
+    /** Deck A's gain at [position]. */
+    fun gainA(position: Float): Float =
+        cos(position.coerceIn(0f, 1f).toDouble() * Math.PI / 2).toFloat()
+
+    /** Deck B's gain at [position]. */
+    fun gainB(position: Float): Float =
+        sin(position.coerceIn(0f, 1f).toDouble() * Math.PI / 2).toFloat()
 }
 
 /**
@@ -94,7 +103,10 @@ data class OutputLevel(val peak: Float, val rms: Float) {
  * previous design, which created one `ExoPlayer` per clip and had no mixing
  * stage at all, so crossfading, EQ, and level metering had nowhere to happen.
  *
- * Allocates nothing during rendering.
+ * Allocates nothing during rendering — and now really does not. The crossfade
+ * gains came back as a `Pair<Float, Float>`, and the metered level was a fresh
+ * `OutputLevel`, so every block allocated four objects on the thread whose whole
+ * justification for a blocking write is that it must not wait for a collector.
  */
 class Mixer(
     val deckA: Deck,
@@ -109,10 +121,19 @@ class Mixer(
     @Volatile
     var masterGain: Float = 0.8f
 
-    /** Most recent output level, for the waveform glow and background visualiser. */
+    // Held as two volatile floats and assembled on read, rather than as a
+    // volatile `OutputLevel`. The object was allocated once per block on the
+    // audio thread; the reader is the UI, at its own refresh rate, and can pay
+    // for it there instead.
     @Volatile
-    var level: OutputLevel = OutputLevel.SILENT
-        private set
+    private var peakLevel: Float = 0f
+
+    @Volatile
+    private var rmsLevel: Float = 0f
+
+    /** Most recent output level, for the waveform glow and background visualiser. */
+    val level: OutputLevel
+        get() = OutputLevel(peak = peakLevel, rms = rmsLevel)
 
     /**
      * The XY pad's filter, on the master bus.
@@ -146,7 +167,9 @@ class Mixer(
         deckA.render(bufferA, frames)
         deckB.render(bufferB, frames)
 
-        val (targetA, targetB) = Crossfade.equalPower(crossfade)
+        val position = crossfade
+        val targetA = Crossfade.gainA(position)
+        val targetB = Crossfade.gainB(position)
         val targetMaster = masterGain.coerceIn(0f, 1f)
 
         if (!initialised) {
@@ -161,7 +184,10 @@ class Mixer(
         // creates, and the filter has to come after the crossfade so it acts on
         // the mix a listener hears rather than on one deck.
         for (frame in 0 until frames) {
-            // One-pole smoothing per frame; ~5 ms to settle at 44.1 kHz.
+            // One-pole smoothing per frame. The time constant is 1/SMOOTHING
+            // = 200 samples, 4.5 ms at 44.1 kHz — which is what "~5 ms to
+            // settle" here used to call it. Settling takes several time
+            // constants: ~21 ms to within 1%, ~31 ms to within 0.1%.
             smoothedGainA += (targetA - smoothedGainA) * SMOOTHING
             smoothedGainB += (targetB - smoothedGainB) * SMOOTHING
             smoothedMaster += (targetMaster - smoothedMaster) * SMOOTHING
@@ -188,10 +214,8 @@ class Mixer(
             sumOfSquares += limited.toDouble() * limited
         }
 
-        level = OutputLevel(
-            peak = peak,
-            rms = sqrt(sumOfSquares / samples).toFloat(),
-        )
+        peakLevel = peak
+        rmsLevel = sqrt(sumOfSquares / samples).toFloat()
     }
 
     /**
@@ -202,14 +226,15 @@ class Mixer(
      * waveform glow, the light show — would freeze lit over silence.
      */
     fun markSilent() {
-        level = OutputLevel.SILENT
+        peakLevel = 0f
+        rmsLevel = 0f
     }
 
     fun reset() {
         deckA.reset()
         deckB.reset()
         initialised = false
-        level = OutputLevel.SILENT
+        markSilent()
     }
 
     private companion object {

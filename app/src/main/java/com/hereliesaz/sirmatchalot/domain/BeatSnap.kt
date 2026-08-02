@@ -73,7 +73,8 @@ object BeatSnap {
      * single source of truth — the pristine buffer and one ratio — instead of
      * accumulating a new length each time the pinch is adjusted.
      *
-     * @return 1.0 when there is no usable grid, so a clip without a measured
+     * @return [ratio] unchanged when there is no usable grid — stretch freely,
+     *   rather than 1.0, which would mean ignoring the pinch entirely.
      *   tempo stretches freely rather than being snapped to a guess.
      */
     fun snapRatio(

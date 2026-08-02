@@ -129,10 +129,19 @@ private fun DrawScope.drawBeatGrid(
         val ring = PlatterGeometry.ringRadius(deck, baseRadius)
         val outward = deck == PlatterGeometry.Deck.A
         val direction = if (outward) 1f else -1f
-        val downbeats = grid.downbeats.toHashSet()
+        // `grid.downbeats.toHashSet()` here built a HashSet of up to 512 boxed
+        // Floats per deck per frame, and then boxed every lookup against it —
+        // on the draw path this file is otherwise carefully tuned for. The two
+        // lists are both sorted and the downbeats are a subset of the beats, so
+        // one cursor answers the same question with no allocation at all.
+        val downbeats = grid.downbeats
+        var downbeatCursor = 0
 
         for (fraction in grid.beats) {
-            val isBar = fraction in downbeats
+            while (downbeatCursor < downbeats.size && downbeats[downbeatCursor] < fraction) {
+                downbeatCursor++
+            }
+            val isBar = downbeatCursor < downbeats.size && downbeats[downbeatCursor] == fraction
             val length = if (isBar) baseRadius * 0.16f else baseRadius * 0.07f
             val alpha = if (isBar) 0.30f else 0.14f
             val angle = PlatterGeometry.screenAngleForFraction(fraction) + rotation
