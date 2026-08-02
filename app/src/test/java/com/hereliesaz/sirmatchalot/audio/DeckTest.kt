@@ -320,6 +320,14 @@ class DeckTest {
     fun `clips decoded at a different sample rate play at the same musical speed`() {
         // A 48 kHz clip must be read 48000/44100 faster per output frame, or it
         // would sound flat and drift out of beat with a 44.1 kHz track.
+        //
+        // Asserted on what comes out rather than on `playhead`. The playhead used
+        // to be advanced by the rate correction itself, which put the whole
+        // timeline in one clip's frame domain, and this test read 480 there
+        // after 441 output frames. The correction is now applied per clip at the
+        // read, so the playhead is 441 — the same tenth of a second, in the unit
+        // the timeline is actually measured in. The property the test is named
+        // for is unchanged, and is what it now measures.
         val deck = Deck("test", outputSampleRate = 44_100).apply {
             clips = listOf(
                 Clip(
@@ -330,9 +338,44 @@ class DeckTest {
             )
             playing = true
         }
-        leftChannel(deck, 441)
-        // 441 output frames should consume 480 source frames.
-        assertEquals(480.0, deck.playhead, 1.0)
+        val rendered = leftChannel(deck, 441)
+        // 441 output frames is a tenth of a second, and a tenth of a second into
+        // this ramp is source frame 480 of 4800 — value 0.1.
+        assertEquals(0.1f, rendered.last(), 2e-3f)
+        assertEquals(441.0, deck.playhead, 1.0)
+    }
+
+    @Test
+    fun `two clips at different rates both play at their own speed`() {
+        // The defect: the correction was taken from `clips.first()` and applied
+        // to the playhead, so every clip on the deck was read at the first
+        // clip's ratio. A 44.1 kHz clip sharing a deck with a 48 kHz one played
+        // 8.8% fast — a semitone and a half sharp, and drifting off the grid —
+        // and the KDoc claimed this was the case it handled.
+        val slow = 4_410  // one tenth of a second at 44.1 kHz
+        val fast = 4_800  // one tenth of a second at 48 kHz
+        val deck = Deck("test", outputSampleRate = 44_100).apply {
+            clips = listOf(
+                Clip(
+                    id = "48k",
+                    buffer = PcmBuffer.monoFromFloat(FloatArray(fast) { it / fast.toFloat() }, 48_000),
+                ),
+                Clip(
+                    id = "44k",
+                    buffer = PcmBuffer.monoFromFloat(FloatArray(slow) { it / slow.toFloat() }, 44_100),
+                    startFrame = 10_000,
+                ),
+            )
+            playing = true
+        }
+
+        // Both ramps run from 0 to 1 over a tenth of a second, so both should
+        // reach the same value after the same elapsed time — here half way in.
+        val rendered = leftChannel(deck, 12_205)
+        val halfwayThroughTheFirst = rendered[2_205]
+        val halfwayThroughTheSecond = rendered[12_205 - 1]
+        assertEquals("48 kHz clip", 0.5f, halfwayThroughTheFirst, 2e-3f)
+        assertEquals("44.1 kHz clip", 0.5f, halfwayThroughTheSecond, 2e-3f)
     }
 
     @Test
