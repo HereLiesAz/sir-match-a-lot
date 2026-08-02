@@ -328,7 +328,8 @@ object PlatterGeometry {
     fun playheadIsDot(outwardHeight: Float, inwardHeight: Float): Boolean =
         playheadHalfLength(outwardHeight, inwardHeight) <= 0.5f
 
-    private fun wrapFraction(fraction: Float): Float {
+    /** Wraps [fraction] into 0..1. Public because hit-testing needs it too. */
+    fun wrapFraction(fraction: Float): Float {
         var f = fraction % 1f
         if (f < 0f) f += 1f
         return f

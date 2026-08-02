@@ -39,6 +39,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -179,6 +180,10 @@ fun PlatterScreen(
     var heldClipOffCircle by remember { mutableStateOf(false) }
     var heldClipPosition by remember { mutableStateOf(Offset.Zero) }
 
+    // How far into the clip the finger landed, as a fraction of the revolution,
+    // so the clip moves with the finger instead of snapping its start to it.
+    var heldClipGrabOffset by remember { mutableFloatStateOf(0f) }
+
     // Pinch span while a clip is held. Captured on the second finger going down
     // and compared on release: a time-stretch re-renders the whole clip, so it
     // is applied once at the end rather than on every frame of the pinch.
@@ -203,6 +208,11 @@ fun PlatterScreen(
             canvasSize.width.toFloat(), canvasSize.height.toFloat(), scale,
         )
         val radius = PlatterGeometry.radiusOf(local.x, local.y, cx, cy)
+        // On the rings, not merely inside the Box that holds them. This checked
+        // the bounding rectangle only, so a track released in the top-left
+        // corner of the screen loaded onto Deck A at whatever angle that corner
+        // happens to be.
+        if (!PlatterGeometry.isOnRing(radius, baseRadius)) return null
         return PlatterGeometry.deckAt(radius, baseRadius) to
             PlatterGeometry.fractionOf(local.x, local.y, cx, cy, drawnRotation)
     }
@@ -281,6 +291,14 @@ fun PlatterScreen(
     // The guard has to hold in every detector on the platter, and it was written
     // out at three of the four sites. The fourth was long press, which removes
     // the selected clips.
+    fun PointerInputScope.isOnPlatter(position: Offset): Boolean =
+        PlatterGeometry.isOnRing(
+            PlatterGeometry.radiusOf(
+                position.x, position.y, size.width / 2f, size.height / 2f,
+            ),
+            PlatterGeometry.baseRadius(size.width.toFloat(), size.height.toFloat(), scale),
+        )
+
     fun PointerInputScope.isTransportButton(position: Offset): Boolean =
         PlatterGeometry.isOnCentreButton(
             PlatterGeometry.radiusOf(
@@ -324,6 +342,14 @@ fun PlatterScreen(
                             // placement rather than feeding the gesture engine.
                             // Angle is time here, so moving it around the circle
                             // *is* moving it in the timeline.
+                            // A clip is taken hold of on a finger going *down*,
+                            // not on any event that happens to have one finger
+                            // pressed. Lifting one finger from a two-finger
+                            // crossfade leaves exactly one pressed pointer, and
+                            // the resting finger used to grab whatever was under
+                            // it and then move it — the tail of a gesture
+                            // silently editing the timeline.
+                            val wentDown = event.changes.any { it.changedToDown() }
                             val single = pointers.singleOrNull()
                             if (single != null && canvasSize.width > 0) {
                                 val cx = canvasSize.width / 2f
@@ -336,7 +362,7 @@ fun PlatterScreen(
                                     single.x, single.y, cx, cy, currentRotation,
                                 )
 
-                                if (heldClipId == null) {
+                                if (heldClipId == null && wentDown) {
                                     // The middle of the platter is the transport
                                     // button. A clip whose span covers that
                                     // angle is still "on the ring" there, and
@@ -355,6 +381,18 @@ fun PlatterScreen(
                                             heldClipTitle = clip.title
                                             heldClipDeck = deck
                                             heldClipOffCircle = false
+                                            // Where on the clip it was taken
+                                            // hold of. Without this the clip's
+                                            // *start* jumped to the finger:
+                                            // touching a clip that spans three
+                                            // to nine o'clock at six o'clock
+                                            // moved it to six-to-twelve, audio
+                                            // and all, on the first event that
+                                            // reported any movement at all.
+                                            heldClipGrabOffset =
+                                                PlatterGeometry.wrapFraction(
+                                                    fraction - clip.startFraction,
+                                                )
                                         }
                                     }
                                 } else {
@@ -363,7 +401,11 @@ fun PlatterScreen(
                                     heldClipOffCircle = !onRing
                                     if (onRing) {
                                         heldClipDeck = PlatterGeometry.deckAt(radius, baseRadius)
-                                        currentActions.onMoveClip(heldClipId!!, heldClipDeck, fraction)
+                                        currentActions.onMoveClip(
+                                            heldClipId!!,
+                                            heldClipDeck,
+                                            PlatterGeometry.wrapFraction(fraction - heldClipGrabOffset),
+                                        )
                                     }
                                 }
                             }
@@ -467,6 +509,15 @@ fun PlatterScreen(
                             // answers on the release rather than after the
                             // double-tap window this detector waits out.
                             if (isTransportButton(position)) return@detectTapGestures
+                            // Off the platter is off the platter. `deckAt`
+                            // answers A for *any* radius at or beyond the base,
+                            // so a tap in the black corner of the screen — as
+                            // far from the circle as it is possible to get —
+                            // selected a clip that spans the revolution, and a
+                            // long press there removed it.
+                            if (!PlatterGeometry.isOnRing(radius, baseRadius)) {
+                                return@detectTapGestures
+                            }
                             val fraction = PlatterGeometry.fractionOf(
                                 position.x, position.y, cx, cy, currentRotation,
                             )
@@ -479,6 +530,7 @@ fun PlatterScreen(
                         // Double tap selects both decks' waveforms at that spot.
                         onDoubleTap = { position ->
                             if (isTransportButton(position)) return@detectTapGestures
+                            if (!isOnPlatter(position)) return@detectTapGestures
                             currentActions.onSelectBothAt(
                                 PlatterGeometry.fractionOf(
                                     position.x, position.y,
@@ -494,6 +546,7 @@ fun PlatterScreen(
                         // started playback in the same gesture.
                         onLongPress = { position ->
                             if (isTransportButton(position)) return@detectTapGestures
+                            if (!isOnPlatter(position)) return@detectTapGestures
                             currentActions.onRemoveSelected()
                         },
                     )
