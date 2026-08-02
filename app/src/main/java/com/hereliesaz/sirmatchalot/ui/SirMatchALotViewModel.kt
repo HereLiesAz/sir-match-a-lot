@@ -288,8 +288,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _reference = MutableStateFlow<Track?>(null)
     val reference: StateFlow<Track?> = _reference
 
-    private val peaksCache = mutableMapOf<String, PeakEnvelope>()
-    private val energyCache = mutableMapOf<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
+    // Concurrent because more than one coroutine fills them: track loads run on
+    // the IO pool, and `prepareStructure` runs on the default pool while a set
+    // is being performed. Two threads writing a plain HashMap is not a slow
+    // HashMap, it is a corrupt one.
+    private val peaksCache = java.util.concurrent.ConcurrentHashMap<String, PeakEnvelope>()
+    private val energyCache =
+        java.util.concurrent.ConcurrentHashMap<String, com.hereliesaz.sirmatchalot.dsp.EnergyCurve>()
 
     /**
      * Whether a screen is actually in front of someone.
@@ -1066,7 +1071,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /** Structural landmarks per clip id, measured once from the energy curve. */
-    private val poiCache = HashMap<String, List<PointOfInterest>>()
+    private val poiCache = java.util.concurrent.ConcurrentHashMap<String, List<PointOfInterest>>()
 
     /**
      * Loopable sections per track id, found once from self-similarity.
@@ -1077,21 +1082,105 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * while that track is loaded. Anywhere else it would mean decoding a file to
      * answer a question nobody had yet asked.
      */
-    private val loopCache = HashMap<String, List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate>>()
+    private val loopCache =
+        java.util.concurrent.ConcurrentHashMap<String, List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate>>()
 
-    /** Loops in [track], measured now if the audio is to hand, or empty. */
-    private fun loopsFor(track: Track): List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate> {
-        loopCache[track.id]?.let { return it }
-        val grid = track.measuredBeatGrid() ?: return emptyList()
-        val pcm = decoded[track.id] ?: return emptyList()
-        // Called from the mix director while a set is running, so a failure here
-        // costs a transition its loop roll rather than stopping the music.
-        val found = runCatching {
-            com.hereliesaz.sirmatchalot.dsp.StructureFinder()
-                .findLoops(pcm.toMonoFloat(), pcm.sampleRate, grid)
-        }.getOrDefault(emptyList())
-        loopCache[track.id] = found
-        return found
+    /**
+     * Loops in [track] that have already been found, or empty.
+     *
+     * Reads the cache and does not fill it — [prepareStructure] does that, off
+     * the main thread. This used to do the work itself: a whole-track mono
+     * downmix (tens of megabytes) and a self-similarity search, on demand, from
+     * `structureFor`, which the mix director calls from inside its own tick —
+     * on `Dispatchers.Main.immediate`. Once per track change, the UI thread
+     * stopped to search a five-minute track for loops.
+     */
+    private fun loopsFor(track: Track): List<com.hereliesaz.sirmatchalot.dsp.LoopCandidate> =
+        loopCache[track.id].orEmpty()
+
+    /**
+     * Works out what a track's shape is, so [structureFor] can answer cheaply.
+     *
+     * This exists because the mix director's headline feature could not work.
+     * It asks for the *incoming* track's structure on the outgoing track's
+     * first tick, but the only thing that ever filled `poiCache` was
+     * `loadOntoDeck`, and the incoming track is not loaded until 45 seconds
+     * before the transition — and `startAutomatchicMix` clears the decks first.
+     * So the structure was always empty, and empty has consequences that read
+     * as deliberate choices: `entries()` degenerates to `listOf(0.0)`, so every
+     * track came in at frame zero — precisely the "robotic" behaviour
+     * TransitionChoreographer says it exists to fix — and no DROP is ever
+     * found, so `DROP_SWAP` and `REVERSE_SLAM` could not be selected at all.
+     *
+     * The way out is that most of a track's shape does not need the audio. The
+     * energy curve is persisted at analysis time (`Track.energyPath`), and the
+     * landmarks are computed *from that curve*. So an unloaded track can be read
+     * off the disk. What genuinely needs decoded audio — the band energies, the
+     * vocal entry, the loop search — is done only when the buffer is already in
+     * hand, and its absence costs detail rather than the whole structure.
+     */
+    private suspend fun prepareStructure(track: Track) {
+        if (track.durationMs <= 0L || track.bpm == null) return
+        val pcm = decoded[track.id]
+        if (poiCache.containsKey(track.id) && (pcm == null || loopCache.containsKey(track.id))) return
+
+        withContext(Dispatchers.Default) {
+            val mono = pcm?.let { runCatching { it.toMonoFloat() }.getOrNull() }
+
+            val curve = energyCache[track.id]
+                ?: track.energyPath?.let { path ->
+                    runCatching {
+                        com.hereliesaz.sirmatchalot.dsp.EnergyCurve
+                            .fromByteArray(java.io.File(path).readBytes())
+                    }.getOrNull()
+                }
+                ?: mono?.let { samples ->
+                    pcm?.let {
+                        runCatching {
+                            com.hereliesaz.sirmatchalot.dsp.EnergyCurve.compute(samples, it.sampleRate)
+                        }.getOrNull()
+                    }
+                }
+            if (curve != null) energyCache[track.id] = curve
+
+            if (curve != null && !poiCache.containsKey(track.id)) {
+                poiCache[track.id] = runCatching {
+                    val grid = track.measuredBeatGrid()
+                    // Bands and vocal entry are the two parts that need the
+                    // audio. Without them the landmarks are drops, breakdowns
+                    // and builds from the energy curve alone — less than a
+                    // loaded track gives, and enough to choose an entry and an
+                    // exit by, which is the whole point of asking.
+                    val bands = if (mono != null && pcm != null) {
+                        runCatching {
+                            com.hereliesaz.sirmatchalot.dsp.BandEnergyCurve
+                                .compute(mono, pcm.sampleRate)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    val structural = com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                        .findPointsOfInterest(curve, grid, bands = bands)
+                    val vocal = if (mono != null && pcm != null) {
+                        runCatching {
+                            com.hereliesaz.sirmatchalot.dsp.VocalDetector()
+                                .findVocalEntry(mono, pcm.sampleRate)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (vocal == null) structural else structural + vocal
+                }.getOrDefault(emptyList())
+            }
+
+            val grid = track.measuredBeatGrid()
+            if (mono != null && pcm != null && grid != null && !loopCache.containsKey(track.id)) {
+                loopCache[track.id] = runCatching {
+                    com.hereliesaz.sirmatchalot.dsp.StructureFinder()
+                        .findLoops(mono, pcm.sampleRate, grid)
+                }.getOrDefault(emptyList())
+            }
+        }
     }
 
     /**
@@ -2125,10 +2214,27 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _mixDirector.value = director
         _transitionStyle.value = null
         pendingTransition = null
-        apply(director.start())
 
         autoMixJob = viewModelScope.launch {
+            // The shapes of the first two tracks before the first tick, not
+            // after it. `resolveScript` runs on the director's first `advance`
+            // and asks for both — the track playing and the one coming in — and
+            // whatever it gets then is what the whole first transition is
+            // choreographed from. Nothing filled those caches until a track was
+            // loaded onto a deck, which for the incoming track is 45 seconds
+            // later, so the answer was always "nothing".
+            for (step in plan.steps.take(2)) prepareStructure(step.track)
+            apply(director.start())
+
+            // The rest follow while the set plays. Reading an energy curve off
+            // the disk and segmenting it is cheap, but a hundred-track plan is
+            // still a hundred of them, and none of it is wanted on the way in.
+            val ahead = launch {
+                for (step in plan.steps.drop(2)) prepareStructure(step.track)
+            }
+
             var last = System.nanoTime()
+            var deepened = -1
             while (!director.finished) {
                 delay(50)
                 val now = System.nanoTime()
@@ -2136,7 +2242,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 last = now
                 apply(director.advance(delta))
                 _transitionProgress.value = director.transitionProgress.toFloat()
+
+                // Once a track is actually on a deck its audio is in hand, and
+                // the parts of its shape that need audio — the loop seams, the
+                // band energies, the vocal entry — can be filled in on top of
+                // what the energy curve alone gave. Done once per track rather
+                // than per tick: `prepareStructure` returns immediately when
+                // there is nothing left to add, but the check is not free.
+                if (director.index != deepened) {
+                    deepened = director.index
+                    director.currentStep?.let { prepareStructure(it.track) }
+                }
             }
+            ahead.cancel()
             _mixDirector.value = null
             _transitionProgress.value = 0f
             _feedbackMsg.value = "Mix finished — ${plan.steps.size} tracks"

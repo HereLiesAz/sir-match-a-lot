@@ -187,6 +187,17 @@ class MixDirector(
      * invisible to the plain blend.
      */
     private var elapsed = 0.0
+
+    /**
+     * Where the current track came in, in its own time.
+     *
+     * The exit has to be chosen relative to this. `chooseExit` filters
+     * candidates against a floor measured from frame zero, so on a track entered
+     * two minutes in, an exit at ninety seconds is "after the floor" and behind
+     * the playhead — the whole handover then fires in the tick it is resolved,
+     * and the track is skipped rather than played.
+     */
+    private var entrySeconds = 0.0
     private var preloadIssued = false
     private var transitionStarted = false
     private var started = false
@@ -218,8 +229,18 @@ class MixDirector(
      * *shorter* than the sum of its tracks. Without one it is the end of the
      * track minus the fade, exactly as before.
      */
-    private fun transitionAt(): Double =
-        script?.exitSeconds ?: (durationOf(index) - crossfadeSeconds(index))
+    private fun transitionAt(): Double {
+        val blind = durationOf(index) - crossfadeSeconds(index)
+        val scripted = script?.exitSeconds ?: return blind
+        // The handover has to *complete* by the end of the track, not begin at
+        // it. `chooseExit` always offers TRACK_END as its floor candidate, and
+        // with that chosen this used to give `leaveAt = duration + fade`: the
+        // outgoing deck kept playing for a whole fade past its own end, and a
+        // clip alone on a deck loops, so it played its own intro underneath the
+        // incoming track. Guaranteed on the first track of every set.
+        val latest = durationOf(index) - fadeSeconds()
+        return minOf(scripted, latest).coerceAtLeast(0.0)
+    }
 
     /**
      * Begins the plan: loads and starts the opening track, and puts the
@@ -264,10 +285,23 @@ class MixDirector(
 
         val next = nextStep
         if (next == null) {
-            // Last track: run it out, then stop.
+            // Last track: run it out, then stop — and stop it. `Finished` used
+            // to be the only command here, so the final clip was left playing
+            // on a deck it had to itself, which means looping: the set ended,
+            // said so, and then played the last track again for ever.
             if (elapsed >= duration) {
                 finished = true
-                return listOf(MixCommand.Finished)
+                // Handed back as it was found, the same way every other retire
+                // does it — a set that ends must not leave a deck holding a
+                // rate, a shelf or a gain from whatever brought this track in.
+                return listOf(
+                    MixCommand.StopMixLoops,
+                    MixCommand.SetDeckRate(deck, 1.0),
+                    MixCommand.SetDeckEq(deck, 0.0, 0.0),
+                    MixCommand.SetDeckGain(deck, 1f),
+                    MixCommand.Retire(plan.steps[index].track, deck),
+                    MixCommand.Finished,
+                )
             }
             return emptyList()
         }
@@ -348,7 +382,8 @@ class MixDirector(
                 commands.add(MixCommand.Retire(retiring.track, deck))
                 // The incoming track began playing when the fade began, so its
                 // own clock is already `fade` seconds past wherever it came in.
-                elapsed = (running?.entrySeconds ?: 0.0) + fade
+                entrySeconds = running?.entrySeconds ?: 0.0
+                elapsed = entrySeconds + fade
                 index++
                 deck = deck.other
                 preloadIssued = false
@@ -388,6 +423,7 @@ class MixDirector(
                 script = choreographer.choreograph(
                     from = from,
                     to = to,
+                    fromEntrySeconds = entrySeconds,
                     match = next.transition,
                     phase = phase,
                     random = random,
