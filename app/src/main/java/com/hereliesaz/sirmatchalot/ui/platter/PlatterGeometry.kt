@@ -99,7 +99,16 @@ object PlatterGeometry {
     fun baseRadius(width: Float, height: Float, scale: Float = 1f): Float =
         minOf(width, height) * BASE_RADIUS_FRACTION * scale
 
-    /** Radius of a deck's ring, where its clips are drawn and grabbed. */
+    /**
+     * Nominal radius of a deck's ring — the middle of the band it occupies.
+     *
+     * Not where its clips are drawn, and not where they are grabbed, which is
+     * what this used to claim. Waveform rays start at [baseRadius] and grow
+     * outward for A and inward for B (`PlatterCanvas.drawDeck`), and grabbing
+     * uses [isOnRing] and [deckAt], neither of which consults this. It is a
+     * reference radius for marks that want to sit on a deck's side of the
+     * circle — beat lines, pending clips — and nothing more.
+     */
     fun ringRadius(deck: Deck, baseRadius: Float): Float =
         if (deck == Deck.A) baseRadius * DECK_A_RING else baseRadius * DECK_B_RING
 

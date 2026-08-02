@@ -130,11 +130,13 @@ a newer peer talking to an older host degrades instead of failing.
 { "type": "join", "roomCode": "K7QW", "role": "pads", "name": "Alex's phone" }
 ```
 
-Sent immediately on connect. If the host has a room code set and this one does
-not match, case-insensitively, the host replies with
+Sent immediately on connect, and required: `update_state` and `trigger_event`
+from a connection that has not joined are dropped. If the host has a room code
+set and this one does not match, case-insensitively, the host replies with
 `{"type": "join_refused", "reason": "room code does not match"}` and closes.
 Refused rather than ignored — a peer that typed the code wrong should learn
-that, not sit in silence.
+that, not sit in silence. (The message has always been sent; until recently no
+client read it, so the peer sat in silence anyway.)
 
 `role` is one of the [roles](#roles). `name` is a human label for the roster.
 
@@ -164,8 +166,14 @@ that ignores it.
 { "type": "init_state", "roomState": { "…": "the whole room state" } }
 ```
 
-Sent once, on connect, before anything else. A joiner needs the room as it
+Sent once, in reply to an accepted [`join`](#join). A joiner needs the room as it
 stands, not only what changes after it arrives.
+
+It used to be sent on connect, before any join could have been made — which
+meant a peer given `join_refused` had already been handed the entire room state,
+and a peer that never sent `join` at all was never checked against the room code
+and could still drive the host. A connection that has not joined now receives
+nothing and commands nothing.
 
 #### `state_synced`
 

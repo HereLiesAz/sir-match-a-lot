@@ -715,11 +715,15 @@ fun PlatterScreen(
                         val baseRadius = PlatterGeometry.baseRadius(
                             size.width.toFloat(), size.height.toFloat(), scale,
                         )
-                        // The same radius the waveform is drawn at. These were
-                        // 1.35 and 0.65 against the canvas's 1.25 and 0.75, so
-                        // the ring promising where a drop would land was not the
-                        // ring the clip appeared on.
-                        val ringRadius = PlatterGeometry.ringRadius(deck, baseRadius)
+                        // Where the rays actually start, which is the base
+                        // radius for both decks — they grow outward from it for
+                        // A and inward for B (see PlatterCanvas.drawDeck). The
+                        // preview drew at `ringRadius`, 1.25 and 0.75 of the
+                        // base, so the circle promising "your clip lands here"
+                        // was drawn at a radius nothing lands on. The mark for
+                        // the exact start point stays on the same radius, so the
+                        // promise and the drop agree.
+                        val ringRadius = baseRadius
                         val colour =
                             if (deck == PlatterGeometry.Deck.A) Color(0xFF06B6D4) else Color(0xFFF59E0B)
                         drawCircle(

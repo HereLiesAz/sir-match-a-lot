@@ -216,13 +216,15 @@ jobs:
           MAJOR=$(grep 'major=' version.properties | cut -d'=' -f2)
           MINOR=$(grep 'minor=' version.properties | cut -d'=' -f2)
 
-          # Calculate Patch version programmatically based on commits since Minor update
-          MINOR_COMMIT=$(git blame -L '/minor=/',+1 version.properties | awk '{print $1}' | tr -d '^')
-          if [ -n "$MINOR_COMMIT" ]; then
-            PATCH=$(git rev-list --count $MINOR_COMMIT..HEAD)
-          else
-            PATCH=$(grep 'patch=' version.properties | cut -d'=' -f2)
-          fi
+          # From version.properties, the same file the APK's own versionName is
+          # built from (app/build.gradle.kts). This used to derive PATCH from
+          # `git rev-list --count` since the commit that last touched `minor=`,
+          # which is a different number: at the time this was written the
+          # workflow said 10 and the properties file said 0, so the published
+          # asset was named "…-0.4.10.114.apk" while the app it contained
+          # reported versionName 0.4.0.114. Two sources of truth for one number,
+          # already ten apart, and the one users can see was the wrong one.
+          PATCH=$(grep 'patch=' version.properties | cut -d'=' -f2)
 
           VERSION_NAME="$MAJOR.$MINOR.$PATCH.$BUILD_NUMBER"
 
