@@ -33,6 +33,47 @@ import java.sql.DriverManager
  */
 class MigrationSqlTest {
 
+    private fun openVersion1Database(): Connection {
+        val connection = DriverManager.getConnection("jdbc:sqlite::memory:")
+        connection.createStatement().use { it.executeUpdate(AppDatabase.VERSION_1_TRACKS_SQL) }
+        return connection
+    }
+
+    private fun Connection.insertVersion1Row(
+        id: String,
+        title: String = "Title",
+        artist: String = "Artist",
+        localPath: String? = "/music/$id.mp3",
+        cue: Double? = null,
+    ) {
+        prepareStatement(
+            """
+            INSERT INTO tracks (
+                id, title, artist, bpm, keyName, camelotKey, progression, atmosphere,
+                energyLevel, mixTips, youtubeId, localPath, isUserAdded,
+                cuePoint1, cuePoint2, cuePoint3, cuePoint4
+            ) VALUES (?, ?, ?, 128, 'A minor', '8A', 'I-V-vi-IV', 'Dark', 7, 'Tips', NULL, ?, 1, ?, NULL, NULL, NULL)
+            """.trimIndent(),
+        ).use { statement ->
+            statement.setString(1, id)
+            statement.setString(2, title)
+            statement.setString(3, artist)
+            if (localPath == null) statement.setNull(4, java.sql.Types.VARCHAR)
+            else statement.setString(4, localPath)
+            if (cue == null) statement.setNull(5, java.sql.Types.REAL)
+            else statement.setDouble(5, cue)
+            statement.executeUpdate()
+        }
+    }
+
+    /** Every migration, from the oldest schema that ever shipped. */
+    private fun Connection.migrateFromVersion1() {
+        createStatement().use { statement ->
+            for (sql in AppDatabase.MIGRATION_1_2_STATEMENTS) statement.executeUpdate(sql)
+        }
+        migrateAll()
+    }
+
     private fun openVersion2Database(): Connection {
         val connection = DriverManager.getConnection("jdbc:sqlite::memory:")
         connection.createStatement().use { it.executeUpdate(AppDatabase.VERSION_2_TRACKS_SQL) }
@@ -115,6 +156,64 @@ class MigrationSqlTest {
             }
         }
 
+    /**
+     * Every column of `tracks` as SQLite itself describes it.
+     *
+     * Name, declared type, nullability, default and primary-key position — which
+     * is what Room's own `TableInfo` compares when it validates the live
+     * database against the schema it exported. Comparing names alone, as this
+     * test used to, passes a migration that declares `bpm INTEGER` where the
+     * entity says `REAL`, or that drops `NOT NULL DEFAULT 0` from
+     * `tempoConfidence`, and both of those are `IllegalStateException:
+     * Migration didn't properly handle tracks` at open time on an upgrading
+     * device — the precise failure this test says it exists to prevent.
+     */
+    private fun Connection.columnDefinitions(table: String = "tracks"): Map<String, String> =
+        createStatement().use { statement ->
+            statement.executeQuery("PRAGMA table_info(`$table`)").use { rows ->
+                buildMap {
+                    while (rows.next()) {
+                        put(
+                            rows.getString("name"),
+                            listOf(
+                                rows.getString("type").uppercase(),
+                                "notnull=" + rows.getInt("notnull"),
+                                "default=" + (rows.getString("dflt_value") ?: "none"),
+                                "pk=" + rows.getInt("pk"),
+                            ).joinToString(" "),
+                        )
+                    }
+                }
+            }
+        }
+
+    /**
+     * The table Room would create for [version], described the same way.
+     *
+     * Built by running Room's own exported `createSql` on a scratch database,
+     * so the comparison is engine against engine rather than regex against SQL.
+     */
+    private fun exportedColumnDefinitions(version: Int): Map<String, String> {
+        val relative = "schemas/com.hereliesaz.sirmatchalot.data.AppDatabase/$version.json"
+        val file = listOf(java.io.File(relative), java.io.File("app/$relative"))
+            .firstOrNull { it.isFile }
+            ?: return emptyMap()
+
+        val createSql = Regex("\"createSql\"\\s*:\\s*\"(.+?)\"(?=,\\s*\")")
+            .find(file.readText())
+            ?.groupValues
+            ?.get(1)
+            ?.replace("\\\"", "\"")
+            ?.replace("\\n", " ")
+            ?.replace("\${TABLE_NAME}", "tracks")
+            ?: return emptyMap()
+
+        return DriverManager.getConnection("jdbc:sqlite::memory:").use { reference ->
+            reference.createStatement().use { it.executeUpdate(createSql) }
+            reference.columnDefinitions()
+        }
+    }
+
     // --- Version 3 to 4: the local copy ---
 
     @Test
@@ -165,7 +264,7 @@ class MigrationSqlTest {
         //
         // Reading the exported JSON makes the entity itself the expectation, so
         // the next column added has to appear in a migration or this fails here.
-        val expected = exportedColumnNames(version = 4)
+        val expected = exportedColumnDefinitions(version = 4)
         assertTrue("no exported schema found for version 4", expected.isNotEmpty())
 
         openVersion2Database().use { connection ->
@@ -174,8 +273,41 @@ class MigrationSqlTest {
             assertEquals(
                 "the migrated table does not match the entity Room will validate against",
                 expected,
-                connection.columnNames(),
+                connection.columnDefinitions(),
             )
+        }
+    }
+
+    @Test
+    fun `a version 1 database migrates all the way rather than refusing to open`() {
+        // The chain started at 2 while the schema was at 4, so a device still
+        // holding a version 1 database met "a migration from 1 to 4 was
+        // required but not found" on its first query — and, with no destructive
+        // fallback in the builder either, could not open the app again at all.
+        // Version 1 shipped: `build-and-release.yml` publishes an installable
+        // APK on every push.
+        openVersion1Database().use { connection ->
+            connection.insertVersion1Row("a", title = "Blue Monday", cue = 12.5)
+            connection.migrateFromVersion1()
+
+            assertEquals(
+                "a version 1 upgrade must land on exactly the schema Room validates",
+                exportedColumnDefinitions(version = 4),
+                connection.columnDefinitions(),
+            )
+            connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT `title`, `sourceUri`, `cuePointsCsv`, `bpm` FROM `tracks`")
+                    .use { rows ->
+                        assertTrue("the library must survive the upgrade", rows.next())
+                        assertEquals("Blue Monday", rows.getString("title"))
+                        assertEquals("/music/a.mp3", rows.getString("sourceUri"))
+                        assertEquals("12.5", rows.getString("cuePointsCsv"))
+                        // Version 1's tempo was derived from the filename, and
+                        // 2 -> 3 exists to throw exactly that away.
+                        rows.getDouble("bpm")
+                        assertTrue("invented analysis must not survive", rows.wasNull())
+                    }
+            }
         }
     }
 
