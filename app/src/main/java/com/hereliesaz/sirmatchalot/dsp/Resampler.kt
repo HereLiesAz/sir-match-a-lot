@@ -16,14 +16,26 @@ object Resampler {
     /**
      * Catmull-Rom interpolated read of [source] at fractional [position].
      *
-     * Returns 0 for positions outside the buffer. Positions within the buffer
-     * but lacking neighbours (the first and last sample) clamp to the edge
+     * Returns 0 for positions outside the buffer — that is, below 0 or at or
+     * past `size`. Positions inside it but lacking neighbours clamp to the edge
      * sample, so there is no click at the boundaries.
+     *
+     * The bound used to be `position > size - 1`, which is not the edge of the
+     * buffer: it excluded the whole final sample interval. Every fractional
+     * playhead in `(size - 1, size)` returned silence instead of interpolating,
+     * so a looping clip emitted one full-amplitude zero per revolution — a click
+     * train at the loop rate, audible at every rate except exactly 1.0 from an
+     * integer start, which is the one case a tempo-matched deck is never in.
+     *
+     * Note what clamping does and does not buy at a loop point: the last
+     * fraction of a sample is held rather than interpolated toward the sample
+     * the loop wraps to, because this read knows nothing about the loop. That is
+     * a sub-sample flat spot, not a discontinuity.
      */
     fun read(source: FloatArray, position: Double): Float {
         val n = source.size
         if (n == 0) return 0f
-        if (position < 0.0 || position > (n - 1).toDouble()) return 0f
+        if (position < 0.0 || position >= n.toDouble()) return 0f
 
         val i1 = floor(position).toInt()
         val t = (position - i1).toFloat()
@@ -110,7 +122,7 @@ object Resampler {
     fun read(source: ShortArray, position: Double): Float {
         val n = source.size
         if (n == 0) return 0f
-        if (position < 0.0 || position > (n - 1).toDouble()) return 0f
+        if (position < 0.0 || position >= n.toDouble()) return 0f
 
         val i1 = floor(position).toInt()
         val t = (position - i1).toFloat()
