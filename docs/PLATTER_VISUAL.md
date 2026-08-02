@@ -79,6 +79,16 @@ and C contributing the bar treatment and the amplitude faithfulness respectively
    circles. The ring's existence is implied solely by where the rays start.
    References A and C both show this.
 
+   The single exception is the transport button — play and pause, 26 dp, at the
+   centre. It is a control and not decoration, and it is deliberately *behind*
+   the waveform: Deck B's rays reach past the centre on a loud transient, and a
+   button that jumped in front of them to stay visible would punch a hole in the
+   instrument. It is grey until something is on the circle. Because it is
+   underneath, its press is read by `PlatterScreen` from raw pointer events
+   rather than by a `clickable` on the button, against
+   `PlatterGeometry.isOnCentreButton` — whose target is clipped so that zooming
+   the platter down can never let it reach Deck B's ring.
+
 9. **Playhead**: a red glowing slash centred on the ring, total length twice the
    combined outward and inward waveform height at its current angle, so it
    bounces over the hills and valleys as it sweeps. Collapses to a glowing dot

@@ -48,7 +48,7 @@ keyed to the phases in `docs/ARCHITECTURE.md`.
 | C1 | One circle, invisible except for the waveforms on it | done (`ui/platter/PlatterCanvas`) |
 | C2 | Deck A protrudes outward, Deck B inward. Two rings, never concentric-per-track | done |
 | C3 | Angle is time: one rotation = the deck cycle, derived from track duration | done (`PlatterGeometry`) |
-| C4 | No circle drawn at the centre, and no bounding circles | done — nothing is drawn but rays, playhead and labels |
+| C4 | No circle drawn at the centre, and no bounding circles | done — nothing is drawn but rays, playhead and labels. The one thing at the centre is the transport button, which is a control rather than decoration: 26 dp, grey until a track is on the circle, and drawn *under* the waveform so the rays pass over it |
 | C5 | Playhead: a glowing red slash centred on the ring, length = 2x the combined waveform height at that angle, so it bounces | done (tested) |
 | C6 | Playhead collapses to a glowing dot when there is no waveform | done (tested) |
 | C7 | Waveforms glow, brightening and growing with live output | done — driven by `Mixer.level`, not an oscillator |
@@ -108,7 +108,7 @@ Prompt 75 replaced it with D1–D6 below.
 | F7 | Automatchic Mix: builds a full pro-grade remix playlist using every tool in the app | **done** — `MixPlanner.automatchicMix` decides the running order and per-step corrections; `domain/MixDirector` performs it, deciding when each transition starts (one crossfade before the outgoing track ends), how long it lasts (16 bars of the outgoing tempo, capped at a third of the track), and where the crossfader sits at every instant. It emits commands rather than calling the engine, so the timing is a pure function of elapsed time and is fully unit-tested |
 | F8 | Auto beat sync, auto pitch, auto stretch, harmonize | **done** — `syncToDeckA` applies rate and phase through the engine and *renders* the pitch shift into the clip via `PcmBuffer.pitchShifted`, combining the harmonic interval with a keylock correction of `-12*log2(tempoRatio)` so a tempo match does not drag the key with it. Keylock is toggleable, because off is the turntable behaviour the scratch gestures depend on |
 | F9 | No built-in audio clips; sample packs come from the Azphalt store at `azphalt.org` | **done** — auto-download on first launch removed; a store pack is imported when asked for, and arrives unanalysed for the analysis queue to measure. The same code path hid a bug: the track list was published only when non-empty, so clearing the library left the last non-empty list on screen for ever |
-| F10 | Library stays as its own tab; the decks tab becomes the play/pause button | done (already true) |
+| F10 | Library stays as its own tab; play/pause is not a tab | done — the tab bar's play item is gone. Play/pause is the button at the centre of the platter, pressed through the waveform covering it, so the transport is on the instrument instead of sitting among the things that navigate |
 
 **On YouTube and Spotify.** Their terms prohibit downloading audio, and Google
 Play's developer policy specifically bans apps that facilitate it — a listing

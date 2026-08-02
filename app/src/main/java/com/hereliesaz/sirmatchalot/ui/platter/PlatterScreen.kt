@@ -3,6 +3,8 @@ package com.hereliesaz.sirmatchalot.ui.platter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -71,6 +74,9 @@ interface PlatterActions {
     fun onRemoveSelected()
     fun onLoadTrack(track: Track)
 
+    /** The transport button in the middle of the platter was pressed. */
+    fun onTogglePlayback()
+
     /**
      * A track was dragged from the strip and released on the platter.
      *
@@ -112,6 +118,14 @@ fun PlatterScreen(
     tracks: List<RankedTrack>,
     actions: PlatterActions,
     modifier: Modifier = Modifier,
+    /**
+     * Whether the transport is running, for the button in the middle.
+     *
+     * The transport, not [PlatterState.isPlaying], which is "a deck is actually
+     * sounding" — a running transport over a silent passage is still a mix you
+     * would press this button to stop.
+     */
+    transportRunning: Boolean = false,
     /** What the strip is ordered by, shown on the control that changes it. */
     sortLabel: String = "",
     onCycleSort: () -> Unit = {},
@@ -237,6 +251,11 @@ fun PlatterScreen(
         }
     }
 
+    // Read live by the transport button's pointer handler, which is keyed on
+    // `Unit` so a press is never cancelled halfway by a state publish — the
+    // platter republishes on every frame of playback.
+    val transportEnabled by androidx.compose.runtime.rememberUpdatedState(!state.isEmpty)
+
     // A Box so the dragged card can float above the screen; the offset it is
     // positioned by needs a container whose origin matches the coordinates the
     // drag reports in.
@@ -284,7 +303,16 @@ fun PlatterScreen(
                                 )
 
                                 if (heldClipId == null) {
-                                    if (PlatterGeometry.isOnRing(radius, baseRadius)) {
+                                    // The middle of the platter is the transport
+                                    // button. A clip whose span covers that
+                                    // angle is still "on the ring" there, and
+                                    // grabbing it would turn every press of the
+                                    // button into a drag of whatever is behind
+                                    // it.
+                                    val onTransport = PlatterGeometry.isOnCentreButton(
+                                        radius, baseRadius, TRANSPORT_TOUCH_RADIUS.toPx(),
+                                    )
+                                    if (!onTransport && PlatterGeometry.isOnRing(radius, baseRadius)) {
                                         val deck = PlatterGeometry.deckAt(radius, baseRadius)
                                         val clip = PlatterGeometry.clipAt(state.clipsFor(deck), fraction)
                                         if (clip != null) {
@@ -400,6 +428,15 @@ fun PlatterScreen(
                             val baseRadius = PlatterGeometry.baseRadius(
                                 size.width.toFloat(), size.height.toFloat(), scale,
                             )
+                            // The transport button has its own handler, which
+                            // answers on the release rather than after the
+                            // double-tap window this detector waits out.
+                            if (PlatterGeometry.isOnCentreButton(
+                                    radius, baseRadius, TRANSPORT_TOUCH_RADIUS.toPx(),
+                                )
+                            ) {
+                                return@detectTapGestures
+                            }
                             val fraction = PlatterGeometry.fractionOf(
                                 position.x, position.y, cx, cy, drawnRotation,
                             )
@@ -413,6 +450,16 @@ fun PlatterScreen(
                         onDoubleTap = { position ->
                             val cx = size.width / 2f
                             val cy = size.height / 2f
+                            if (PlatterGeometry.isOnCentreButton(
+                                    PlatterGeometry.radiusOf(position.x, position.y, cx, cy),
+                                    PlatterGeometry.baseRadius(
+                                        size.width.toFloat(), size.height.toFloat(), scale,
+                                    ),
+                                    TRANSPORT_TOUCH_RADIUS.toPx(),
+                                )
+                            ) {
+                                return@detectTapGestures
+                            }
                             actions.onSelectBothAt(
                                 PlatterGeometry.fractionOf(
                                     position.x, position.y, cx, cy, drawnRotation,
@@ -422,6 +469,52 @@ fun PlatterScreen(
                         // Long press removes the selected track(s).
                         onLongPress = { actions.onRemoveSelected() },
                     )
+                }
+                // The transport button, read raw.
+                //
+                // Not a `clickable` on the button itself: it is drawn under the
+                // waveform, and a composable that took its own pointer input
+                // would have to sit on top of the rays to be pressable. Not part
+                // of the tap detector above either, because that one carries a
+                // double-tap handler and so reports nothing until the double-tap
+                // window closes — a third of a second of silence after pressing
+                // play.
+                //
+                // Consumption is ignored throughout: the detectors above run on
+                // the same events and consume them, and this press has to
+                // survive that.
+                .pointerInput(Unit) {
+                    val preferred = TRANSPORT_TOUCH_RADIUS.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val onButton = PlatterGeometry.isOnCentreButton(
+                            PlatterGeometry.radiusOf(
+                                down.position.x, down.position.y,
+                                size.width / 2f, size.height / 2f,
+                            ),
+                            PlatterGeometry.baseRadius(
+                                size.width.toFloat(), size.height.toFloat(), scale,
+                            ),
+                            preferred,
+                        )
+                        if (!onButton) return@awaitEachGesture
+                        var pressed = true
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            // A finger that travels is a scratch and a second
+                            // finger is a platter gesture. Neither is a press of
+                            // this button.
+                            if (event.changes.count { it.pressed } > 1) pressed = false
+                            if ((change.position - down.position).getDistance() >
+                                viewConfiguration.touchSlop
+                            ) {
+                                pressed = false
+                            }
+                            if (!change.pressed) break
+                        }
+                        if (pressed && transportEnabled) actions.onTogglePlayback()
+                    }
                 },
         ) {
             // The room, behind the instrument. Its brightness comes off the
@@ -435,6 +528,19 @@ fun PlatterScreen(
             if (lightShow && !state.bands.isDark) {
                 RaveBackground(bands = state.bands, phase = rigPhase(elapsedMillis))
             }
+
+            // Play and pause, in the middle of the circle — and *before* the
+            // canvas, so the waveform passes over it rather than the other way
+            // round. It is the smallest control in the app and it is under the
+            // instrument, which is the point: the platter is the thing being
+            // looked at, and Deck B's rays reach past the centre on a loud
+            // transient. A button that punched a hole in them to stay visible
+            // would be worse than one you press through them.
+            CentreTransport(
+                playing = transportRunning,
+                enabled = !state.isEmpty,
+                modifier = Modifier.align(Alignment.Center),
+            )
 
             PlatterCanvas(
                 state = state,
@@ -612,6 +718,73 @@ fun PlatterScreen(
 }
 
 /**
+ * Play and pause, at the centre of the platter.
+ *
+ * Draws only — the press is picked up by the screen, so that this can live
+ * underneath the waveform and still be pressable through it.
+ *
+ * Grey until something is on the circle. The bar button this replaces was lit
+ * and pressable with both decks empty, offering to start a mix that did not
+ * exist; here the one control at the centre of the instrument says whether the
+ * instrument has anything in it.
+ */
+@Composable
+private fun CentreTransport(
+    playing: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colour = when {
+        !enabled -> Color(0xFF3F3F46)
+        // The same amber and cyan the transport used in the bar: amber while it
+        // runs, cyan while it waits.
+        playing -> Color(0xFFF59E0B)
+        else -> Color(0xFF22D3EE)
+    }
+
+    Canvas(modifier = modifier.size(TRANSPORT_SIZE)) {
+        val outline = 1.5.dp.toPx()
+        // Inside the canvas rather than centred on its edge, so the ring is not
+        // half clipped away.
+        val radius = size.minDimension / 2f - outline / 2f
+        val centre = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+
+        drawCircle(
+            color = colour.copy(alpha = 0.4f),
+            radius = radius,
+            center = centre,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = outline),
+        )
+
+        if (playing) {
+            val barWidth = radius * 0.26f
+            val barHeight = radius * 0.9f
+            val gap = radius * 0.2f
+            for (side in intArrayOf(-1, 1)) {
+                drawRect(
+                    color = colour,
+                    topLeft = androidx.compose.ui.geometry.Offset(
+                        if (side < 0) centre.x - gap - barWidth else centre.x + gap,
+                        centre.y - barHeight / 2f,
+                    ),
+                    size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                )
+            }
+        } else {
+            // Optically centred rather than geometrically: a triangle balanced
+            // on its bounding box reads as sitting too far right.
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(centre.x - radius * 0.26f, centre.y - radius * 0.48f)
+                lineTo(centre.x + radius * 0.52f, centre.y)
+                lineTo(centre.x - radius * 0.26f, centre.y + radius * 0.48f)
+                close()
+            }
+            drawPath(path, colour)
+        }
+    }
+}
+
+/**
  * Draws gesture names at their clock positions.
  *
  * Text only — no box, no background — floating upward and dissolving.
@@ -660,6 +833,19 @@ private fun GestureLabelOverlay(
 }
 
 private val TWO_PI = PlatterGeometry.TWO_PI
+
+/** How big the transport button is drawn. Tiny: it is not the instrument. */
+private val TRANSPORT_SIZE = 26.dp
+
+/**
+ * How far from the centre a press still counts as the transport button.
+ *
+ * Larger than the button is drawn, because it is drawn small deliberately and a
+ * finger is not. Clipped against the platter's own radius by
+ * [PlatterGeometry.centreButtonRadius], so zooming the platter down never lets
+ * this reach Deck B's ring.
+ */
+private val TRANSPORT_TOUCH_RADIUS = 24.dp
 
 /**
  * How often the parked frame loop checks whether it should start again.
