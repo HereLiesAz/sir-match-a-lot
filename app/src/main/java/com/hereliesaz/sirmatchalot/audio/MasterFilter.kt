@@ -113,17 +113,32 @@ class MasterFilter(private val sampleRate: Int) {
             updateCoefficients()
 
             val base = frame * Deck.CHANNELS
-            if (abs(smoothedX) <= BYPASS_WIDTH) {
-                // Inside the dead zone: keep filter state warm but pass through,
-                // so entering the zone does not click.
-                for (channel in 0 until Deck.CHANNELS) {
-                    filters[channel].process(out[base + channel])
-                }
-                continue
-            }
+            // How much of the filtered signal is heard, and how much of the
+            // resonance compensation with it.
+            //
+            // This was a branch, not a ramp: inside the dead zone the filter ran
+            // and its output was discarded, outside it the output was scaled by
+            // `gainCompensation`. Crossing the boundary therefore switched
+            // between `input` and `input * gainCompensation` in a single sample
+            // — at Q = 8 that is 1/sqrt(8), a +9.03 dB step, on every release of
+            // the pad and every sweep through centre. The comment below said the
+            // dead zone existed so that entering it does not click; entering it
+            // was exactly where it clicked.
+            //
+            // The zone is now a fade rather than a wall. At its centre the
+            // filter is fully bypassed and its state is kept warm, at its edge
+            // it is fully in circuit, and in between both the wet signal and the
+            // compensation are interpolated, so no single sample changes the
+            // level by more than the smoother already allows.
+            val depth = ((abs(smoothedX) / BYPASS_WIDTH) - 1f + BYPASS_FADE)
+                .coerceIn(0f, 1f)
             for (channel in 0 until Deck.CHANNELS) {
                 val index = base + channel
-                out[index] = filters[channel].process(out[index]) * gainCompensation
+                val dry = out[index]
+                val wet = filters[channel].process(dry)
+                if (depth <= 0f) continue
+                val gain = 1f + (gainCompensation - 1f) * depth
+                out[index] = (dry + (wet - dry) * depth) * gain
             }
         }
     }
@@ -201,6 +216,15 @@ class MasterFilter(private val sampleRate: Int) {
          * "off" impossible to hit by hand.
          */
         const val BYPASS_WIDTH = 0.02f
+
+        /**
+         * How much of the way out of the dead zone the crossfade takes.
+         *
+         * At 1 the filter reaches full depth exactly at the edge of the zone, so
+         * the fade spans the zone itself and the transition is continuous
+         * without widening the region where the pad does nothing.
+         */
+        const val BYPASS_FADE = 1f
 
         /** Per-frame one-pole coefficient, matching the mixer's gain smoothing. */
         const val SMOOTHING = 0.0005f

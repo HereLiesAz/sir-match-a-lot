@@ -54,6 +54,56 @@ class MasterFilterTest {
         assertFalse(filter.active)
     }
 
+    @Test
+    fun `releasing a resonant sweep does not step the level`() {
+        // The dead zone was a branch, not a fade: inside it the filter ran and
+        // its output was discarded, outside it the output was multiplied by
+        // `gainCompensation`. Crossing the boundary switched between `input` and
+        // `input * 1/sqrt(Q)` in one sample — at Q = 8 a +9.03 dB step, on every
+        // release of the pad and every sweep through centre. The comment on the
+        // dead zone said it existed so that entering it does not click.
+        val filter = MasterFilter(sampleRate).apply {
+            enabled = true
+            x = 0.6f
+            y = 1f
+        }
+        val frames = 512
+        val block = FloatArray(frames * Deck.CHANNELS)
+
+        // Settle at full resonance on a constant signal, where any level step is
+        // the filter's doing and not the signal's.
+        repeat(40) {
+            java.util.Arrays.fill(block, 0.25f)
+            filter.process(block, frames)
+        }
+
+        filter.release()
+
+        var previous = Float.NaN
+        var worstStep = 0f
+        // Long enough for the smoother to glide all the way back through the
+        // dead zone to neutral.
+        repeat(400) {
+            java.util.Arrays.fill(block, 0.25f)
+            filter.process(block, frames)
+            for (value in block) {
+                if (!previous.isNaN()) {
+                    val step = kotlin.math.abs(value - previous)
+                    if (step > worstStep) worstStep = step
+                }
+                previous = value
+            }
+        }
+
+        // 0.25 -> 0.0884 is what the branch did in a single sample. The smoother
+        // moves at most a fraction of a percent per sample, so anything close to
+        // that magnitude is the discontinuity coming back.
+        assertTrue(
+            "level stepped by $worstStep in one sample on release",
+            worstStep < 0.01f,
+        )
+    }
+
     // --- It actually filters ---
 
     @Test

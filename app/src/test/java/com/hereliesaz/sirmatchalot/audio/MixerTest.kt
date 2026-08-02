@@ -264,4 +264,45 @@ class MixerTest {
         }
         assertTrue("crossfade stepped by $maxStep", maxStep < 0.02f)
     }
+
+    // --- The render path's own contract ---
+
+    @Test
+    fun `rendering a block allocates nothing`() {
+        // Both Deck.render and Mixer.render say "allocates nothing" in their
+        // KDoc, and both did: `for (clip in snapshot)` inside the per-frame loop
+        // is a `List.iterator()` per frame, `Crossfade.equalPower` returned a
+        // `Pair<Float, Float>`, and the metered level was a fresh `OutputLevel`
+        // every block. This is the assertion those comments were making.
+        //
+        // Measured as bytes allocated on this thread, which is what the JVM will
+        // report without a profiler. A tolerance rather than zero: the
+        // measurement is not itself free, and the difference that matters is
+        // between "a handful per block" and "one object per frame per clip".
+        val mixer = mixerOf(0.2f, 0.2f)
+        val out = FloatArray(frames * Deck.CHANNELS)
+
+        // Warm up, so class loading and JIT are not counted.
+        repeat(200) { mixer.render(out, frames) }
+
+        val before = allocatedBytes() ?: return
+        repeat(100) { mixer.render(out, frames) }
+        val after = allocatedBytes() ?: return
+
+        val perBlock = (after - before) / 100.0
+        // One iterator per clip per frame is ~1,000 objects a block at this
+        // size, so the old behaviour is orders of magnitude above this bound.
+        assertTrue(
+            "%.0f bytes allocated per render block".format(perBlock),
+            perBlock < 512,
+        )
+    }
+
+    /** Bytes this thread has allocated, or null where the JVM will not say. */
+    private fun allocatedBytes(): Long? = runCatching {
+        val bean = java.lang.management.ManagementFactory.getThreadMXBean()
+        val method = Class.forName("com.sun.management.ThreadMXBean")
+            .getMethod("getThreadAllocatedBytes", Long::class.javaPrimitiveType)
+        method.invoke(bean, Thread.currentThread().id) as Long
+    }.getOrNull()
 }
