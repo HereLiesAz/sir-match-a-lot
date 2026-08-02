@@ -56,6 +56,12 @@ jobs:
         run: chmod +x gradlew
 
       # Reconstruct the upload keystore from secrets — same scheme as build-and-release.yml.
+      # The Play upload path ran no test task at all. A store release is the
+      # least recoverable artifact this repository produces, so it gets the
+      # same gate the GitHub release now has, before the bundle is built.
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --build-cache
+
       - name: Prepare Keystore from Secrets
         env:
           KEYSTORE_PRIVATE: ${{ secrets.KEYSTORE_PRIVATE }}
