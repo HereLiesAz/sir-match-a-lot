@@ -269,23 +269,10 @@ fun MainScreen(
                         )
                     )
 
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { viewModel.togglePlayback() },
-                        label = { Text(if (isPlaying) "HALT MIX" else "PLAY MIX", fontSize = 10.sp, fontWeight = FontWeight.Black, color = if (isPlaying) Color(0xFFF59E0B) else Color(0xFF06B6D4)) },
-                        icon = { 
-                            Icon(
-                                Icons.Default.PlayArrow, 
-                                contentDescription = "Play/Pause",
-                                tint = if (isPlaying) Color(0xFFF59E0B) else Color(0xFF06B6D4)
-                            ) 
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.Transparent,
-                            unselectedIconColor = Color.Transparent,
-                            indicatorColor = Color.Transparent
-                        )
-                    )
+                    // Play/pause is not here any more. It is at the centre of
+                    // the platter, under the waveform, where the hand already
+                    // is — a transport control in the tab bar sat among things
+                    // that navigate, pretending to be one of them.
 
                     NavigationBarItem(
                         selected = currentTab == DjTab.PERFORMANCE,
@@ -334,6 +321,7 @@ fun MainScreen(
                         state = platterState,
                         tracks = ranked,
                         actions = rememberPlatterActions(viewModel),
+                        transportRunning = isPlaying,
                         lightShow = settings.lightShow,
                         sortLabel = sort.label,
                         onCycleSort = { viewModel.cycleLibrarySort() },
@@ -622,6 +610,8 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
             override fun onScratchEnd() = viewModel.audioEngine.endScratch()
 
             override fun onVolume(delta: Float) = viewModel.nudgeMasterVolume(delta)
+
+            override fun onTogglePlayback() = viewModel.togglePlayback()
 
             override fun onBassBoost(delta: Float) = viewModel.nudgeBassBoost(delta)
 

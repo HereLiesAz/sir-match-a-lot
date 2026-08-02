@@ -145,6 +145,32 @@ object PlatterGeometry {
     }
 
     /**
+     * Radius of the transport button's touch target at the centre.
+     *
+     * [preferredRadius] is what the button would like to be — a comfortable
+     * finger's worth, independent of how far the platter happens to be zoomed —
+     * clipped so the target can never reach Deck B's ring at `DECK_B_RING`. The
+     * platter zooms down to 0.4, and a fixed target that stayed put while the
+     * rings shrank around it would start swallowing taps meant for the inner
+     * deck.
+     */
+    fun centreButtonRadius(baseRadius: Float, preferredRadius: Float): Float =
+        minOf(preferredRadius, baseRadius * CENTRE_BUTTON_LIMIT)
+
+    /**
+     * True when a touch [radius] from the centre lands on the transport button.
+     *
+     * The button is drawn *under* the waveform — Deck B's rays reach past the
+     * centre on a loud transient — so this, not a `clickable`, is what makes it
+     * pressable through whatever is covering it.
+     */
+    fun isOnCentreButton(radius: Float, baseRadius: Float, preferredRadius: Float): Boolean =
+        baseRadius > 0f && radius <= centreButtonRadius(baseRadius, preferredRadius)
+
+    /** How far toward Deck B's ring the centre button's target may reach. */
+    const val CENTRE_BUTTON_LIMIT = 0.5f
+
+    /**
      * Which clip covers [fraction], or null.
      *
      * Spans wrap: a clip starting at 0.9 with a span of 0.2 covers 0.95 and

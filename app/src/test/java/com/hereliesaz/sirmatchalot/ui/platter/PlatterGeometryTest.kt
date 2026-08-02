@@ -230,4 +230,34 @@ class PlatterGeometryTest {
         assertTrue(!PlatterGeometry.playheadIsDot(20f, 0f))
         assertTrue(!PlatterGeometry.playheadIsDot(0f, 20f))
     }
+
+    // --- Transport button ---
+
+    @Test
+    fun `the transport button takes the middle of the platter`() {
+        val base = 300f
+        val preferred = 60f
+        assertTrue(PlatterGeometry.isOnCentreButton(0f, base, preferred))
+        assertTrue(PlatterGeometry.isOnCentreButton(59f, base, preferred))
+        assertTrue(!PlatterGeometry.isOnCentreButton(61f, base, preferred))
+    }
+
+    @Test
+    fun `the transport button never reaches Deck B's ring`() {
+        // The platter zooms down to 0.4, and a touch target fixed in pixels
+        // would grow, relative to the rings, until it swallowed taps meant for
+        // the inner deck. The clip has to hold at every radius.
+        val preferred = 60f
+        for (base in listOf(20f, 50f, 90f, 140f, 400f)) {
+            val target = PlatterGeometry.centreButtonRadius(base, preferred)
+            val deckB = PlatterGeometry.ringRadius(PlatterGeometry.Deck.B, base)
+            assertTrue("target $target reaches Deck B at $deckB", target < deckB)
+            assertTrue(!PlatterGeometry.isOnCentreButton(deckB, base, preferred))
+        }
+    }
+
+    @Test
+    fun `a platter with no size has no transport button`() {
+        assertTrue(!PlatterGeometry.isOnCentreButton(0f, 0f, 60f))
+    }
 }
