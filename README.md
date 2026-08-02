@@ -125,16 +125,20 @@ with reverse playback, scratching, crossfade, EQ and metering. The platter
 renderer and the gesture engine. Multi-device rooms — hosting, LAN discovery,
 per-device roles — the shareable session link, and the documented API.
 
-**Not yet built.** The sampler is still a placeholder synthesiser with no
-recording or sample extraction. Also outstanding: the automatic loop maker,
-running it across a whole playlist, and placing a pad bank on a deck slot.
+**Also working, and listed here as outstanding until recently.** The sampler
+records: `Sampler.beginRecording` captures the app's own mixer output to a pad.
+The automatic loop maker (`LoopHarvest`) runs across a whole playlist, and a pad
+bank can be placed onto a deck slot. `docs/REQUIREMENTS.md` has marked G2–G5
+done for some time; this section had not caught up, and a status section is
+exactly where a reader trusts the answer.
 
 ## 🔒 Privacy, permissions, terms
 
-No accounts, no analytics, no advertising, no crash reporting, and no server of
-its own. Your music and everything measured from it stay on your device; the app
-makes a network request only when you ask it to import a link or fetch a store
-pack.
+No accounts, no analytics, no advertising, and no server of its own. Your music
+and everything measured from it stay on your device; the app makes a network
+request only when you ask it to import a link or fetch a store pack. A crash is
+logged to private storage and offered to you as a prefilled GitHub issue on the
+next launch — it goes nowhere unless you send it.
 
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — what is stored, what is sent, and when
 - [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) — every permission, why it exists,

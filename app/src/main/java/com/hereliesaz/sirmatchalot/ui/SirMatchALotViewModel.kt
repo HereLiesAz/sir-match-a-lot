@@ -3311,23 +3311,43 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _feedbackMsg.value = "Sync Disconnected"
     }
 
+    /**
+     * Applies a room state from a peer.
+     *
+     * Every read here is typed-optional and the whole body is guarded, because
+     * this is the one place in the app where a stranger's bytes become
+     * arguments. It used to be `getBoolean` and `getInt`, which throw on a
+     * value of the wrong type — and the throw happened inside a
+     * `viewModelScope` coroutine, so it reached the default handler and killed
+     * the process. `{"crossfader":"x"}` from anything on the Wi-Fi took down
+     * the host, was retained in the room state, was rebroadcast, and took down
+     * every joined device with it. Each one then offered to file a bug report.
+     */
     override fun onRoomStateReceived(json: JSONObject) {
         viewModelScope.launch(Dispatchers.Main) {
-            if (json.has("isPlaying")) {
-                val syncPlaying = json.getBoolean("isPlaying")
-                if (syncPlaying != _isPlaying.value) togglePlayback()
-            }
-            if (json.has("crossfader")) {
-                applyCrossfade(json.getInt("crossfader"))
-            }
-            // Cue points travel; playhead position deliberately does not. A
-            // remote `currentTime` applied here would fight the local render
-            // loop and, since every applied change is echoed back as state,
-            // would do it in a feedback loop. Cues are static marks, so they
-            // can be shared without either problem.
-            json.optJSONObject("deckA")?.let { _cuesA.value = remoteCues(it, _cuesA.value) }
-            json.optJSONObject("deckB")?.let { _cuesB.value = remoteCues(it, _cuesB.value) }
+            runCatching { applyRoomState(json) }
+                .onFailure { _feedbackMsg.value = "Ignored a malformed sync message" }
         }
+    }
+
+    private fun applyRoomState(json: JSONObject) {
+        if (json.has("isPlaying")) {
+            val syncPlaying = json.optBoolean("isPlaying", _isPlaying.value)
+            if (syncPlaying != _isPlaying.value) togglePlayback()
+        }
+        if (json.has("crossfader")) {
+            // NaN when the value is not a number, and NaN fails every
+            // comparison the crossfade path makes, so it is rejected here.
+            val remote = json.optDouble("crossfader", Double.NaN)
+            if (!remote.isNaN()) applyCrossfade(remote.toInt())
+        }
+        // Cue points travel; playhead position deliberately does not. A
+        // remote `currentTime` applied here would fight the local render
+        // loop and, since every applied change is echoed back as state,
+        // would do it in a feedback loop. Cues are static marks, so they
+        // can be shared without either problem.
+        json.optJSONObject("deckA")?.let { _cuesA.value = remoteCues(it, _cuesA.value) }
+        json.optJSONObject("deckB")?.let { _cuesB.value = remoteCues(it, _cuesB.value) }
     }
 
     /** Cue points out of a remote deck object, keeping the local ones it omits. */

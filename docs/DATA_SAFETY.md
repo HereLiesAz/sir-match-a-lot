@@ -40,8 +40,25 @@ the ones a reviewer might expect to be ticked.
 | Contacts | No | No | — |
 | App activity | No | No | No analytics of any kind |
 | Web browsing | No | No | — |
-| App info and performance | No | No | **No crash reporting.** Nothing is sent on a crash |
+| App info and performance | No | No | **No automatic crash reporting.** A crash is written to private storage and shown to you on next launch; nothing leaves the device unless you tap through to file it. See below |
 | Device or other IDs | No | No | No advertising ID, no install ID, no device ID |
+
+### On "App info and performance"
+
+The app installs its own uncaught-exception handler. A crash writes the stack
+trace, the device model and the app version to the app's private storage, and on
+the next launch the app offers to file it. Tapping through opens a browser at a
+prefilled GitHub issue; nothing is transmitted otherwise, and declining leaves
+the report where it is.
+
+Play's definition of *collection* is transmission off the device, and this
+transmits nothing on its own — a user opening a browser and pressing submit is
+the user filing a bug, not the app phoning home. So: **not collected.**
+
+That is a narrower claim than the one this row used to make. "No crash
+reporting. Nothing is sent on a crash" was false as written: the app has had
+`CrashReportingHandler`, `CrashReportStore` and `CrashReportPrompt` throughout,
+and they exist precisely to collect a crash and route it somewhere public.
 
 ### On "Audio files"
 

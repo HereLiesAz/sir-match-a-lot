@@ -9,16 +9,6 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// The Google Services plugin fails the build outright when google-services.json
-// is missing, which every local build and every fork without repo secrets would
-// be. CI writes the file from the GOOGLE_SERVICES secret before Gradle runs (see
-// build-and-release.yml / play-publish.yml); everywhere else this is left
-// unapplied, the same way release signing is left unregistered below without
-// KEYSTORE_FILE — Firebase is simply not wired up rather than the build failing.
-if (file("google-services.json").exists()) {
-    apply(plugin = "com.google.gms.google-services")
-}
-
 val versionProps = Properties()
 val versionPropsFile = rootProject.file("version.properties")
 if (versionPropsFile.exists()) {
@@ -175,15 +165,20 @@ dependencies {
     // through invites a second, competing audio path back in.
     implementation(libs.okhttp.core)
 
-    // Firebase. Compiles and links regardless of whether google-services.json is
-    // present — see the conditional plugin application above — but without that
-    // file and the resources it generates, FirebaseApp has nothing to configure
-    // itself with and Analytics stays inert at runtime rather than crashing.
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.analytics)
-    // See androidxFragment in the version catalog: without this, play-services-basement's
-    // own transitive fragment:1.1.0 wins resolution and trips lint's
-    // InvalidFragmentVersionForActivityResult on MainActivity's registerForActivityResult.
+    // No Firebase, and nothing else that reports on the user.
+    //
+    // firebase-analytics was linked here and called from nowhere — there is not
+    // one Firebase reference in `app/src`. That is not the same as inert: CI
+    // wrote google-services.json from a secret before building the Play
+    // artifact, which applied the plugin, which gave FirebaseInitProvider what
+    // it needs, and Analytics then auto-collects sessions, screen views and an
+    // app-instance ID with no code at all. So the published build collected
+    // exactly what README.md, docs/PRIVACY.md and — the one that matters —
+    // docs/DATA_SAFETY.md all declare it does not.
+    //
+    // Removed rather than declared, because the whole product says the same
+    // thing everywhere else and no code wanted it. If analytics is ever
+    // genuinely wanted, the Play Console data-safety form has to say so first.
     implementation(libs.androidx.fragment)
 
     // Unit tests

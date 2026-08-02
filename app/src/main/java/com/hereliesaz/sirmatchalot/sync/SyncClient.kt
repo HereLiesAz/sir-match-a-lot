@@ -148,10 +148,19 @@ class SyncClient(private val listener: SyncListener) {
                                 // half an API, which is worse than none, because
                                 // it reads as working.
                                 "seek_deck" -> {
-                                    listener.onSeekEvent(
-                                        payload.optString("deck"),
-                                        payload.optDouble("time").toFloat()
-                                    )
+                                    // `optDouble` returns NaN for a missing or
+                                    // non-numeric key, and a NaN reaches
+                                    // `Deck.seekToSeconds`, where every bound
+                                    // check is false and the playhead is set to
+                                    // NaN — a deck that renders silence until
+                                    // something reloads it.
+                                    val time = payload.optDouble("time", Double.NaN)
+                                    if (!time.isNaN()) {
+                                        listener.onSeekEvent(
+                                            payload.optString("deck"),
+                                            time.toFloat()
+                                        )
+                                    }
                                 }
                             }
                         }

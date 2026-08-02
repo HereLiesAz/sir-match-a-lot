@@ -17,9 +17,15 @@ class ResamplerTest {
 
     @Test
     fun `returns silence outside the buffer`() {
+        // "Outside" is below zero or at or past `size`. This used to assert
+        // silence at 2.001 of a three-sample buffer — a position that is inside
+        // it — which is the defect written down as a requirement: every
+        // fractional playhead in the last sample interval returned 0.
         val source = floatArrayOf(1f, 1f, 1f)
         assertEquals(0f, Resampler.read(source, -0.001), 0f)
-        assertEquals(0f, Resampler.read(source, 2.001), 0f)
+        assertEquals(0f, Resampler.read(source, 3.0), 0f)
+        assertEquals(0f, Resampler.read(source, 3.001), 0f)
+        assertEquals(1f, Resampler.read(source, 2.001), 1e-5f)
     }
 
     @Test
@@ -52,6 +58,37 @@ class ResamplerTest {
             )
             position += 0.125
         }
+    }
+
+    @Test
+    fun `the final sample interval is read, not silenced`() {
+        // The bound was `position > size - 1`, which excluded the whole last
+        // sample interval rather than the region past the buffer. Anything in
+        // it returned 0, and `value in 0f..1f` — which the range test below
+        // asserts — is satisfied by 0, so nothing caught it.
+        val source = FloatArray(16) { 1f }
+        var position = 15.0
+        while (position < 16.0) {
+            assertEquals("at $position", 1f, Resampler.read(source, position), 1e-5f)
+            position += 0.05
+        }
+        // And past the end really is silence.
+        assertEquals(0f, Resampler.read(source, 16.0), 0f)
+        assertEquals(0f, Resampler.read(source, 16.001), 0f)
+    }
+
+    @Test
+    fun `a looping render of a constant emits no gaps`() {
+        // The failure this guards: at any rate whose steps do not land on
+        // integers, the playhead visits the final sample interval once per
+        // revolution. Returning 0 there put a full-amplitude one-sample notch
+        // in the output — a click train at the loop rate, on every
+        // tempo-matched deck.
+        val source = FloatArray(1024) { 0.5f }
+        val out = FloatArray(8192)
+        Resampler.renderLooping(source, 0.0, 1.037, 0, source.size, out)
+        val worst = out.min()
+        assertTrue("dropout to $worst inside a looping constant", worst > 0.45f)
     }
 
     @Test

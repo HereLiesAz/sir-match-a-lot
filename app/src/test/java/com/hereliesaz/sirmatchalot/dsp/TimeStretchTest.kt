@@ -72,6 +72,35 @@ class TimeStretchTest {
     }
 
     @Test
+    fun `gain is unity at the ends as well as the middle`() {
+        // The RMS test above measures from sample 4096 to size - 4096, which is
+        // exactly the interior — and the ends were the only places the gain was
+        // not unity. The tail added the source on top of the last frame's
+        // window ramp-down and reached 2x; the head was left at the window's
+        // own ramp-up and started from 0.
+        val input = FloatArray(96_000) { 0.5f }
+        val out = stretcher.stretch(input, 1.25)
+
+        val worst = out.max()
+        assertTrue("tail reaches ${"%.3f".format(worst)}x", worst < 0.55f)
+        // Every sample of a constant input should come back as that constant,
+        // ends included.
+        for (i in out.indices) {
+            assertEquals("at $i of ${out.size}", 0.5f, out[i], 0.02f)
+        }
+    }
+
+    @Test
+    fun `a ratio that leaves less than a frame of output still renders`() {
+        // The frame loop never runs when the output is shorter than a frame,
+        // and the tail was skipped with it, so this returned pure silence.
+        val input = FloatArray(4096) { 0.5f }
+        val out = stretcher.stretch(input, 4.0)
+        assertEquals(1024, out.size)
+        assertTrue("silent output", out.any { kotlin.math.abs(it) > 0.1f })
+    }
+
+    @Test
     fun `handles empty and very short input`() {
         assertEquals(0, stretcher.stretch(FloatArray(0), 1.5).size)
         val short = FloatArray(64) { it / 64f }
@@ -121,6 +150,5 @@ class TimeStretchTest {
         val up = shifter.shift(input, 1.0)
         // 440 * 2^(1/12) = 466.16
         assertEquals(466.16, SignalFixtures.dominantFrequency(up), 8.0)
-        assertTrue(true)
     }
 }

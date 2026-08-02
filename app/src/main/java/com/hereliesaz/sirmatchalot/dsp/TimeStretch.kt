@@ -44,7 +44,12 @@ class TimeStretcher(
         if (ratio == 1.0) return input.copyOf()
 
         val outputLength = (input.size / ratio).roundToInt().coerceAtLeast(1)
-        if (input.size < frameSize) {
+        // Either end being shorter than a frame means no frame is ever emitted.
+        // The input check was here already; without the output check, a large
+        // ratio over a short input — 2048 samples at 4x, say — ran the frame
+        // loop zero times, skipped the tail on `continuation < 0`, and returned
+        // an array of silence.
+        if (input.size < frameSize || outputLength < frameSize) {
             // Too short to window meaningfully; fall back to a plain resample,
             // which shifts pitch but keeps the call total rather than silent.
             val out = FloatArray(outputLength)
@@ -59,7 +64,6 @@ class TimeStretcher(
         var nominal = 0.0
         // Where the previously emitted frame would naturally have continued.
         var continuation = -1
-
         while (outPos + frameSize <= outputLength) {
             val nominalStart = nominal.roundToInt()
             val start =
@@ -77,12 +81,27 @@ class TimeStretcher(
             nominal += analysisHop
         }
 
-        // Tail: fill whatever remains straight from the source so the output
-        // does not end in an abrupt window ramp.
+        // Head and tail: the first and last frames have no neighbour to overlap
+        // with, so the window's own ramp is the whole gain there — a fade in and
+        // a fade out that the constant-overlap-add condition never promised.
+        //
+        // Both are completed rather than replaced: each output sample in those
+        // regions already holds `x * w`, so adding `x * (1 - w)` brings it to
+        // exactly `x` and leaves the interior untouched.
+        //
+        // The tail used to add the raw source on top of the last frame's
+        // ramp-down instead, which reaches `2x` — a +6 dB step in a single
+        // sample, 23 ms before the end of every stretched or pitch-shifted
+        // track, straight into the limiter.
+        for (i in 0 until minOf(overlap, outputLength)) {
+            if (i < input.size) output[i] += input[i] * (1f - window[i])
+        }
         if (outPos < outputLength && continuation >= 0) {
             var s = continuation
             for (i in outPos until outputLength) {
-                output[i] += if (s in input.indices) input[s] else 0f
+                val inLastFrame = overlap + (i - outPos)
+                val remaining = if (inLastFrame < frameSize) 1f - window[inLastFrame] else 1f
+                output[i] += (if (s in input.indices) input[s] else 0f) * remaining
                 s++
             }
         }
