@@ -43,6 +43,9 @@ class GestureLabels(
         var active = false
         var alpha = 1f
         var riseFraction = 0f
+
+        /** When the label appeared, so the rise is measured in time. */
+        var startedAt: Long = 0L
         /** Set when the gesture ends; null while it is still running. */
         var fadeStartedAt: Long? = null
 
@@ -53,6 +56,7 @@ class GestureLabels(
             active = false
             alpha = 1f
             riseFraction = 0f
+            startedAt = 0L
             fadeStartedAt = null
         }
     }
@@ -92,6 +96,7 @@ class GestureLabels(
             slot.active = true
             slot.alpha = 1f
             slot.riseFraction = 0f
+            slot.startedAt = nowMillis
             slot.fadeStartedAt = null
         }
 
@@ -114,7 +119,17 @@ class GestureLabels(
             }
 
             // Rising continues whether active or fading, until gone or offscreen.
-            slot.riseFraction += RISE_PER_MILLI * FRAME_MILLIS
+            //
+            // Measured against the clock, like the fade directly above it. This
+            // was `RISE_PER_MILLI * FRAME_MILLIS` with FRAME_MILLIS hardcoded at
+            // 16, advanced once per `update` — so the rise ran on the frame
+            // *count*, not on time: twice as fast on a 120 Hz display, and at a
+            // crawl at the app's lower visual-refresh settings, while the fade
+            // beside it stayed correct. The two halves of one animation ran on
+            // two different clocks. `riseDurationMillis` — a constructor
+            // parameter — was read by nothing at all.
+            val risen = (nowMillis - slot.startedAt).coerceAtLeast(0L)
+            slot.riseFraction = risen.toFloat() / riseDurationMillis
             if (slot.riseFraction >= 1f && !slot.active) {
                 slot.clear()
             }
@@ -157,7 +172,5 @@ class GestureLabels(
             "12:00", "1:30", "10:30", "3:00", "9:00", "4:30", "7:30", "6:00",
         )
 
-        private const val FRAME_MILLIS = 16f
-        private val RISE_PER_MILLI = 1f / 1_400f
     }
 }

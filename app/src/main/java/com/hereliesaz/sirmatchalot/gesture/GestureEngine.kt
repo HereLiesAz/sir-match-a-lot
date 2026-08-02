@@ -312,9 +312,12 @@ class GestureEngine {
         /**
          * How strong an axis must be relative to the strongest one to count.
          *
-         * At 0.35 a deliberate diagonal — say crossfading while scratching —
+         * At 0.25 a deliberate diagonal — say crossfading while scratching —
          * registers as both, while the incidental rotation and span drift that a
-         * two-finger drag inevitably produces do not.
+         * two-finger drag inevitably produces do not. (This said 0.35 while the
+         * constant said 0.25: the tuning argument was being made about a number
+         * that had been changed underneath it, and the next person to widen or
+         * narrow arbitration would have "restored" 0.35 on its authority.)
          */
         const val DOMINANCE_RATIO = 0.25f
 

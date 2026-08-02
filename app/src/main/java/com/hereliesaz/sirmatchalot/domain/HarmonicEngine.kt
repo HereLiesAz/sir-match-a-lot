@@ -120,7 +120,14 @@ object HarmonicEngine {
         val diff = abs(cA.number - cB.number)
         val isAdjacent = diff == 1 || diff == 11
         if (isAdjacent && cA.mode == cB.mode) {
-            val description = if (cB.number > cA.number || (cA.number == 12 && cB.number == 1)) {
+            // Clockwise on the wheel is a fifth up, and the wheel wraps both
+            // ways: 12 -> 1 is up, 1 -> 12 is down. The wrap was handled in one
+            // direction only, so 1B -> 12B — one step anticlockwise — was
+            // announced as "Perfect Fifth Up" because 12 is the larger number.
+            // The score is 90 either way, so this is advice text, but it is
+            // advice the UI states as fact.
+            val up = if (diff == 11) cA.number == 12 else cB.number > cA.number
+            val description = if (up) {
                 "Perfect Fifth Up (Boosts energy and brightness)"
             } else {
                 "Perfect Fifth Down (Lowers tension, deepens groove)"

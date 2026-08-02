@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.ui
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * One thing the app is currently doing that takes long enough to notice.
@@ -51,7 +52,16 @@ data class WorkItem(
  * exactly the kind of thing nobody remembers. [track] puts it in a `finally`,
  * once, where it cannot be forgotten.
  *
- * Not thread-safe by design; the ViewModel touches it from its own coroutines.
+ * Every mutation goes through `MutableStateFlow.update`, which is a
+ * compare-and-set loop and therefore atomic against other updaters.
+ *
+ * This said "not thread-safe by design", which is not a design: `begin` and
+ * `end` were read-modify-writes of `_items.value` called from the IO pool and
+ * the default pool at once — `shuffleCrate` starts two loads simultaneously on
+ * purpose. Interleave them and A's `end` is lost, leaving A in the list with no
+ * coroutine left to clear it: a spinner that never stops, which is precisely
+ * what [track] exists to prevent. `update` had already been given a guard
+ * against the same shape, and `begin` and `end` had not.
  */
 class BackgroundWork {
 
@@ -70,7 +80,7 @@ class BackgroundWork {
      */
     fun begin(id: String, label: String, detail: String? = null, progress: Float? = null) {
         val item = WorkItem(id, label, detail, progress)
-        _items.value = _items.value.filterNot { it.id == id } + item
+        _items.update { current -> current.filterNot { it.id == id } + item }
     }
 
     /**
@@ -84,21 +94,26 @@ class BackgroundWork {
      * cannot resurrect a finished item as a spinner nobody can clear.
      */
     fun update(id: String, detail: String? = null, progress: Float? = null) {
-        val existing = _items.value.firstOrNull { it.id == id } ?: return
-        _items.value = _items.value.map {
-            if (it.id == id) {
-                existing.copy(
-                    detail = detail ?: existing.detail,
-                    progress = progress ?: existing.progress,
-                )
+        _items.update { current ->
+            if (current.none { it.id == id }) {
+                current
             } else {
-                it
+                current.map {
+                    if (it.id == id) {
+                        it.copy(
+                            detail = detail ?: it.detail,
+                            progress = progress ?: it.progress,
+                        )
+                    } else {
+                        it
+                    }
+                }
             }
         }
     }
 
     fun end(id: String) {
-        _items.value = _items.value.filterNot { it.id == id }
+        _items.update { current -> current.filterNot { it.id == id } }
     }
 
     fun clear() {
