@@ -5,9 +5,14 @@ Last updated: 27 July 2026
 
 ## The short version
 
-Sir Match-a-Lot has no accounts, no analytics, no advertising, no crash
-reporting, and no server of its own. Your music, your library, and everything
-measured from it stay on your device.
+Sir Match-a-Lot has no accounts, no analytics, no advertising, and no server of
+its own. Your music, your library, and everything measured from it stay on your
+device.
+
+It does keep a crash log. When the app crashes it writes the stack trace to its
+own private storage and offers, on the next launch, to file it as a GitHub
+issue — which opens your browser with the text already filled in. Nothing is
+sent unless you send it, and declining leaves the report on the device.
 
 The app makes a network request only when you ask it to: importing a playlist
 from a link you paste, or downloading a sample pack from the Azphalt store.

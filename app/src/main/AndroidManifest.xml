@@ -7,14 +7,15 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 
     <!--
-        firebase-analytics' own manifest declares both the legacy Play Services
-        advertising-ID permission and its Privacy Sandbox successor, for
-        advertising-ID-linked analytics features this app doesn't use — there is
-        no ad SDK anywhere in the source. Left in, Play rejects the upload
-        outright unless the Play Console data-safety form is amended to declare
-        an advertising ID the app does not actually read. Removed at merge
-        instead: the permissions simply aren't in the shipped manifest, so there
-        is nothing to declare.
+        A standing guarantee rather than a fix for one dependency.
+
+        These arrived with firebase-analytics, which declared both the legacy
+        Play Services advertising-ID permission and its Privacy Sandbox
+        successor for ad-ID-linked features this app never used. Firebase is
+        gone, so today these remove nothing — and that is the point of leaving
+        them: whatever a future dependency declares, no advertising-ID
+        permission reaches the shipped manifest, and the data-safety form never
+        has to claim an ID this app does not read.
     -->
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
