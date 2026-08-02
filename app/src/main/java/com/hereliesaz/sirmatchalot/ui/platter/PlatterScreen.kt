@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -251,10 +252,43 @@ fun PlatterScreen(
         }
     }
 
-    // Read live by the transport button's pointer handler, which is keyed on
-    // `Unit` so a press is never cancelled halfway by a state publish — the
-    // platter republishes on every frame of playback.
+    // Everything the pointer handlers below read, held so that they read it
+    // *live*.
+    //
+    // Every `pointerInput` here is keyed on `Unit`, because the platter
+    // republishes its state on every frame of playback and a key that changes
+    // cancels the gesture coroutine mid-gesture: `detectTapGestures` restarts at
+    // `awaitFirstDown`, which a finger already on the glass never satisfies
+    // again. Keyed on `state`, tap-to-select, double-tap and long-press were all
+    // dead for as long as audio was advancing, and came back the moment it
+    // stopped.
+    //
+    // The cost of that key is that the block captures its parameters once, at
+    // first composition, and keeps them for the life of the composition — which
+    // is the other half of the same bug: the raw handler was hit-testing against
+    // the clip list the platter had when the tab first opened (usually empty, so
+    // no clip could be grabbed at all) at a rotation of zero (so with the
+    // playhead locked or the platter turned, a grab landed on the clip opposite
+    // the finger). `rememberUpdatedState` is what makes a `Unit` key safe: the
+    // handler is never restarted, and it never reads a stale value.
     val transportEnabled by androidx.compose.runtime.rememberUpdatedState(!state.isEmpty)
+    val currentState by androidx.compose.runtime.rememberUpdatedState(state)
+    val currentActions by androidx.compose.runtime.rememberUpdatedState(actions)
+    val currentRotation by androidx.compose.runtime.rememberUpdatedState(drawnRotation)
+
+    // One definition of "this touch is the transport button".
+    //
+    // The guard has to hold in every detector on the platter, and it was written
+    // out at three of the four sites. The fourth was long press, which removes
+    // the selected clips.
+    fun PointerInputScope.isTransportButton(position: Offset): Boolean =
+        PlatterGeometry.isOnCentreButton(
+            PlatterGeometry.radiusOf(
+                position.x, position.y, size.width / 2f, size.height / 2f,
+            ),
+            PlatterGeometry.baseRadius(size.width.toFloat(), size.height.toFloat(), scale),
+            TRANSPORT_TOUCH_RADIUS.toPx(),
+        )
 
     // A Box so the dragged card can float above the screen; the offset it is
     // positioned by needs a container whose origin matches the coordinates the
@@ -299,7 +333,7 @@ fun PlatterScreen(
                                 )
                                 val radius = PlatterGeometry.radiusOf(single.x, single.y, cx, cy)
                                 val fraction = PlatterGeometry.fractionOf(
-                                    single.x, single.y, cx, cy, drawnRotation,
+                                    single.x, single.y, cx, cy, currentRotation,
                                 )
 
                                 if (heldClipId == null) {
@@ -314,7 +348,8 @@ fun PlatterScreen(
                                     )
                                     if (!onTransport && PlatterGeometry.isOnRing(radius, baseRadius)) {
                                         val deck = PlatterGeometry.deckAt(radius, baseRadius)
-                                        val clip = PlatterGeometry.clipAt(state.clipsFor(deck), fraction)
+                                        val clip =
+                                            PlatterGeometry.clipAt(currentState.clipsFor(deck), fraction)
                                         if (clip != null) {
                                             heldClipId = clip.id
                                             heldClipTitle = clip.title
@@ -328,7 +363,7 @@ fun PlatterScreen(
                                     heldClipOffCircle = !onRing
                                     if (onRing) {
                                         heldClipDeck = PlatterGeometry.deckAt(radius, baseRadius)
-                                        actions.onMoveClip(heldClipId!!, heldClipDeck, fraction)
+                                        currentActions.onMoveClip(heldClipId!!, heldClipDeck, fraction)
                                     }
                                 }
                             }
@@ -419,7 +454,7 @@ fun PlatterScreen(
                         }
                     }
                 }
-                .pointerInput(state) {
+                .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { position ->
                             val cx = size.width / 2f
@@ -431,16 +466,11 @@ fun PlatterScreen(
                             // The transport button has its own handler, which
                             // answers on the release rather than after the
                             // double-tap window this detector waits out.
-                            if (PlatterGeometry.isOnCentreButton(
-                                    radius, baseRadius, TRANSPORT_TOUCH_RADIUS.toPx(),
-                                )
-                            ) {
-                                return@detectTapGestures
-                            }
+                            if (isTransportButton(position)) return@detectTapGestures
                             val fraction = PlatterGeometry.fractionOf(
-                                position.x, position.y, cx, cy, drawnRotation,
+                                position.x, position.y, cx, cy, currentRotation,
                             )
-                            actions.onSelectAt(
+                            currentActions.onSelectAt(
                                 PlatterGeometry.deckAt(radius, baseRadius),
                                 fraction,
                                 additive = false,
@@ -448,26 +478,24 @@ fun PlatterScreen(
                         },
                         // Double tap selects both decks' waveforms at that spot.
                         onDoubleTap = { position ->
-                            val cx = size.width / 2f
-                            val cy = size.height / 2f
-                            if (PlatterGeometry.isOnCentreButton(
-                                    PlatterGeometry.radiusOf(position.x, position.y, cx, cy),
-                                    PlatterGeometry.baseRadius(
-                                        size.width.toFloat(), size.height.toFloat(), scale,
-                                    ),
-                                    TRANSPORT_TOUCH_RADIUS.toPx(),
-                                )
-                            ) {
-                                return@detectTapGestures
-                            }
-                            actions.onSelectBothAt(
+                            if (isTransportButton(position)) return@detectTapGestures
+                            currentActions.onSelectBothAt(
                                 PlatterGeometry.fractionOf(
-                                    position.x, position.y, cx, cy, drawnRotation,
+                                    position.x, position.y,
+                                    size.width / 2f, size.height / 2f,
+                                    currentRotation,
                                 ),
                             )
                         },
-                        // Long press removes the selected track(s).
-                        onLongPress = { actions.onRemoveSelected() },
+                        // Long press removes the selected track(s) — but not when
+                        // the press is on the transport button. Holding a 26 dp
+                        // play button for the long-press timeout is an ordinary
+                        // way to press it, and it deleted the selection and
+                        // started playback in the same gesture.
+                        onLongPress = { position ->
+                            if (isTransportButton(position)) return@detectTapGestures
+                            currentActions.onRemoveSelected()
+                        },
                     )
                 }
                 // The transport button, read raw.
@@ -513,7 +541,7 @@ fun PlatterScreen(
                             }
                             if (!change.pressed) break
                         }
-                        if (pressed && transportEnabled) actions.onTogglePlayback()
+                        if (pressed && transportEnabled) currentActions.onTogglePlayback()
                     }
                 },
         ) {
