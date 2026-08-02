@@ -353,6 +353,29 @@ class SyncServerTest {
     }
 
     @Test
+    fun `either user may approve first`() {
+        // Both prompts appear at the same moment and either person may tap
+        // first. The join used to be *refused* when it arrived before the
+        // host's approval, so whenever the joining user was quicker — a coin
+        // toss on two phones in a booth — the connection closed before the host
+        // had decided, and the host's approval then appeared to do nothing.
+        val server = startServer(code = "ABCD")
+
+        // Joining device first.
+        val eager = pair(server, "ABCD")
+        eager.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+        assertNull("nothing before the host answers", eager.nextSealed("init_state", 400))
+        server.approvePeer(eager.peerId!!)
+        assertNotNull("the host's approval must complete it", eager.nextSealed("init_state"))
+
+        // Host first, which was the only order that used to work.
+        val patient = pair(server, "ABCD")
+        server.approvePeer(patient.peerId!!)
+        patient.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+        assertNotNull("and this order must still work", patient.nextSealed("init_state"))
+    }
+
+    @Test
     fun `a device the host has not approved reaches nothing`() {
         // The approval is not decoration on top of the key exchange; it is the
         // thing the key exchange cannot do for itself. A device that agrees a
@@ -364,11 +387,9 @@ class SyncServerTest {
         val peer = pair(server, "ABCD")
         peer.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
 
-        // The refusal first: `nextSealed` drains what it skips, and the refusal
-        // is not a sealed frame — a device that has been turned away may have no
-        // session left to open one with.
-        assertNotNull("an unapproved device must be told why", peer.nextOfType("join_refused", 800))
-        assertNull("and must not be given the room", peer.nextSealed("init_state", 500))
+        // Waiting, not refused — the host may still be looking at the digits.
+        // What matters is that waiting admits nothing.
+        assertNull("an unapproved device must not be given the room", peer.nextSealed("init_state", 800))
 
         peer.sendSealed(
             JSONObject()

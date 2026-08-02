@@ -293,6 +293,10 @@ class SyncServer(
         @Volatile
         private var approvedByHost = false
 
+        /** Set when a valid sealed `join` has arrived, approved or not yet. */
+        @Volatile
+        private var pendingJoin = false
+
         /** What the roster calls this peer, and what the approval prompt shows. */
         @Volatile
         private var peerName: String = "A device"
@@ -311,6 +315,28 @@ class SyncServer(
          */
         fun approve() {
             approvedByHost = true
+            admitIfReady()
+        }
+
+        /**
+         * Admits the peer once both halves have arrived, in either order.
+         *
+         * The two halves are this host's user approving and the peer's sealed
+         * join, and nothing orders them: they are a person tapping a dialog and
+         * a message crossing a network.
+         */
+        @Synchronized
+        private fun admitIfReady() {
+            if (joined || !pendingJoin || !approvedByHost) return
+            joined = true
+            // A joiner needs the room as it stands, not only what changes after
+            // it arrives.
+            send(
+                JSONObject().apply {
+                    put("type", "init_state")
+                    put("roomState", roomState)
+                }.toString(),
+            )
         }
 
         fun refuse(reason: String) {
@@ -471,19 +497,17 @@ class SyncServer(
                         refuse("room code does not match")
                         return
                     }
-                    if (!approvedByHost) {
-                        refuse("the host has not approved this device")
-                        return
-                    }
-                    joined = true
-                    // A joiner needs the room as it stands, not only what
-                    // changes after it arrives.
-                    send(
-                        JSONObject().apply {
-                            put("type", "init_state")
-                            put("roomState", roomState)
-                        }.toString(),
-                    )
+                    // Held, not refused, when the host has not answered yet.
+                    //
+                    // Both prompts appear at the same moment and either user may
+                    // tap first. Refusing here — which is what this did — meant
+                    // that whenever the joining user was the quicker of the two,
+                    // the connection was closed before the host had even
+                    // decided. That is not a rare ordering; on two phones in a
+                    // booth it is a coin toss, and the failure looks like the
+                    // host's approval doing nothing.
+                    pendingJoin = true
+                    admitIfReady()
                 }
                 "update_state" -> {
                     if (!joined) return
