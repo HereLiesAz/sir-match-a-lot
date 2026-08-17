@@ -4,6 +4,8 @@ name: Publish to Google Play
 # Defaults: internal track, draft status, and publish OFF (build + upload the .aab as a CI
 # artifact only) so a dry run never touches Play.
 on:
+  push: 
+    branches: main
   workflow_dispatch:
     inputs:
       track:
