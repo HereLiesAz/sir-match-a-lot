@@ -148,7 +148,21 @@ class DeviceIdentity private constructor(private val keys: KeyPair) {
  */
 class KnownDevices(private val store: KeyValueStore) {
 
-    /** Every remembered device, fingerprint to the name it was paired under. */
+    /**
+     * Every remembered device, fingerprint to the name it was paired under.
+     *
+     * `@Synchronized` on every method here, not just the mutators: `remember`
+     * runs on a room's own per-connection reader thread the moment a join is
+     * admitted, while `isKnown`/`all` are read from whatever thread asks —
+     * the host's UI, or another connection's reader thread pairing at the
+     * same time. Without a lock here, this class's own correctness was
+     * resting entirely on the [KeyValueStore] implementation happening to be
+     * thread-safe, which `SharedPreferences` is but nothing about this
+     * class's contract promised or checked — so a plain in-memory store
+     * (exactly what a test would reach for) had no happens-before edge
+     * between a `remember` on one thread and an `isKnown` on another at all.
+     */
+    @Synchronized
     fun all(): Map<String, String> {
         val raw = store.getString(KEY) ?: return emptyMap()
         return raw.lineSequence()
@@ -161,20 +175,24 @@ class KnownDevices(private val store: KeyValueStore) {
     }
 
     /** True when [fingerprint] has been paired with and not forgotten. */
+    @Synchronized
     fun isKnown(fingerprint: String): Boolean = all().containsKey(fingerprint)
 
     /** Remembers [fingerprint], so the next connection needs no dialog. */
+    @Synchronized
     fun remember(fingerprint: String, name: String) {
         if (fingerprint.isBlank()) return
         write(all() + (fingerprint to name.replace('\n', ' ').replace('=', ' ').trim()))
     }
 
     /** Forgets one device, which will be prompted for again next time. */
+    @Synchronized
     fun forget(fingerprint: String) {
         write(all() - fingerprint)
     }
 
     /** Forgets every device. The revocation this needs to have. */
+    @Synchronized
     fun forgetAll() {
         write(emptyMap())
     }
