@@ -75,7 +75,6 @@ object BeatSnap {
      *
      * @return [ratio] unchanged when there is no usable grid — stretch freely,
      *   rather than 1.0, which would mean ignoring the pinch entirely.
-     *   tempo stretches freely rather than being snapped to a guess.
      */
     fun snapRatio(
         currentFrames: Int,

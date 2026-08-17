@@ -126,19 +126,19 @@ class TrackGridTest {
 
     @Test
     fun `bar snapping lands on real bars`() {
-        // BeatSync.nearestBar is what cues, loops and transitions are placed
-        // with. Under the old grid a 1_4 track snapped to every beat, so
+        // TrackStructure.nearestBar is what cues, loops and transitions are
+        // placed with. Under the old grid a 1_4 track snapped to every beat, so
         // "snapped to the bar" and "snapped to the nearest beat" were the same
         // operation and nothing looked wrong.
-        val t = track(bpm = 120.0, firstBeat = 0.0, downbeat = 0)
-        assertEquals(4.0, BeatSync.nearestBar(t, 4.4)!!, 1e-9)
-        assertEquals(4.0, BeatSync.nearestBar(t, 3.6)!!, 1e-9)
-        assertTrue(BeatSync.nearestBar(t, 5.0)!! % 2.0 < 1e-9)
+        val grid = requireNotNull(track(bpm = 120.0, firstBeat = 0.0, downbeat = 0).measuredBeatGrid())
+        assertEquals(4.0, grid.nearestBarTime(4.4), 1e-9)
+        assertEquals(4.0, grid.nearestBarTime(3.6), 1e-9)
+        assertTrue(grid.nearestBarTime(5.0) % 2.0 < 1e-9)
     }
 
     @Test
-    fun `a track with no grid snaps to nothing rather than to zero`() {
-        assertNull(BeatSync.nearestBar(track(bpm = null), 10.0))
-        assertNull(BeatSync.nearestBar(track(firstBeat = null), 10.0))
+    fun `a track with no grid has no bar to snap to`() {
+        assertNull(track(bpm = null).measuredBeatGrid())
+        assertNull(track(firstBeat = null).measuredBeatGrid())
     }
 }

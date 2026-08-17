@@ -1,9 +1,9 @@
 package com.hereliesaz.sirmatchalot.domain
 
+import androidx.annotation.VisibleForTesting
 import com.hereliesaz.sirmatchalot.data.Track
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -69,14 +69,23 @@ object HarmonicEngine {
         val regex = Regex("^(\\d+)([AB])$")
         val match = regex.find(trimmed) ?: return null
         val num = match.groupValues[1].toIntOrNull() ?: return null
+        // The wheel only has positions 1..12 — "13A" matches the regex but names
+        // nothing on it, and letting it through handed callers a CamelotKey that
+        // would never be found in CAMELOT_MINOR/CAMELOT_MAJOR by lookup.
+        if (num !in 1..12) return null
         val mode = match.groupValues[2][0]
         return CamelotKey(num, mode)
     }
 
+    /**
+     * Used only by tests, as the round-trip check on [getShortestSemitoneShift]
+     * below — applying the shift it returns must land back on the starting key.
+     */
+    @VisibleForTesting
     fun transposeCamelotKey(camelotKey: String, semitones: Int): String {
         if (semitones == 0) return camelotKey
         val parsed = parseCamelotKey(camelotKey) ?: return camelotKey
-        
+
         val list = if (parsed.mode == 'A') CAMELOT_MINOR else CAMELOT_MAJOR
         val idx = list.indexOf(camelotKey.trim().uppercase())
         if (idx == -1) return camelotKey
@@ -92,8 +101,12 @@ object HarmonicEngine {
         val listA = if (parsedA.mode == 'A') CAMELOT_MINOR else CAMELOT_MAJOR
         val listB = if (parsedB.mode == 'A') CAMELOT_MINOR else CAMELOT_MAJOR
 
-        val idxA = listA.indexOf(keyA.uppercase())
-        val idxB = listB.indexOf(keyB.uppercase())
+        // Must match how parseCamelotKey normalised these strings above — an
+        // untrimmed " 8A" parses fine but never matches a list entry by raw
+        // indexOf, so it silently fell through to a 0 shift instead of an
+        // actual failure or the intended semitone count.
+        val idxA = listA.indexOf(keyA.trim().uppercase())
+        val idxB = listB.indexOf(keyB.trim().uppercase())
         if (idxA == -1 || idxB == -1) return 0
 
         var diff = (idxA - idxB + 12) % 12
@@ -255,14 +268,4 @@ object HarmonicEngine {
         )
     }
 
-    fun getCamelotDistance(camelotA: String, camelotB: String): Int {
-        val cA = parseCamelotKey(camelotA) ?: return 999
-        val cB = parseCamelotKey(camelotB) ?: return 999
-
-        val numDiff = abs(cA.number - cB.number)
-        val dN = min(numDiff, 12 - numDiff)
-        val dM = if (cA.mode == cB.mode) 0 else 1
-
-        return dN + dM
-    }
 }

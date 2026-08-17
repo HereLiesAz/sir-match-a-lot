@@ -265,7 +265,15 @@ fun PlatterScreen(
             withFrameMillis { frameTimeMillis ->
                 elapsedMillis = frameTimeMillis
                 labels.update(
-                    activeTexts = gestures.active.map { it.kind.label }.toSet(),
+                    // CLIP_DRAG is excluded: it fires for a one-finger drag that
+                    // did not start on a clip (the ring-based path above handles
+                    // that case directly, outside the gesture engine), and the
+                    // "CLIP" label for it promised a drag that never happens —
+                    // GestureKind.CLIP_DRAG's handler below is a no-op by design.
+                    activeTexts = gestures.active
+                        .filter { it.kind != GestureKind.CLIP_DRAG }
+                        .map { it.kind.label }
+                        .toSet(),
                     nowMillis = frameTimeMillis,
                 )
                 visibleLabels = labels.visible()
@@ -510,6 +518,15 @@ fun PlatterScreen(
                                     GestureKind.PLATTER_SCALE ->
                                         scale = (scale + gesture.delta * 0.004f).coerceIn(0.4f, 4f)
                                     GestureKind.PLATTER_ROTATE -> rotation += gesture.delta
+                                    // Deliberately a no-op: a one-finger drag that
+                                    // starts on a clip is already handled above,
+                                    // outside the gesture engine, and moves that
+                                    // clip directly. This fires for a one-finger
+                                    // drag that started somewhere else on the
+                                    // platter with nothing to grab — there is no
+                                    // clip to act on. Excluded from the label bus
+                                    // above so it does not announce a drag that
+                                    // never happens.
                                     GestureKind.CLIP_DRAG -> Unit
                                 }
                             }

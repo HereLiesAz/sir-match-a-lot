@@ -3,7 +3,6 @@ package com.hereliesaz.sirmatchalot.domain
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.dsp.BeatGrid
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
  * What has to change for one track to run in time with another.
@@ -153,36 +152,4 @@ object BeatSync {
         return BeatGrid(bpm, phase).nearestBeatTime(seconds)
     }
 
-    /**
-     * The bar line in [track] nearest to [seconds]. Loops and transitions belong
-     * on bars, not on arbitrary beats.
-     */
-    fun nearestBar(track: Track, seconds: Double): Double? =
-        track.measuredBeatGrid()?.nearestBarTime(seconds)
-
-    /**
-     * Length of [bars] bars in [track], for making a loop that stays musical.
-     */
-    fun barDurationSeconds(track: Track, bars: Int = 1): Double? {
-        val bpm = track.bpm ?: return null
-        if (bpm <= 0.0 || bars <= 0) return null
-        return BeatGrid(bpm, track.firstBeatSeconds ?: 0.0).barDuration * bars
-    }
-
-    /**
-     * Whether [source] can be brought to [target]'s tempo without an audible
-     * stretch — the conventional limit is about 6%.
-     */
-    fun canSyncWithoutArtefacts(source: Track, target: Track, tolerance: Double = 0.06): Boolean {
-        val alignment = align(source, target) ?: return false
-        return abs(alignment.tempoRatio - 1.0) <= tolerance
-    }
-
-    /** Percentage tempo change the alignment implies, for display. */
-    fun tempoChangePercent(alignment: BeatAlignment): Double =
-        (alignment.tempoRatio - 1.0) * 100.0
-
-    /** Rounds a ratio to the nearest whole percent, for a readable pitch-fader figure. */
-    fun roundedPercent(alignment: BeatAlignment): Int =
-        tempoChangePercent(alignment).roundToInt()
 }

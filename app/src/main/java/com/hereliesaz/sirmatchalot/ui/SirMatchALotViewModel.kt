@@ -260,7 +260,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 items + WorkItem(
                     id = BackgroundWork.SERVICE_ANALYSIS,
                     label = if (analysis.paused) "Analysis paused" else "Analysing library",
-                    detail = "${analysis.done + 1} of ${analysis.total}" +
+                    // Clamped: without it, the state published right after the
+                    // service's loop finishes (done == total, briefly, before
+                    // finish() clears it) read as "N+1 of N" here while the
+                    // library screen's plain "done/total" read "N of N".
+                    detail = "${(analysis.done + 1).coerceAtMost(analysis.total)} of ${analysis.total}" +
                         if (analysis.current.isNotEmpty()) " — ${analysis.current}" else "",
                     progress = analysis.fraction,
                 )
@@ -2689,8 +2693,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _feedbackMsg.value = "This device: ${role.label}"
     }
 
-    private val _feedbackMsg = MutableStateFlow("Offline Mode")
-    val feedbackMsg: StateFlow<String> = _feedbackMsg
+    private val _feedbackMsg = FeedbackChannel("Offline Mode")
+    val feedbackMsg: StateFlow<FeedbackEvent> = _feedbackMsg.events
 
     private val _cuesA = MutableStateFlow<List<Float?>>(listOf(null, null, null, null))
     val cuesA: StateFlow<List<Float?>> = _cuesA
@@ -2807,9 +2811,24 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 _feedbackMsg.value = "${pack.name} contained no audio"
                 return@track
             }
-            trackDao.insertTracks(tracks)
-            _feedbackMsg.value =
-                "Imported ${tracks.size} from ${pack.name} — run Analyse to measure them"
+            // Deduped by sourceUri, the same way importFolder is: every track
+            // here is built with no id, so it gets a fresh UUID regardless of
+            // whether the extracted file is already in the library — without
+            // this, tapping "Store" twice (or the pack simply already having
+            // been installed) duplicated the whole pack in the library, one
+            // more copy per tap.
+            val existing = _tracks.value.mapNotNull { it.sourceUri }.toHashSet()
+            val newTracks = tracks.filter { it.sourceUri !in existing }
+            if (newTracks.isEmpty()) {
+                _feedbackMsg.value = "${pack.name} was already in the library"
+                return@track
+            }
+            trackDao.insertTracks(newTracks)
+            _feedbackMsg.value = if (newTracks.size == tracks.size) {
+                "Imported ${newTracks.size} from ${pack.name} — run Analyse to measure them"
+            } else {
+                "Imported ${newTracks.size} new of ${tracks.size} from ${pack.name} — run Analyse to measure them"
+            }
           }
         }
     }
@@ -3841,4 +3860,34 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         /** Below this a pairing is not worth offering as one. */
         private const val STRONG_PAIR_SCORE = 60
     }
+}
+
+/**
+ * One piece of feedback, with a ticket number.
+ *
+ * Two consecutive identical messages — retrying a track that fails the same
+ * way twice, say — are still two separate events worth two separate banner
+ * shows. [id] is what makes that true: a plain `MutableStateFlow<String>`
+ * conflates equal values, so the second `.value = "..."` assignment produced
+ * no new emission at all, and the UI — keyed on the message text — never
+ * saw anything change.
+ */
+data class FeedbackEvent(val text: String, val id: Long = 0L)
+
+/**
+ * A `.value = "..."` API compatible with the many call sites that used to
+ * hold a `MutableStateFlow<String>` directly, but without the conflation:
+ * every assignment is a new [FeedbackEvent] with its own id, so equal text
+ * set twice in a row still produces two distinct emissions.
+ */
+private class FeedbackChannel(initialText: String) {
+    private val counter = java.util.concurrent.atomic.AtomicLong(0)
+    private val state = MutableStateFlow(FeedbackEvent(initialText, counter.getAndIncrement()))
+    val events: StateFlow<FeedbackEvent> = state
+
+    var value: String
+        get() = state.value.text
+        set(newValue) {
+            state.value = FeedbackEvent(newValue, counter.incrementAndGet())
+        }
 }

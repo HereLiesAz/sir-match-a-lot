@@ -242,7 +242,10 @@ fun LibraryScreen(
             item {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Analysing ${progress.done + 1}/${progress.total}: ${progress.current}",
+                    // Clamped: the state right after the analysis loop finishes
+                    // (done == total, briefly, before the run is cleared) hit
+                    // this "current item" formula and showed "N+1/N".
+                    "Analysing ${(progress.done + 1).coerceAtMost(progress.total)}/${progress.total}: ${progress.current}",
                     color = Color(0xFF81E6D9),
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
@@ -500,7 +503,7 @@ fun LibraryScreen(
             }
         }
 
-        if (feedbackMsg.isNotEmpty()) {
+        if (feedbackMsg.text.isNotEmpty()) {
             item {
                 Spacer(Modifier.height(8.dp))
                 Box(
@@ -514,7 +517,7 @@ fun LibraryScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Info, contentDescription = "Feedback", tint = Color.Cyan, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(feedbackMsg, color = Color(0xFF81E6D9), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
+                        Text(feedbackMsg.text, color = Color(0xFF81E6D9), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
                     }
                 }
             }

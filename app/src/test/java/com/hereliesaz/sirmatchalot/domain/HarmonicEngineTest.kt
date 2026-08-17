@@ -109,23 +109,6 @@ class HarmonicEngineTest {
     }
 
     @Test
-    fun `Camelot distance is symmetric and circular`() {
-        assertEquals(0, HarmonicEngine.getCamelotDistance("8A", "8A"))
-        assertEquals(1, HarmonicEngine.getCamelotDistance("8A", "9A"))
-        assertEquals(1, HarmonicEngine.getCamelotDistance("8A", "8B"))
-        assertEquals(1, HarmonicEngine.getCamelotDistance("12A", "1A"))
-        assertEquals(
-            HarmonicEngine.getCamelotDistance("3A", "10B"),
-            HarmonicEngine.getCamelotDistance("10B", "3A"),
-        )
-    }
-
-    @Test
-    fun `Camelot distance reports a sentinel for unparseable keys`() {
-        assertEquals(999, HarmonicEngine.getCamelotDistance("nonsense", "8A"))
-    }
-
-    @Test
     fun `transposes within the wheel`() {
         // Up a perfect fifth (7 semitones) from C major (8B) is G major (9B).
         assertEquals("9B", HarmonicEngine.transposeCamelotKey("8B", 7))

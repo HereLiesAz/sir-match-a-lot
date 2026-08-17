@@ -108,9 +108,17 @@ data class TrackStructure(
         // always somewhere to go even for a track nothing was measured on.
         found.add(Exit(end, Exit.Reason.TRACK_END, 0.2))
 
+        // Sorted before deduping, not after: distinctBy keeps the first
+        // element it sees per key, in whatever order the list already has —
+        // which was insertion order (points before loops, and within each,
+        // file order), not quality order. A weak breakdown landing in the
+        // same 100ms bucket as a strong loop end used to survive just
+        // because it happened to be appended first; the strong exit was
+        // silently discarded despite ranking is "the whole decision" this
+        // function's own header describes.
         return found
-            .distinctBy { (it.atSeconds * 10).toLong() }
             .sortedByDescending { it.quality }
+            .distinctBy { (it.atSeconds * 10).toLong() }
     }
 
     /**
