@@ -10,8 +10,9 @@ package com.hereliesaz.sirmatchalot.domain
  * circle is also an unbounded heap.
  *
  * The bound is expressed in **beats**, not in songs, because that is what the
- * circle actually measures. Three songs is what it is sized for; a deck holding
- * one long track and two short ones should not be told it is full.
+ * circle actually measures. Two songs is what it is sized for (see
+ * [DEFAULT_MAX_BEATS] for why not three); a deck holding one long track and
+ * a couple of short ones should not be told it is full.
  *
  * Pure arithmetic over clip descriptions, so the eviction policy is tested
  * without an audio engine.

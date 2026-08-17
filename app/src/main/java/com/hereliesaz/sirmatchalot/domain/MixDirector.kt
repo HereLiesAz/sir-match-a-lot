@@ -434,8 +434,14 @@ class MixDirector(
             }
         }
 
-        // The last track has no transition out of it but can still quote itself.
-        val until = script?.exitSeconds ?: from.durationSeconds
+        // The last track has no transition out of it but can still quote
+        // itself. `script?.exitSeconds` alone is not the actual start of the
+        // transition — transitionAt() also clamps it so the handover
+        // *completes* by the end of the track, and a flourish scheduled
+        // against the unclamped exit could still land inside that clamped
+        // window and collide with it (its StopLoops silencing a loop-roll's
+        // own loop, for one).
+        val until = if (script != null) transitionAt() else from.durationSeconds
         flourishes = choreographer
             .flourishes(from, phase, random, safeUntil = until)
             .sortedBy { it.atSeconds }

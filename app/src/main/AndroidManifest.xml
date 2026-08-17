@@ -67,14 +67,17 @@
         A network security config cannot express what would be preferable here
         ("cleartext to private ranges only"): it matches domains, and a room is
         found at whatever address the host happens to have. So this is the blunt
-        instrument, and the limit is stated in docs/SECURITY.md rather than
-        implied: traffic on the room socket is unencrypted and anyone on the
-        network can read it.
+        instrument. The room socket itself is not the last line of defence —
+        every frame on it is sealed with a paired, ECDH-derived AES-256-GCM key
+        (see docs/SECURITY.md) — this attribute only permits the raw TCP/WS
+        transport that carries those sealed frames.
     -->
     <application
         android:name=".SirMatchALotApplication"
         android:usesCleartextTraffic="true"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

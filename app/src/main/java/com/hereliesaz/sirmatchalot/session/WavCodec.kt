@@ -101,7 +101,12 @@ object WavCodec {
 
                 // A chunk this does not care about — LIST, fact, whatever else the
                 // encoder felt like. Stepped over rather than treated as an error.
-                else -> buffer.position(buffer.position() + size + (size % 2))
+                // The pad byte that follows an odd-sized chunk may not actually be
+                // present if the chunk is the last thing in the buffer, so the skip
+                // is clamped to what remains instead of trusting the pad exists.
+                else -> buffer.position(
+                    (buffer.position() + size + (size % 2)).coerceAtMost(buffer.limit()),
+                )
             }
         }
         return null

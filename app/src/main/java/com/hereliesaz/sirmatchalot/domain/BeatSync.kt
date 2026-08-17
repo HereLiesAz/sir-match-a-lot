@@ -114,12 +114,21 @@ object BeatSync {
         effectiveSourceBpm: Double,
         atSeconds: Double,
     ): Double {
+        val sourceBpm = source.bpm ?: return 0.0
         val sourcePhase = source.firstBeatSeconds ?: return 0.0
         val targetPhase = target.firstBeatSeconds ?: return 0.0
         val targetBpm = target.bpm ?: return 0.0
-        if (effectiveSourceBpm <= 0.0 || targetBpm <= 0.0) return 0.0
+        if (effectiveSourceBpm <= 0.0 || targetBpm <= 0.0 || sourceBpm <= 0.0) return 0.0
 
-        val sourceGrid = BeatGrid(effectiveSourceBpm, sourcePhase)
+        // `sourcePhase` is measured in the source file's own, unwarped time.
+        // Stretching playback by `ratio` moves every beat to
+        // `originalTime / ratio` on the timeline `atSeconds` and the target
+        // grid are both expressed in — the played-back one. Building the
+        // grid from the warped tempo but the raw, unwarped phase mixed two
+        // different timelines and only agreed with the target by
+        // coincidence.
+        val ratio = effectiveSourceBpm / sourceBpm
+        val sourceGrid = BeatGrid(effectiveSourceBpm, sourcePhase / ratio)
         val targetGrid = BeatGrid(targetBpm, targetPhase)
         return sourceGrid.phaseErrorTo(targetGrid, atSeconds)
     }

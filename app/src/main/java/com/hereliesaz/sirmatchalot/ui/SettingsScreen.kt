@@ -3,15 +3,22 @@ package com.hereliesaz.sirmatchalot.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -23,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,7 +42,10 @@ import com.hereliesaz.sirmatchalot.data.VisualRefresh
 import kotlinx.coroutines.delay
 
 private val ACCENT = Color(0xFF22D3EE)
-private val DIM = Color(0xFF71717A)
+// 0xFF9CA3AF, not the previous 0xFF71717A: the darker grey measured under
+// 4.5:1 (WCAG AA for normal text) against this screen's backgrounds; this
+// one clears 7:1 against all of them.
+private val DIM = Color(0xFF9CA3AF)
 private val PANEL = Color(0xFF121218)
 
 /**
@@ -145,16 +156,14 @@ fun SettingsScreen(
                     modifier = Modifier.weight(1f),
                 )
                 if (copies.second > 0) {
-                    Text(
-                        text = "REMOVE ALL",
-                        color = Color(0xFFDC2626),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { viewModel.clearLocalCopies() }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    DestructiveAction(
+                        label = "REMOVE ALL",
+                        confirmTitle = "Remove all local copies?",
+                        confirmMessage = "Deletes the ${copies.second} cached ${if (copies.second == 1) "copy" else "copies"} " +
+                            "(${megabytes(copies.first)}) on this device. Tracks fall back to " +
+                            "fetching from their original source, which may be slower or " +
+                            "unavailable if it has moved.",
+                        onConfirm = { viewModel.clearLocalCopies() },
                     )
                 }
             }
@@ -210,16 +219,13 @@ fun SettingsScreen(
                 )
             }
             if (learned > 0) {
-                Text(
-                    text = "FORGET IT ALL",
-                    color = Color(0xFFDC2626),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { viewModel.forgetTransitionTaste() }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                DestructiveAction(
+                    label = "FORGET IT ALL",
+                    confirmTitle = "Forget everything learned?",
+                    confirmMessage = "Erases what the Automatchic Mix has learned from " +
+                        "$learned transitions. It goes back to the same defaults it started " +
+                        "with, with no way to get this back.",
+                    onConfirm = { viewModel.forgetTransitionTaste() },
                 )
             }
         }
@@ -256,16 +262,13 @@ fun SettingsScreen(
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-                Text(
-                    text = "FORGET THEM ALL",
-                    color = Color(0xFFDC2626),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { viewModel.forgetPairedDevices() }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                DestructiveAction(
+                    label = "FORGET THEM ALL",
+                    confirmTitle = "Forget all paired devices?",
+                    confirmMessage = "Every device on this list — ${paired.size} of them — will " +
+                        "have to compare a pairing code and be approved again before it can " +
+                        "rejoin a room with this device.",
+                    onConfirm = { viewModel.forgetPairedDevices() },
                 )
             }
         }
@@ -328,6 +331,58 @@ private fun Section(
     }
 }
 
+/**
+ * A destructive, irreversible action — deletes cached files, forgets a
+ * learned model, forgets paired devices. Two things a bare `Text.clickable`
+ * did not have: a touch target at least 48dp tall (the label alone was under
+ * 24dp on a 4dp padding, reachable by a scroll gesture that merely slipped),
+ * and a confirmation dialog, since none of the three actions this backs can
+ * be undone.
+ */
+@Composable
+private fun DestructiveAction(
+    label: String,
+    confirmTitle: String,
+    confirmMessage: String,
+    onConfirm: () -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .sizeIn(minHeight = 48.dp)
+            .wrapContentSize(Alignment.CenterStart)
+            .clip(RoundedCornerShape(6.dp))
+            .clickable { confirming = true }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text = label,
+            color = Color(0xFFDC2626),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Black,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text(confirmTitle) },
+            text = { Text(confirmMessage) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    onConfirm()
+                }) { Text("Confirm", color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
 @Composable
 private fun Choice(
     label: String,
@@ -345,7 +400,7 @@ private fun Choice(
                 color = if (selected) ACCENT else Color(0xFF27272A),
                 shape = RoundedCornerShape(8.dp),
             )
-            .clickable(onClick = onClick)
+            .selectable(selected = selected, onClick = onClick, role = Role.RadioButton)
             .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
         Text(
@@ -377,7 +432,7 @@ private fun Toggle(
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(PANEL)
-            .clickable(onClick = onClick)
+            .toggleable(value = on, onValueChange = { onClick() }, role = Role.Switch)
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.Top,
     ) {

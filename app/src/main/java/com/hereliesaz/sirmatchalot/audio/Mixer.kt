@@ -69,8 +69,22 @@ object Limiter {
      * Linear below the threshold, asymptotic to full scale above it. Continuous,
      * monotonic, and odd-symmetric, so it adds neither DC nor even-order
      * distortion.
+     *
+     * Bounded for every input, not only finite ones: NaN and infinity are
+     * mapped to silence and full-scale respectively rather than propagating
+     * as NaN, which would otherwise reach [AudioTrack.write] unclipped and
+     * escape the peak meter, since a NaN comparison against `peak` is always
+     * false.
      */
     fun softClip(x: Float): Float {
+        // Not actually reachable from anywhere upstream today — every stage
+        // that feeds this clamps its own parameters to finite ranges — but
+        // "|y| < 1 for every finite input" quietly implied nothing at all
+        // about the infinite or NaN case, and `over / (over + headroom)` is
+        // literally 0/0 for an infinite magnitude: NaN out, silently, on the
+        // one signal path with no upstream guard of its own.
+        if (x.isNaN()) return 0f
+        if (x.isInfinite()) return if (x < 0f) -1f else 1f
         val magnitude = abs(x)
         if (magnitude <= THRESHOLD) return x
         val sign = if (x < 0) -1f else 1f

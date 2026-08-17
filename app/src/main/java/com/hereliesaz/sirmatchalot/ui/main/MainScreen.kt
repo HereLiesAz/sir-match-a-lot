@@ -1,5 +1,6 @@
 package com.hereliesaz.sirmatchalot.ui.main
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,15 +58,20 @@ fun MainScreen(
     viewModel: SirMatchALotViewModel = viewModel()
 ) {
     // Waveform Circle Platter is the Unified Main Screen
-    var currentTab by remember { mutableStateOf(DjTab.CONTROLS) }
+    //
+    // rememberSaveable rather than remember: with no configChanges declared
+    // in the manifest, any rotation recreates the activity, and a plain
+    // remember reset the tab to Controls and closed whatever dialog was open
+    // underneath the performer's finger.
+    var currentTab by rememberSaveable { mutableStateOf(DjTab.CONTROLS) }
     val crossfader by viewModel.crossfader.collectAsState()
     val isWsConnected by viewModel.isWsConnected.collectAsState()
     val roomCode by viewModel.roomCode.collectAsState()
 
     val stateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
-    var showSyncDialog by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
-    var showWork by remember { mutableStateOf(false) }
+    var showSyncDialog by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showWork by rememberSaveable { mutableStateOf(false) }
     val settings by viewModel.settings.collectAsState()
     val engineGeneration by viewModel.engineGeneration.collectAsState()
     val activeWork by viewModel.activeWork.collectAsState()
@@ -83,20 +90,39 @@ fun MainScreen(
         viewModel.setUiActive(true)
         onPauseOrDispose { viewModel.setUiActive(false) }
     }
-    var inputIp by remember { mutableStateOf("192.168.1.100") }
-    var inputCode by remember { mutableStateOf("ROOM") }
+    // rememberSaveable: a rotation used to wipe a room code or IP the user
+    // had already typed into the open sync dialog.
+    var inputIp by rememberSaveable { mutableStateOf("192.168.1.100") }
+    var inputCode by rememberSaveable { mutableStateOf("ROOM") }
     val isPlaying by viewModel.isPlaying.collectAsState()
     val keylock by viewModel.keylock.collectAsState()
     val isHosting by viewModel.isHosting.collectAsState()
     val peerCount by viewModel.peerCount.collectAsState()
     val hostUrl by viewModel.hostUrl.collectAsState()
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    var linkInput by remember { mutableStateOf("") }
+    // Same reasoning: a pasted session link should survive a rotation, not
+    // vanish out from under whoever just pasted it.
+    var linkInput by rememberSaveable { mutableStateOf("") }
     val role by viewModel.role.collectAsState()
 
     // Changing role moves the device to the screen it is now for, rather than
     // leaving it on a tab it is no longer allowed to reach.
     LaunchedEffect(role) { currentTab = role.tab() }
+
+    // The system back gesture used to fall straight through to the activity
+    // and close the app from any tab, mid-set, with nothing intercepting it —
+    // there was no BackHandler anywhere. It now closes whatever dialog is on
+    // screen first, then returns to Controls from another tab, and only
+    // leaves the app if it was already there with nothing open — the same
+    // shape as tapping the bottom nav to get home.
+    BackHandler(enabled = showSyncDialog || showSettings || showWork || currentTab != DjTab.CONTROLS) {
+        when {
+            showSyncDialog -> showSyncDialog = false
+            showSettings -> showSettings = false
+            showWork -> showWork = false
+            currentTab != DjTab.CONTROLS -> currentTab = DjTab.CONTROLS
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -137,9 +163,12 @@ fun MainScreen(
                         // from every tab and every role, because running out of
                         // heap is not something that waits for a convenient
                         // screen to be open.
+                        // No explicit size: IconButton's own default is
+                        // already a 48dp touch target around the 16dp glyph.
+                        // An explicit .size(26.dp) here used to shrink the
+                        // whole tappable area down to the glyph's own size.
                         IconButton(
                             onClick = { showSettings = true },
-                            modifier = Modifier.size(26.dp),
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Settings,
@@ -149,7 +178,10 @@ fun MainScreen(
                             )
                         }
 
-                        // Wireless Sync Link Indicator
+                        // Wireless Sync Link Indicator. heightIn rather than
+                        // a fixed height: 26dp was well under the 48dp touch
+                        // target this otherwise ordinary-looking Button
+                        // should have had by default.
                         Button(
                             onClick = { showSyncDialog = true },
                             colors = ButtonDefaults.buttonColors(
@@ -157,7 +189,7 @@ fun MainScreen(
                             ),
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(26.dp)
+                            modifier = Modifier.heightIn(min = 40.dp)
                         ) {
                             Icon(
                                 imageVector = if (isWsConnected) Icons.Default.CheckCircle else Icons.Default.Warning,
@@ -228,7 +260,11 @@ fun MainScreen(
                             if (keylock) "KEYLOCK ON" else "KEYLOCK OFF",
                             // Off is the turntable behaviour the scratch gestures
                             // rely on, so neither state is an error state.
-                            color = if (keylock) Color(0xFF22D3EE) else Color(0xFF71717A),
+                            // 0xFF9CA3AF rather than 0xFF71717A: against this
+                            // app's near-black backgrounds the darker grey
+                            // measures under 4.5:1 (WCAG AA for normal text);
+                            // this one clears 7.5:1 on all of them.
+                            color = if (keylock) Color(0xFF22D3EE) else Color(0xFF9CA3AF),
                             fontWeight = FontWeight.Bold,
                             fontSize = 9.sp,
                         )

@@ -4,16 +4,16 @@
    for details.
 -->
 <data-extraction-rules>
-    <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
-    </cloud-backup>
     <!--
-    <device-transfer>
-        <include .../>
-        <exclude .../>
-    </device-transfer>
+        The pending crash report can hold a full stack trace, file paths and
+        the device model. It is meant to leave the device only when a person
+        reads the GitHub issue draft and taps submit — not via cloud backup or
+        device-to-device transfer, both of which run with nobody watching.
     -->
+    <cloud-backup>
+        <exclude domain="sharedpref" path="crash_reports.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="crash_reports.xml"/>
+    </device-transfer>
 </data-extraction-rules>

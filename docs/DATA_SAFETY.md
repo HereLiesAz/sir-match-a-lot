@@ -41,7 +41,19 @@ the ones a reviewer might expect to be ticked.
 | App activity | No | No | No analytics of any kind |
 | Web browsing | No | No | — |
 | App info and performance | No | No | **No automatic crash reporting.** A crash is written to private storage and shown to you on next launch; nothing leaves the device unless you tap through to file it. See below |
-| Device or other IDs | No | No | No advertising ID, no install ID, no device ID |
+| Device or other IDs | No | No | No advertising ID, no install ID, no device ID sent off-device — see note below on the sync identity key |
+
+### On "Device or other IDs"
+
+Multi-device sync generates a long-term public/private identity keypair per
+install, so a device can prove to a host it is one that was paired with
+before rather than asking the user to compare a pairing code every time. The
+public half of that key — and a fingerprint of it — travels in the clear on
+the local-network sync handshake, to the other devices in the same room, and
+nowhere else: it is never sent to any server, so Play's *collection*
+definition (transmission off the device) does not apply to it. It is
+functionally a persistent identifier for the app install even so, which is
+why this row is worded as "not sent off-device" rather than "does not exist."
 
 ### On "App info and performance"
 
@@ -54,6 +66,11 @@ the report where it is.
 Play's definition of *collection* is transmission off the device, and this
 transmits nothing on its own — a user opening a browser and pressing submit is
 the user filing a bug, not the app phoning home. So: **not collected.**
+
+The pending report is also excluded from Android's automatic backup and
+device-to-device transfer (`backup_rules.xml`, `data_extraction_rules.xml`),
+so it cannot leave the device through either of those channels either — only
+through the user's own tap on "Report on GitHub."
 
 That is a narrower claim than the one this row used to make. "No crash
 reporting. Nothing is sent on a crash" was false as written: the app has had

@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.sync
 
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Locale
 
 /**
  * A loaded session, as a link.
@@ -24,8 +25,17 @@ import java.net.URLEncoder
 data class SessionLink(
     val deckA: List<TrackRef> = emptyList(),
     val deckB: List<TrackRef> = emptyList(),
-    val cuesA: List<Double> = emptyList(),
-    val cuesB: List<Double> = emptyList(),
+    /**
+     * The four cue slots, in order — `null` for a slot that was never set.
+     *
+     * Kept positional rather than compacted: cue button 1 through 4 on a
+     * deck are fixed, addressable slots, not "the first N cues that happen
+     * to be set". Exporting only the non-null ones and re-assigning them to
+     * slots 1..N on import used to mean a track with only its third cue set
+     * came back with that time in slot 1 and every other slot empty.
+     */
+    val cuesA: List<Double?> = emptyList(),
+    val cuesB: List<Double?> = emptyList(),
     val crossfade: Int = 0,
     val referenceBpm: Double? = null,
     val referenceKey: String? = null,
@@ -49,8 +59,11 @@ data class SessionLink(
         val parameters = ArrayList<Pair<String, String>>()
         deckA.forEach { parameters.add("a" to it.toString()) }
         deckB.forEach { parameters.add("b" to it.toString()) }
-        if (cuesA.isNotEmpty()) parameters.add("ca" to cuesA.joinToString(",") { trim(it) })
-        if (cuesB.isNotEmpty()) parameters.add("cb" to cuesB.joinToString(",") { trim(it) })
+        // An unset slot is an empty segment, not omitted — "60,,,90" says
+        // slots 1 and 4 are set and 2 and 3 are not, where dropping the
+        // empty slots would read back as "the first two slots are set".
+        if (cuesA.any { it != null }) parameters.add("ca" to cuesA.joinToString(",") { it?.let(::trim) ?: "" })
+        if (cuesB.any { it != null }) parameters.add("cb" to cuesB.joinToString(",") { it?.let(::trim) ?: "" })
         if (crossfade != 0) parameters.add("x" to crossfade.toString())
         referenceBpm?.let { parameters.add("bpm" to trim(it)) }
         referenceKey?.let { parameters.add("key" to it) }
@@ -62,11 +75,22 @@ data class SessionLink(
         }
     }
 
+    // Locale.ROOT: this is a machine-readable field parsed back with
+    // toDoubleOrNull and split on ',' — a comma-decimal locale (de, fr,
+    // pt-BR, ...) would emit "4,500" for a cue at 4.5s and have it read back
+    // as two cues, or drop the reference BPM outright when it parses as
+    // 128,500 and toDoubleOrNull rejects the comma.
     private fun trim(value: Double): String =
-        if (value == value.toLong().toDouble()) value.toLong().toString() else String.format("%.3f", value)
+        if (value == value.toLong().toDouble()) value.toLong().toString() else String.format(Locale.ROOT, "%.3f", value)
 
     companion object {
         const val DEFAULT_BASE = "https://hereliesaz.github.io/sir-match-a-lot/"
+
+        /** Far more than a deck's own [com.hereliesaz.sirmatchalot.domain.DeckCapacity] admits. */
+        private const val MAX_TRACKS_PER_DECK = 200
+
+        /** A generous bound on a query string nobody types by hand. */
+        private const val MAX_QUERY_PARAMETERS = 1000
 
         /**
          * Reads a link back.
@@ -82,14 +106,21 @@ data class SessionLink(
 
             val deckA = ArrayList<TrackRef>()
             val deckB = ArrayList<TrackRef>()
-            var cuesA = emptyList<Double>()
-            var cuesB = emptyList<Double>()
+            var cuesA = emptyList<Double?>()
+            var cuesB = emptyList<Double?>()
             var crossfade = 0
             var bpm: Double? = null
             var key: String? = null
             var room: String? = null
 
-            for (pair in query.split('&')) {
+            // Every other field here is bounded by construction — a
+            // crossfade position, a BPM, four cue slots — except a deck's
+            // track list, which had no cap at all: a pasted link with
+            // thousands of `a=` parameters decoded that many clips onto one
+            // deck. `openSessionLink` resolves and loads each one against
+            // the library, so this is also a bound on how much work one
+            // link can trigger.
+            for (pair in query.split('&').take(MAX_QUERY_PARAMETERS)) {
                 if (pair.isBlank()) continue
                 val separator = pair.indexOf('=')
                 if (separator <= 0) continue
@@ -98,8 +129,8 @@ data class SessionLink(
                 if (value.isBlank()) continue
 
                 when (name) {
-                    "a" -> deckA.add(parseTrack(value))
-                    "b" -> deckB.add(parseTrack(value))
+                    "a" -> if (deckA.size < MAX_TRACKS_PER_DECK) deckA.add(parseTrack(value))
+                    "b" -> if (deckB.size < MAX_TRACKS_PER_DECK) deckB.add(parseTrack(value))
                     "ca" -> cuesA = parseCues(value)
                     "cb" -> cuesB = parseCues(value)
                     "x" -> crossfade = value.toIntOrNull()?.coerceIn(-100, 100) ?: 0
@@ -126,8 +157,14 @@ data class SessionLink(
             return TrackRef(title, artist)
         }
 
-        private fun parseCues(value: String): List<Double> =
-            value.split(',').mapNotNull { it.trim().toDoubleOrNull()?.takeIf { cue -> cue >= 0 } }
+        /**
+         * Parses cue slots positionally: an empty segment (`""`, from
+         * `"60,,,90"`) is a slot that was never set, kept as `null` rather
+         * than dropped — dropping it would shift every slot after it down
+         * by one.
+         */
+        private fun parseCues(value: String): List<Double?> =
+            value.split(',').map { it.trim().toDoubleOrNull()?.takeIf { cue -> cue >= 0 } }
 
         /**
          * Percent-encodes a value, leaving commas alone.

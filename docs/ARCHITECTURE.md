@@ -33,59 +33,108 @@ later without touching the DSP or the UI.
 
 ## Module layout
 
+This is the real tree, not an aspirational one — regenerated from
+`find app/src/main/java -name '*.kt'` rather than hand-maintained, since the
+previous version of this section had drifted from the code on nearly every
+line (files renamed, moved between packages, or never built at all) and
+nobody reading it could tell which.
+
 ```
 app/src/main/java/com/hereliesaz/sirmatchalot/
   dsp/          pure math, zero Android deps, JVM-unit-tested
-    Fft.kt              radix-2 Cooley-Tukey, in-place, preallocated
-    Window.kt           Hann/Hamming
-    Biquad.kt           RBJ cookbook: low/high shelf, peaking, lowpass
-    TimeStretch.kt      WSOLA — tempo independent of pitch
-    Resampler.kt        Catmull-Rom fractional read, signed rate (reverse)
-    OnsetDetector.kt    spectral flux envelope
-    TempoDetector.kt    comb-filter/autocorr over the envelope -> BPM + phase
-    BeatGrid.kt         downbeat inference, beat times
-    KeyDetector.kt      chromagram + Krumhansl-Schmuckler -> key
-    EnergyCurve.kt      per-window loudness+spectral centroid -> energy 0..1
-    LoopFinder.kt       bar-aligned self-similarity -> loop candidates
-    PeakEnvelope.kt     min/max peak reduction for drawing
+    Fft.kt                radix-2 Cooley-Tukey, in-place, preallocated
+    Window.kt             Hann/Hamming
+    Biquad.kt             RBJ cookbook: low/high shelf, peaking, lowpass
+    TimeStretch.kt        WSOLA — tempo independent of pitch, and the pitch
+                          shifter built from it
+    Resampler.kt          Catmull-Rom fractional read, signed rate (reverse)
+    SincResampler.kt      windowed-sinc sample-rate conversion
+    OnsetDetector.kt      spectral flux envelope
+    TempoDetector.kt      comb-filter/autocorr over the envelope -> BPM
+    BeatGrid.kt           downbeat inference, beat/bar times
+    KeyDetector.kt        chromagram + Krumhansl-Schmuckler -> key
+    EnergyCurve.kt        per-window loudness+spectral centroid -> energy 0..1
+    BandEnergy.kt         per-band energy for the light show
+    StructureFinder.kt    bar-aligned self-similarity -> loop candidates
+    StructureSegmenter.kt track structure (intro/build/drop/breakdown/outro)
+    VocalDetector.kt      vocal-presence estimate
+    GrowlVoice.kt         synthesised voice for the reverse-scratch easter egg
+    Stft.kt               short-time Fourier transform, shared by the above
+    PeakEnvelope.kt       min/max peak reduction for drawing
 
   audio/        the real-time graph
-    PcmBuffer.kt        immutable decoded mono/stereo float PCM + sample rate
-    AudioDecoder.kt     MediaCodec -> PcmBuffer (+ silence trim)  [evolved from
-                        the existing AudioWaveformExtractor]
-    Clip.kt             a PcmBuffer placed on a deck: offset, loop, gain, cues
-    Deck.kt             playhead (double, signed rate), clip list, EQ, gain
-    Mixer.kt            sums decks, master gain, limiter, level meter
-    AudioEngine.kt      AudioTrack render thread; the only real-time context
-    ScratchModel.kt     gesture delta -> non-linear rate curve through zero
-    Sampler.kt          pads: record from master bus, replay, auto-fill
-    Metering.kt         lock-free level + spectrum snapshot for the UI
+    PcmBuffer.kt          immutable decoded mono/stereo PCM, 16-bit or float
+    AudioDecoder.kt       MediaCodec -> PcmBuffer
+    Deck.kt               a circular timeline of clips, signed-rate playhead
+    Mixer.kt              crossfade law, master gain, limiter, level meter
+    MasterFilter.kt       the XY performance filter on the master bus
+    AudioOutput.kt        the AudioTrack render thread and its interface,
+                          so tests can drive the graph without a device
+    ScratchModel.kt       gesture delta -> non-linear rate curve through zero
+    Sampler.kt            pads: record from master bus, replay
+    OneShotVoice.kt       plays a short buffer once, for the growl voice
+    SpectrumMeter.kt      lock-free band levels for the light show
+    DecodedCache.kt       heap-budgeted cache of decoded tracks
 
   analysis/     orchestration of dsp over a library
-    TrackAnalyzer.kt    decode once -> BPM, key, beatgrid, energy, peaks, cues
-    AnalysisQueue.kt    bounded parallel, cancellable, resumable
-    ImportService.kt    foreground service: notification, pause/resume, progress
+    TrackAnalyzer.kt      decode once -> BPM, key, beatgrid, energy, peaks
+    AnalysisQueue.kt      bounded parallel, cancellable, resumable
+    AnalysisService.kt    foreground service: notification, pause/resume
+    AnalysisProgressBus.kt shared progress state between the service and UI
 
   data/
-    Track.kt, TrackDao.kt, AppDatabase.kt   (proper migrations, stable ids)
-    Library.kt          repository
-    LinkParser.kt       [kept]
-    playlist/           M3U/PLS/CSV + link-based playlist expansion
-    store/AzphaltStore.kt
+    Track.kt, TrackDao.kt, AppDatabase.kt   Room entity, DAO, migrations
+    AnalysisQueue.kt      what needs (re-)analysing and why
+    AudioFileCache.kt     local copies of imported audio
+    AudioFileFilter.kt    which files in a folder import counts as audio
+    AzphaltStoreRepository.kt  the sample-pack store
+    EngineSettings.kt     sample rate, memory budget, visual refresh settings
+    LinkParser.kt         playlist-link and pasted-tracklist parsing
+    PlaylistParser.kt     M3U/PLS/XSPF parsing
 
   domain/
-    HarmonicEngine.kt   [kept] Camelot wheel
-    MixPlanner.kt       Shuffle Crate + Automatchic Mix
-    SessionLink.kt      share/restore a session as query params
+    HarmonicEngine.kt     Camelot wheel compatibility scoring
+    BeatSync.kt           tempo/phase/pitch alignment between two tracks
+    MixPlanner.kt         Shuffle Crate + Automatchic Mix ordering
+    MixDirector.kt        runs a planned mix: transitions, flourishes, timing
+    TransitionChoreographer.kt / TransitionScript.kt / TransitionTaste.kt
+                          chooses and scripts a transition, learns from taste
+    TrackStructure.kt / TrackGrid.kt   structure and beat-grid lookups
+    SetArc.kt             energy arc across a planned set
+    LoopHarvest.kt        loop candidates for a track
+    BeatSnap.kt           snapping a time to the beat grid
+    DeckCapacity.kt       how many beats of audio a deck timeline can hold
+
+  session/
+    SessionDocument.kt    the `.sir` file format (decks, pads, running order)
+    SessionArchive.kt     zip read/write of a session plus its pad takes
+    SessionResolver.kt    matches a saved session's tracks against the library
+    WavCodec.kt           WAV encode/decode for pad takes
+
+  sync/
+    SyncServer.kt / SyncClient.kt   the room: hosting and joining
+    RoomCrypto.kt         ECDH key agreement, SAS, AES-256-GCM framing
+    DeviceIdentity.kt     the long-term identity keypair and its fingerprint
+    WebSocketProtocol.kt  the WebSocket framing used over the room socket
+    SyncRole.kt           which screen a device shows once linked
+    SessionLink.kt        share/restore a session as a URL's query params
 
   gesture/
-    GestureEngine.kt    concurrent multi-axis recognition, global
-    GestureLabels.kt    clock-position label placement, float-up + dissolve
+    GestureEngine.kt      concurrent multi-axis gesture recognition
+    GestureLabels.kt      clock-position label placement, float-up + dissolve
 
+  crash/
+    CrashReportingHandler.kt / CrashReportStore.kt / CrashReportPrompt.kt /
+    CrashReport.kt / CrashReportIssue.kt
+                          uncaught-exception capture and the GitHub-issue draft
+
+  theme/          Compose colour, typography and theme
   ui/
-    platter/            the feature: rings, waveforms, playhead, energy ring
-    visualizer/         audio-reactive background
-    library/, sampler/, ...
+    platter/            the feature: rings, waveforms, playhead, gestures
+    main/MainScreen.kt   tabs, the crossfader, sync and settings dialogs
+    LibraryScreen.kt, SamplerScreen.kt, SettingsScreen.kt
+    SirMatchALotViewModel.kt   the app's one ViewModel
+    BackgroundWork.kt    tracked long-running work, for the app-bar indicator
 ```
 
 ## The audio graph
@@ -188,11 +237,12 @@ Decode once, measure everything, store it:
 4. `KeyDetector` → chromagram → key → Camelot via `HarmonicEngine`.
 5. `EnergyCurve` → energy over time.
 6. `PeakEnvelope` → multi-resolution min/max peaks for drawing.
-7. `LoopFinder` → bar-aligned loop candidates; points of interest tagged.
+7. `StructureFinder`/`StructureSegmenter` → bar-aligned loop candidates and
+   track structure (intro/build/drop/breakdown/outro).
 
-Persisted to Room next to the track. Runs in `ImportService`, a foreground
-service with a progress notification and working pause/resume (prompt 85),
-bounded-parallel and resumable so a 500-track playlist survives app death.
+Persisted to Room next to the track. Runs in `AnalysisService`, a foreground
+service with a progress notification and working pause/resume, bounded-parallel
+and resumable so a 500-track playlist survives app death.
 
 Playlists expand to *all* their tracks. Local files and any service whose link
 resolves to audio the platform can decode; a link that cannot be resolved to
@@ -276,12 +326,12 @@ under a finger mid-gesture.
   DFT, WSOLA length/pitch invariants, tempo detection on synthetic click tracks
   at known BPMs, key detection on synthesised chord progressions, biquad
   magnitude response. Plus `HarmonicEngine` tests.
-- **2 — Audio engine.** `PcmBuffer`, `AudioDecoder`, `Clip`, `Deck`, `Mixer`,
-  `AudioEngine`, `ScratchModel`, metering. Tests drive the graph offline through
-  a fake output and assert on rendered samples: reverse continuity, crossfade
-  gain law, EQ effect, loop wrap.
+- **2 — Audio engine.** `PcmBuffer`, `AudioDecoder`, `Deck`, `Mixer`,
+  `AudioOutput`, `ScratchModel`, `SpectrumMeter`. Tests drive the graph offline
+  through `OfflineAudioOutput` and assert on rendered samples: reverse
+  continuity, crossfade gain law, EQ effect, loop wrap.
 - **3 — Data + analysis.** Room with migrations, `TrackAnalyzer`,
-  `AnalysisQueue`, `ImportService`, playlist expansion, store client at
+  `AnalysisQueue`, `AnalysisService`, playlist expansion, store client at
   `azphalt.org`.
 - **4 — Platter + gestures.** Angle/time mapping, waveform and playhead
   rendering, energy ring, `GestureEngine` with concurrent axes, labels.

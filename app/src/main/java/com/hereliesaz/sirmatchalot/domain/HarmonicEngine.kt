@@ -154,18 +154,18 @@ object HarmonicEngine {
         val diffDouble = abs(bpmB - bpmA * 2.0) / (bpmA * 2.0)
 
         var minDiff = diffStandard
-        var isHalfTimeDoubleTime = false
         var relativeBpmTarget = bpmA
+        var isHalfOrDoubleTarget = false
 
         if (diffHalf < minDiff) {
             minDiff = diffHalf
-            isHalfTimeDoubleTime = true
             relativeBpmTarget = bpmA * 0.5
+            isHalfOrDoubleTarget = true
         }
         if (diffDouble < minDiff) {
             minDiff = diffDouble
-            isHalfTimeDoubleTime = true
             relativeBpmTarget = bpmA * 2.0
+            isHalfOrDoubleTarget = true
         }
 
         val diffPercent = (bpmB - relativeBpmTarget) / relativeBpmTarget
@@ -173,6 +173,12 @@ object HarmonicEngine {
 
         val score = max(0.0, 100.0 * (1.0 - minDiff / 0.15)).roundToInt()
         val canMixWithNudge = diffPercentAbs <= 0.06
+        // Merely being the *closest* of the three candidates says nothing
+        // about whether it is actually usable — the half/double comparison
+        // can still be nowhere near the target. Only claim "half/double time"
+        // when the half/double pairing itself is within nudging distance;
+        // otherwise fall through to the ordinary "too far apart" advice.
+        val isHalfTimeDoubleTime = isHalfOrDoubleTarget && canMixWithNudge
 
         val advice = when {
             diffPercentAbs < 0.005 -> {
@@ -203,42 +209,6 @@ object HarmonicEngine {
             "isHalfTimeDoubleTime" to isHalfTimeDoubleTime,
             "canMixWithNudge" to canMixWithNudge
         )
-    }
-
-    fun calculateProgressionCompatibility(progA: String, progB: String): Int {
-        if (progA.isBlank() || progB.isBlank()) return 60
-
-        val cleanA = progA.lowercase().replace(Regex("[^a-z0-9\\s-]"), "").split(Regex("\\s*-\\s*|\\s+")).toSet()
-        val cleanB = progB.lowercase().replace(Regex("[^a-z0-9\\s-]"), "").split(Regex("\\s*-\\s*|\\s+")).toSet()
-
-        val intersection = cleanA.intersect(cleanB).size
-        val union = cleanA.union(cleanB).size
-
-        if (union == 0) return 60
-        val ratio = intersection.toDouble() / union
-        return (65 + ratio * 35).roundToInt()
-    }
-
-    fun calculateAtmosphereCompatibility(atmosA: String, atmosB: String): Int {
-        if (atmosA.isBlank() || atmosB.isBlank()) return 60
-
-        val wordsA = atmosA.lowercase().split(Regex("[\\s,]+")).map { it.trim() }.filter { it.length > 2 }
-        val wordsB = atmosB.lowercase().split(Regex("[\\s,]+")).map { it.trim() }.filter { it.length > 2 }
-
-        val commonKeywords = setOf("dark", "groovy", "energetic", "melodic", "bouncy", "ambient", "hypnotic", "uplifting", "euphoric", "heavy", "chill", "atmospheric", "soulful", "industrial")
-
-        val activeA = wordsA.filter { commonKeywords.contains(it) }.toSet()
-        val activeB = wordsB.filter { commonKeywords.contains(it) }.toSet()
-
-        val setA = if (activeA.isNotEmpty()) activeA else wordsA.toSet()
-        val setB = if (activeB.isNotEmpty()) activeB else wordsB.toSet()
-
-        val intersect = setA.intersect(setB).size
-        val union = setA.union(setB).size
-
-        if (union == 0) return 60
-        val ratio = intersect.toDouble() / union
-        return (60 + ratio * 40).roundToInt()
     }
 
     /**

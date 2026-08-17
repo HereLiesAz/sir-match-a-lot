@@ -133,15 +133,18 @@ class SessionLinkTest {
     }
 
     @Test
-    fun `a malformed cue is skipped rather than losing the session`() {
+    fun `a malformed cue is nulled out in place rather than losing the session`() {
+        // Positional, not compacted: dropping the bad slot entirely would
+        // shift "3" into slot 2, the same bug as a link exporting only its
+        // set slots and having them renumbered on import.
         val restored = SessionLink.fromUrl("https://example.com/?a=A%20-%20T&ca=1,notanumber,3")
-        assertEquals(listOf(1.0, 3.0), restored.cuesA)
+        assertEquals(listOf(1.0, null, 3.0), restored.cuesA)
         assertEquals(1, restored.deckA.size)
     }
 
     @Test
-    fun `a negative cue is dropped`() {
-        assertEquals(listOf(4.0), SessionLink.fromUrl("https://example.com/?ca=-2,4").cuesA)
+    fun `a negative cue is nulled out in place`() {
+        assertEquals(listOf(null, 4.0), SessionLink.fromUrl("https://example.com/?ca=-2,4").cuesA)
     }
 
     @Test

@@ -7,7 +7,10 @@
 -->
 <full-backup-content>
     <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+        The pending crash report can hold a full stack trace, file paths and
+        the device model. It is meant to leave the device only when a person
+        reads the GitHub issue draft and taps submit — not via Android's
+        automatic cloud backup, which runs with nobody watching.
+    -->
+    <exclude domain="sharedpref" path="crash_reports.xml"/>
 </full-backup-content>

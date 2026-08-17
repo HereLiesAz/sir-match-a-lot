@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +48,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -148,14 +157,16 @@ fun PlatterScreen(
     // composition stops being drawn.
     var elapsedMillis by remember { mutableLongStateOf(0L) }
 
-    // Three-finger platter transform.
-    var scale by remember { mutableFloatStateOf(1f) }
-    var rotation by remember { mutableFloatStateOf(0f) }
+    // Three-finger platter transform. rememberSaveable: with no configChanges
+    // declared, a rotation recreated the activity and snapped a platter that
+    // had been zoomed in for precise work back to 1x, mid-gesture.
+    var scale by rememberSaveable { mutableFloatStateOf(1f) }
+    var rotation by rememberSaveable { mutableFloatStateOf(0f) }
 
     // Hold the playhead still and turn the record under it, the way a deck
     // actually reads: the needle does not move, the disc does. Off by default,
     // because a fixed waveform is easier to aim a gesture at.
-    var playheadLocked by remember { mutableStateOf(false) }
+    var playheadLocked by rememberSaveable { mutableStateOf(false) }
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -321,10 +332,24 @@ fun PlatterScreen(
             .onGloballyPositioned { screenOrigin = it.positionInRoot() },
     ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // The platter itself is a Canvas with no accessibility tree of its
+        // own — every clip, marker and the playhead are pixels, not nodes.
+        // Exposing each one individually would need a custom accessibility
+        // node provider; this at least tells a screen reader what is loaded
+        // and whether it is playing, so the platter is not silent ground.
+        val deckASummary = state.clipsFor(PlatterGeometry.Deck.A)
+            .joinToString { it.title }
+            .ifBlank { "empty" }
+        val deckBSummary = state.clipsFor(PlatterGeometry.Deck.B)
+            .joinToString { it.title }
+            .ifBlank { "empty" }
+        val platterDescription = "Platter. Deck A: $deckASummary. Deck B: $deckBSummary. " +
+            if (transportRunning) "Playing." else "Paused."
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .semantics { contentDescription = platterDescription }
                 .onSizeChanged { canvasSize = it }
                 .onGloballyPositioned { platterOrigin = it.positionInRoot() }
                 .pointerInput(Unit) {
@@ -395,7 +420,7 @@ fun PlatterScreen(
                                                 )
                                         }
                                     }
-                                } else {
+                                } else if (heldClipId != null) {
                                     heldClipPosition = Offset(single.x, single.y)
                                     val onRing = PlatterGeometry.isOnRing(radius, baseRadius)
                                     heldClipOffCircle = !onRing
@@ -620,12 +645,12 @@ fun PlatterScreen(
             CentreTransport(
                 playing = transportRunning,
                 enabled = !state.isEmpty,
+                onToggle = { if (transportEnabled) currentActions.onTogglePlayback() },
                 modifier = Modifier.align(Alignment.Center),
             )
 
             PlatterCanvas(
                 state = state,
-                labels = visibleLabels,
                 scale = scale,
                 offsetX = 0f,
                 offsetY = 0f,
@@ -741,21 +766,37 @@ fun PlatterScreen(
 
         // Playhead lock. Off by default: a fixed waveform is easier to aim a
         // gesture at, and a constantly turning one is harder to read.
+        //
+        // The clickable area is padded out to a 48dp touch target even though
+        // the label itself is much smaller — a 9sp label with 6dp of padding
+        // was under half that, on a control that inverts the platter's whole
+        // reference frame if missed.
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (playheadLocked) "PLAYHEAD LOCKED" else "PLAYHEAD FREE",
-                color = if (playheadLocked) Color(0xFF22D3EE) else Color(0xFF52525B),
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Black,
-                fontFamily = FontFamily.Monospace,
+            Box(
                 modifier = Modifier
+                    .sizeIn(minHeight = 48.dp)
+                    .wrapContentSize(Alignment.CenterStart)
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable { playheadLocked = !playheadLocked }
+                    .clickable(
+                        role = Role.Switch,
+                    ) { playheadLocked = !playheadLocked }
+                    .semantics {
+                        contentDescription = "Playhead lock"
+                        stateDescription = if (playheadLocked) "Locked" else "Free"
+                    }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
+            ) {
+                Text(
+                    text = if (playheadLocked) "PLAYHEAD LOCKED" else "PLAYHEAD FREE",
+                    color = if (playheadLocked) Color(0xFF22D3EE) else Color(0xFF9CA3AF),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
 
         TrackStrip(
@@ -817,25 +858,50 @@ fun PlatterScreen(
 private fun CentreTransport(
     playing: Boolean,
     enabled: Boolean,
+    onToggle: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colour = when {
-        !enabled -> Color(0xFF3F3F46)
+        // 0xFF9CA3AF, not the much darker 0xFF3F3F46 this used to be: at the
+        // 0.4 alpha the outline stroke below draws with, the old colour
+        // measured about 1.2:1 against the platter background — below even
+        // the 3:1 WCAG non-text minimum, on the one control that has to be
+        // findable to start anything.
+        !enabled -> Color(0xFF9CA3AF)
         // The same amber and cyan the transport used in the bar: amber while it
         // runs, cyan while it waits.
         playing -> Color(0xFFF59E0B)
         else -> Color(0xFF22D3EE)
     }
 
-    Canvas(modifier = modifier.size(TRANSPORT_SIZE)) {
+    // The actual press is handled by the raw pointerInput on the parent Box
+    // (this canvas is drawn *under* the waveform, so it cannot own its own
+    // touch target) — this adds only the semantics a screen reader needs:
+    // a label, the fact that it behaves like a button, and a click action
+    // that performs the same toggle. Without it, the app's one transport
+    // control was invisible to TalkBack.
+    val description = if (playing) "Pause" else "Play"
+    Canvas(
+        modifier = modifier
+            .size(TRANSPORT_SIZE)
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+                if (enabled) onClick(label = description) { onToggle(); true }
+            },
+    ) {
         val outline = 1.5.dp.toPx()
         // Inside the canvas rather than centred on its edge, so the ring is not
         // half clipped away.
         val radius = size.minDimension / 2f - outline / 2f
         val centre = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
 
+        // A higher alpha when disabled: the enabled states are bright colours
+        // seen against a near-black background and read fine at 0.4; the
+        // disabled ring is the one case where the alpha itself was most of
+        // why the control was hard to find.
         drawCircle(
-            color = colour.copy(alpha = 0.4f),
+            color = colour.copy(alpha = if (enabled) 0.4f else 0.8f),
             radius = radius,
             center = centre,
             style = androidx.compose.ui.graphics.drawscope.Stroke(width = outline),
@@ -974,22 +1040,31 @@ private fun TrackStrip(
     ) {
         // The ordering is stated and changeable here rather than only in the
         // Library, because this is where the choice is made.
-        Text(
-            text = "BY ${sortLabel.uppercase()}",
-            color = Color(0xFF22D3EE),
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Black,
-            fontFamily = FontFamily.Monospace,
+        //
+        // Padded to a 48dp touch target for the same reason as the playhead
+        // lock above it — the 9sp label with 4dp of padding was under 20dp.
+        Box(
             modifier = Modifier
+                .sizeIn(minHeight = 48.dp)
+                .wrapContentSize(Alignment.CenterStart)
                 .clip(RoundedCornerShape(6.dp))
                 .clickable(onClick = onCycleSort)
+                .semantics { contentDescription = "Sort by ${sortLabel}. Tap to change." }
                 .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
+        ) {
+            Text(
+                text = "BY ${sortLabel.uppercase()}",
+                color = Color(0xFF22D3EE),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = tracks.firstOrNull()?.match?.let { "matched against the session" }
                 ?: "load a track to see what mixes with it",
-            color = Color(0xFF52525B),
+            color = Color(0xFF9CA3AF),
             fontSize = 9.sp,
             maxLines = 1,
         )
@@ -1094,13 +1169,13 @@ private fun TrackStrip(
                     ) {
                         Text(
                             "${track.bpmLabel()} BPM",
-                            color = if (track.bpm != null) Color(0xFF7DF9FF) else Color(0xFF52525B),
+                            color = if (track.bpm != null) Color(0xFF7DF9FF) else Color(0xFF9CA3AF),
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace,
                         )
                         Text(
                             track.keyLabel(),
-                            color = if (track.camelotKey != null) Color(0xFFF0ABFC) else Color(0xFF52525B),
+                            color = if (track.camelotKey != null) Color(0xFFF0ABFC) else Color(0xFF9CA3AF),
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace,
                         )
@@ -1121,5 +1196,5 @@ private fun TrackStrip(
 private fun scoreColour(score: Int): Color = when {
     score >= 85 -> Color(0xFF4ADE80)
     score >= 60 -> Color(0xFFFBBF24)
-    else -> Color(0xFF71717A)
+    else -> Color(0xFF9CA3AF)
 }

@@ -43,7 +43,13 @@ class CrashReportStore(private val store: KeyValueStore) {
                 object : KeyValueStore {
                     override fun getString(key: String): String? = preferences.getString(key, null)
                     override fun putString(key: String, value: String) {
-                        preferences.edit().putString(key, value).apply()
+                        // commit(), not apply(): this is written from
+                        // CrashReportingHandler.uncaughtException, one statement
+                        // before the platform's own handler kills the process.
+                        // apply() only queues the write on a background thread —
+                        // exactly the write that is least likely to finish before
+                        // the process it belongs to no longer exists.
+                        preferences.edit().putString(key, value).commit()
                     }
                 },
             )

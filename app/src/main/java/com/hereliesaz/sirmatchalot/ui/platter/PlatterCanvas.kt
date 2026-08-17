@@ -10,7 +10,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.dp
-import com.hereliesaz.sirmatchalot.gesture.GestureLabel
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -23,8 +22,11 @@ import kotlin.math.sin
  * - **Discrete radial rays**, one per angular bucket, outward for Deck A and
  *   inward for Deck B. Not a connected path through peak and valley points —
  *   that is what previously read as zigzags rather than a waveform.
- * - **Nothing is drawn but the waveform, the playhead and the labels.** No base
- *   circle, no centre circle, no bounding rings.
+ * - No base circle, no centre circle, no bounding ring around the platter
+ *   itself — but the waveform is not the only thing this draws: the beat
+ *   grid, cue/structure markers and a pending-clip's ghost are drawn here
+ *   too (see [drawBeatGrid], [drawMarkers], [drawPending]), and gesture
+ *   labels are a separate overlay drawn by the caller, not by this function.
  * - Ray length and glow both scale with the **live metered level**, so the ring
  *   careens with the audio.
  *
@@ -34,7 +36,6 @@ import kotlin.math.sin
 @Composable
 fun PlatterCanvas(
     state: PlatterState,
-    labels: List<GestureLabel>,
     modifier: Modifier = Modifier,
     scale: Float = 1f,
     offsetX: Float = 0f,
@@ -56,6 +57,14 @@ fun PlatterCanvas(
         val baseRadius = PlatterGeometry.baseRadius(size.width, size.height, scale)
         // Headroom for peaks to overshoot into.
         val maxHeight = baseRadius * 0.85f
+        // exaggeratedHeight's overshoot (up to 2.9x at full deck affinity) and
+        // level scale (up to 1.25x at full output) can multiply maxHeight to
+        // over 3x baseRadius — well past the screen at anything but a small
+        // zoom. Rays and the playhead are both clamped to this bound before
+        // they are drawn: the inscribed-circle radius from the platter's
+        // centre, so a tip can never leave the canvas regardless of angle.
+        val maxRayLength = (minOf(cx, cy, size.width - cx, size.height - cy) - baseRadius)
+            .coerceAtLeast(0f)
 
         val level = state.outputLevel.coerceIn(0f, 1f)
         // A floor so the ring is still legible when paused or between transients.
@@ -73,6 +82,7 @@ fun PlatterCanvas(
             cy = cy,
             baseRadius = baseRadius,
             maxHeight = maxHeight,
+            maxRayLength = maxRayLength,
             lengthScale = lengthScale,
             glow = glow,
             rotation = rotation,
@@ -86,6 +96,7 @@ fun PlatterCanvas(
             cy = cy,
             baseRadius = baseRadius,
             maxHeight = maxHeight,
+            maxRayLength = maxRayLength,
             lengthScale = lengthScale,
             glow = glow,
             rotation = rotation,
@@ -98,7 +109,7 @@ fun PlatterCanvas(
         // a thing in its own right.
         drawBeatGrid(state, cx, cy, baseRadius, rotation)
         drawMarkers(state, cx, cy, baseRadius, rotation)
-        drawPlayhead(state, cx, cy, baseRadius, maxHeight, lengthScale, glow, rotation)
+        drawPlayhead(state, cx, cy, baseRadius, maxHeight, maxRayLength, lengthScale, glow, rotation)
         drawPending(state, cx, cy, baseRadius, rotation, pulse)
     }
 }
@@ -291,6 +302,7 @@ private fun DrawScope.drawDeck(
     cy: Float,
     baseRadius: Float,
     maxHeight: Float,
+    maxRayLength: Float,
     lengthScale: Float,
     glow: Float,
     rotation: Float,
@@ -326,7 +338,7 @@ private fun DrawScope.drawDeck(
                 // Where the two decks agree, the ring reaches further. The
                 // matchiest minute of a mix is the tallest part of the circle.
                 affinity = state.affinity.at(fraction),
-            )
+            ).coerceAtMost(maxRayLength)
             if (height <= 0.5f) continue
 
             val energyHere = clip.energy?.let { curve ->
@@ -413,6 +425,7 @@ private fun DrawScope.drawPlayhead(
     cy: Float,
     baseRadius: Float,
     maxHeight: Float,
+    maxRayLength: Float,
     lengthScale: Float,
     glow: Float,
     rotation: Float,
@@ -449,7 +462,11 @@ private fun DrawScope.drawPlayhead(
         return
     }
 
+    // Clamped the same way a ray is: unbounded, this reached over 3x
+    // baseRadius at moderate levels with two decks loaded — a red slash
+    // drawn clean across the whole screen on every beat.
     val half = PlatterGeometry.playheadHalfLength(outward, inward)
+        .coerceAtMost(minOf(maxRayLength, baseRadius))
     val start = Offset(cx + cosA * (baseRadius - half), cy + sinA * (baseRadius - half))
     val end = Offset(cx + cosA * (baseRadius + half), cy + sinA * (baseRadius + half))
 

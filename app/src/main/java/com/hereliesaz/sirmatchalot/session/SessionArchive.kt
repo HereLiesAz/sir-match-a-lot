@@ -19,6 +19,44 @@ import java.util.zip.ZipOutputStream
  */
 object SessionArchive {
 
+    /**
+     * Hard ceilings on what [read] will inflate.
+     *
+     * A zip entry's stated size cannot be trusted — that is exactly what a zip
+     * bomb lies about — so these bound the *actual* bytes read out of the
+     * decompression stream, not the size in the entry header. Without a
+     * limit, `readBytes()` inflates an entry to EOF with no bound at all: a
+     * 42-byte manifest entry compressed from a gigabyte of zeros, or a
+     * hundred oversized "take" entries, would exhaust the heap before this
+     * function ever got to hand back a result — an `OutOfMemoryError` from a
+     * `.sir` file someone was merely sent, or attached to a bug report.
+     */
+    private const val MAX_ENTRY_BYTES = 64L * 1024 * 1024
+    private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+
+    /** A session with a hundred pads still has nowhere near this many entries. */
+    private const val MAX_ENTRIES = 512
+
+    /**
+     * Reads [from] to EOF, refusing to allocate past [limit] bytes.
+     *
+     * @return the bytes, or null if the entry (or the archive's running
+     *   total, via [budget]) would exceed its limit.
+     */
+    private fun readBounded(from: InputStream, limit: Long, budget: LongArray): ByteArray? {
+        val buffer = ByteArrayOutputStream()
+        val chunk = ByteArray(8192)
+        var read: Int
+        while (true) {
+            read = from.read(chunk)
+            if (read < 0) break
+            buffer.write(chunk, 0, read)
+            budget[0] += read
+            if (buffer.size() > limit || budget[0] > MAX_TOTAL_BYTES) return null
+        }
+        return buffer.toByteArray()
+    }
+
     /** Writes a session, with [takes] keyed by the file names the pads refer to. */
     fun write(
         document: SessionDocument,
@@ -48,15 +86,27 @@ object SessionArchive {
     fun read(from: InputStream): Archive? {
         var manifest: String? = null
         val takes = HashMap<String, ByteArray>()
+        val budget = longArrayOf(0L)
+        var oversized = false
 
         val ok = runCatching {
             ZipInputStream(from).use { zip ->
                 var entry = zip.nextEntry
+                var entryCount = 0
                 while (entry != null) {
+                    // A cap on entry count as well as bytes: a great many
+                    // tiny entries costs allocator and hash-map overhead
+                    // without ever tripping the byte budget above.
+                    entryCount++
+                    if (entryCount > MAX_ENTRIES) { oversized = true; break }
+
                     val name = entry.name
                     when {
-                        name == SessionDocument.MANIFEST ->
-                            manifest = zip.readBytes().toString(Charsets.UTF_8)
+                        name == SessionDocument.MANIFEST -> {
+                            val bytes = readBounded(zip, MAX_ENTRY_BYTES, budget)
+                            if (bytes == null) { oversized = true; break }
+                            manifest = bytes.toString(Charsets.UTF_8)
+                        }
 
                         // Only files directly inside the takes directory, and only
                         // by their bare name. A zip entry is free to say
@@ -67,7 +117,9 @@ object SessionArchive {
                         name.startsWith("${SessionDocument.TAKES}/") && !entry.isDirectory -> {
                             val leaf = name.substringAfterLast('/')
                             if (leaf.isNotBlank() && !name.contains("..")) {
-                                takes[leaf] = zip.readBytes()
+                                val bytes = readBounded(zip, MAX_ENTRY_BYTES, budget)
+                                if (bytes == null) { oversized = true; break }
+                                takes[leaf] = bytes
                             }
                         }
                     }
@@ -76,7 +128,7 @@ object SessionArchive {
             }
         }.isSuccess
 
-        if (!ok) return null
+        if (!ok || oversized) return null
         val document = SessionDocument.decode(manifest ?: return null) ?: return null
         return Archive(document, takes)
     }

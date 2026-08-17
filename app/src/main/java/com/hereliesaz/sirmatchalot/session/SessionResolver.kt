@@ -45,18 +45,32 @@ object SessionResolver {
         val wanted = document.tracks()
         val available = library.toMutableList()
         val resolved = LinkedHashMap<String, String>()
-        val missing = ArrayList<SessionTrack>()
 
-        for (saved in wanted) {
-            val match = take(available) { it.id == saved.id }
-                ?: take(available) { same(it, saved) && sameArtist(it, saved) }
-                ?: take(available) { same(it, saved) }
-                ?: take(available) { hinted(it, saved) }
-
-            if (match == null) missing.add(saved) else resolved[saved.id] = match.id
+        // Each pass runs to completion across *every* saved track before the
+        // next, weaker pass runs at all — "most certain first" only holds
+        // globally if it is applied globally. Running all four passes for
+        // one saved track before moving to the next let an early track's
+        // weak match (pass 4) claim a library row that a later track's exact
+        // id (pass 1) needed, and reported the later, better-evidenced track
+        // as missing instead.
+        var remaining = wanted
+        val passes: List<(Track, SessionTrack) -> Boolean> = listOf(
+            { track, saved -> track.id == saved.id },
+            { track, saved -> same(track, saved) && sameArtist(track, saved) },
+            { track, saved -> same(track, saved) },
+            ::hinted,
+        )
+        for (pass in passes) {
+            if (remaining.isEmpty()) break
+            val stillMissing = ArrayList<SessionTrack>()
+            for (saved in remaining) {
+                val match = take(available) { pass(it, saved) }
+                if (match == null) stillMissing.add(saved) else resolved[saved.id] = match.id
+            }
+            remaining = stillMissing
         }
 
-        return SessionRestore(document, resolved, missing)
+        return SessionRestore(document, resolved, remaining)
     }
 
     /** Removes and returns the first match, so nothing is claimed twice. */

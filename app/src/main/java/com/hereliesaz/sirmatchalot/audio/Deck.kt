@@ -41,7 +41,14 @@ class Clip(
  *
  * Not thread-safe. Owned by the render thread; controls are set from outside via
  * plain volatile writes, which is safe for the single `Float`/`Double` fields
- * used here and avoids locking the audio path.
+ * used here and avoids locking the audio path. [playhead] is the one
+ * exception: loading a clip onto a *playing* deck clamps it to the new,
+ * possibly shorter, cycle from the loading thread, while the render thread
+ * both reads and rewrites it every block — a plain volatile read-modify-write
+ * from the loader could race that block-end write and leave the playhead a
+ * block short of where either side thought it landed. `playheadLock` is a
+ * short, uncontended `synchronized` around just that field's read and write,
+ * not the whole render path.
  */
 class Deck(
     val name: String,
@@ -53,29 +60,47 @@ class Deck(
         set(value) {
             field = value
             // Keep the playhead inside the new cycle rather than stranding it
-            // past the end of a shortened timeline.
-            val frames = cycleFrames
-            if (frames > 0 && playhead >= frames) playhead %= frames
+            // past the end of a shortened timeline. Synchronized against the
+            // render thread's own end-of-block write to playhead below, so
+            // this read-modify-write cannot race it.
+            val frames = cycleFramesOf(value)
+            if (frames > 0) {
+                synchronized(playheadLock) {
+                    if (playhead >= frames) playhead %= frames
+                }
+            }
         }
+
+    private val playheadLock = Any()
 
     /**
      * Length of one revolution in frames — the longest clip extent, so the
      * timeline is exactly as long as the material on it.
      */
-    val cycleFrames: Int
-        get() {
-            // Indexed rather than `maxOfOrNull`, which iterates and so allocates.
-            // Once per render block rather than once per frame, but the block is
-            // still the audio callback.
-            val snapshot = clips
-            var longest = 0
-            for (index in 0 until snapshot.size) {
-                val clip = snapshot[index]
-                val end = clip.startFrame + timelineFrames(clip)
-                if (end > longest) longest = end
-            }
-            return longest
+    val cycleFrames: Int get() = cycleFramesOf(clips)
+
+    /**
+     * [cycleFrames] over an already-read [snapshot], so a caller that needs
+     * both the cycle length and the clip list itself — [render] does — reads
+     * the volatile [clips] field exactly once rather than once per use.
+     * `clips` can be replaced by another thread between any two reads of it,
+     * and reading it three times in one render block used to let a cycle
+     * length computed from one clip list be combined with a clip snapshot
+     * from another — a load landing mid-block could make one block of audio
+     * wrap at the wrong point or read a clip at the wrong modulus.
+     */
+    private fun cycleFramesOf(snapshot: List<Clip>): Int {
+        // Indexed rather than `maxOfOrNull`, which iterates and so allocates.
+        // Once per render block rather than once per frame, but the block is
+        // still the audio callback.
+        var longest = 0
+        for (index in 0 until snapshot.size) {
+            val clip = snapshot[index]
+            val end = clip.startFrame + timelineFrames(clip)
+            if (end > longest) longest = end
         }
+        return longest
+    }
 
     /**
      * How many frames of *this deck's* timeline [clip] occupies.
@@ -96,7 +121,11 @@ class Deck(
      * next to that check rather than reconstructed elsewhere, so the two cannot
      * drift apart and leave the output running for a deck that renders nothing.
      */
-    val isSounding: Boolean get() = playing && clips.isNotEmpty() && cycleFrames > 0
+    val isSounding: Boolean
+        get() {
+            val snapshot = clips
+            return playing && snapshot.isNotEmpty() && cycleFramesOf(snapshot) > 0
+        }
 
     /** Current position on the timeline, in frames. */
     @Volatile
@@ -150,14 +179,24 @@ class Deck(
 
         java.util.Arrays.fill(out, 0, frames * CHANNELS, 0f)
 
-        val cycle = cycleFrames
-        if (!playing || cycle <= 0 || clips.isEmpty()) {
+        val snapshot = clips
+        val cycle = cycleFramesOf(snapshot)
+        if (!playing || cycle <= 0 || snapshot.isEmpty()) {
             outputLevel = 0f
             return
         }
 
-        val snapshot = clips
-        var position = playhead
+        // Synchronized against the `clips` setter's own clamp of this same
+        // field: without it, a load landing here raced this read and could
+        // hand this block a playhead the loader was in the middle of
+        // rewriting.
+        var position = synchronized(playheadLock) { playhead }
+        // A shorter clip list can land between two render calls and shrink
+        // the cycle out from under a playhead that was valid a block ago.
+        if (position >= cycle || position < 0.0) {
+            position %= cycle
+            if (position < 0.0) position += cycle
+        }
         // The playhead moves in output frames. Nothing about the material scales
         // it any more — `localPosition` converts per clip.
         val step = rate
@@ -197,7 +236,7 @@ class Deck(
             else if (position < 0.0) position += cycle
         }
 
-        playhead = position
+        synchronized(playheadLock) { playhead = position }
 
         applyEq(out, frames)
         applyGain(out, frames)
@@ -302,9 +341,13 @@ class Deck(
     fun nudgeSeconds(seconds: Double) {
         val cycle = cycleFrames
         if (cycle <= 0) return
-        var position = (playhead + seconds * outputSampleRate) % cycle
-        if (position < 0) position += cycle
-        playhead = position
+        // Synchronized: this is a read-modify-write of the same field the
+        // render thread rewrites once per block.
+        synchronized(playheadLock) {
+            var position = (playhead + seconds * outputSampleRate) % cycle
+            if (position < 0) position += cycle
+            playhead = position
+        }
     }
 
     /**
@@ -316,7 +359,7 @@ class Deck(
         if (cycle <= 0) return
         var position = (seconds * outputSampleRate) % cycle
         if (position < 0) position += cycle
-        playhead = position
+        synchronized(playheadLock) { playhead = position }
     }
 
     /** Position on the timeline as a fraction of one revolution, for the platter. */

@@ -15,6 +15,8 @@ object AzphaltStoreRepository {
     // The store lives at azphalt.org; the previous constant pointed at
     // azphalt.store, a different host.
     private const val BASE_URL = "https://azphalt.org"
+    private const val CONNECT_TIMEOUT_MS = 15_000
+    private const val READ_TIMEOUT_MS = 15_000
 
     data class StorePackage(
         val id: String,
@@ -26,44 +28,79 @@ object AzphaltStoreRepository {
         val url = URL("$BASE_URL/packages?types=audio")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        
-        if (connection.responseCode != 200) {
-            return@withContext emptyList()
-        }
-        
-        val jsonString = connection.inputStream.bufferedReader().use { it.readText() }
-        val root = JSONObject(jsonString)
-        val packagesArray = root.optJSONArray("packages") ?: return@withContext emptyList()
-        
-        val result = mutableListOf<StorePackage>()
-        for (i in 0 until packagesArray.length()) {
-            val pkg = packagesArray.getJSONObject(i)
-            result.add(
-                StorePackage(
-                    id = pkg.getString("id"),
-                    name = pkg.getString("name"),
-                    version = pkg.optString("latest", "1.0.0")
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        try {
+            if (connection.responseCode != 200) {
+                return@withContext emptyList()
+            }
+
+            val jsonString = connection.inputStream.bufferedReader().use { it.readText() }
+            val root = JSONObject(jsonString)
+            val packagesArray = root.optJSONArray("packages") ?: return@withContext emptyList()
+
+            val result = mutableListOf<StorePackage>()
+            for (i in 0 until packagesArray.length()) {
+                val pkg = packagesArray.getJSONObject(i)
+                result.add(
+                    StorePackage(
+                        id = pkg.getString("id"),
+                        name = pkg.getString("name"),
+                        version = pkg.optString("latest", "1.0.0")
+                    )
                 )
-            )
+            }
+            return@withContext result
+        } finally {
+            connection.disconnect()
         }
-        return@withContext result
+    }
+
+    /**
+     * A package id is chosen by the store, not by us, and is used to build a
+     * filesystem path. Anything other than a plain path segment — `..`, a
+     * separator, an empty string — is rejected outright rather than merely
+     * sanitised, so a hostile store cannot aim the extraction directory
+     * anywhere but inside our own `azphalt/` folder.
+     */
+    private fun safePackageDirName(id: String): String {
+        require(id.isNotBlank()) { "Package id is blank" }
+        require(id != "." && id != "..") { "Package id is not a valid path segment: $id" }
+        require(!id.contains('/') && !id.contains('\\') && !id.contains("..")) {
+            "Package id is not a valid path segment: $id"
+        }
+        return id
     }
 
     suspend fun downloadAndExtractPackage(context: Context, pkg: StorePackage): List<Track> = withContext(Dispatchers.IO) {
+        val dirName = safePackageDirName(pkg.id)
         val url = URL("$BASE_URL/packages/${pkg.id}/versions/${pkg.version}/download")
         val connection = url.openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        
-        if (connection.responseCode != 200) {
-            throw Exception("Failed to download package: ${connection.responseCode}")
-        }
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
 
-        val extractDir = File(context.filesDir, "azphalt/${pkg.id}")
-        if (!extractDir.exists()) {
-            extractDir.mkdirs()
-        }
+        val packagesRoot = File(context.filesDir, "azphalt").canonicalFile
+        val extractDir = File(packagesRoot, dirName)
+        try {
+            if (connection.responseCode != 200) {
+                throw Exception("Failed to download package: ${connection.responseCode}")
+            }
 
-        unzip(connection.inputStream, extractDir)
+            // Belt and braces: the name was already validated, but the
+            // canonical path is checked again against the fixed packages
+            // root before anything is written under it.
+            if (!extractDir.canonicalPath.startsWith(packagesRoot.canonicalPath + File.separator)) {
+                throw Exception("Package id resolves outside the packages directory: ${pkg.id}")
+            }
+            if (!extractDir.exists()) {
+                extractDir.mkdirs()
+            }
+
+            unzip(connection.inputStream, extractDir)
+        } finally {
+            connection.disconnect()
+        }
 
         // Downloaded audio is registered unanalysed. It is measured by the
         // analysis pipeline like any other import — the previous version filled

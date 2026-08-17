@@ -44,40 +44,57 @@ class TimeStretcher(
         if (ratio == 1.0) return input.copyOf()
 
         val outputLength = (input.size / ratio).roundToInt().coerceAtLeast(1)
-        // Either end being shorter than a frame means no frame is ever emitted.
-        // The input check was here already; without the output check, a large
-        // ratio over a short input — 2048 samples at 4x, say — ran the frame
-        // loop zero times, skipped the tail on `continuation < 0`, and returned
-        // an array of silence.
-        if (input.size < frameSize || outputLength < frameSize) {
-            // Too short to window meaningfully; fall back to a plain resample,
-            // which shifts pitch but keeps the call total rather than silent.
+
+        // The configured frame does not have to fit for this to still do a
+        // genuine, pitch-preserving stretch — only *some* even frame at least
+        // MIN_FRAME_SIZE long has to. Frame, overlap, window and search
+        // window are all scaled down together to whatever the shorter of
+        // input and output actually admits.
+        //
+        // This used to fall back to a plain `Resampler.render(input, 0.0,
+        // ratio, out)` below that threshold, which changes pitch and duration
+        // together rather than duration alone — exactly what a naive resample
+        // does, and exactly what [PitchShifter.shift] does *again*
+        // immediately afterward at the inverse rate to undo the duration
+        // change. The two cancelled: a pitch shift on any buffer under one
+        // configured frame (46-93 ms, depending on sample rate) came back
+        // bit-for-bit unshifted, silently.
+        val maxFit = minOf(input.size, outputLength)
+        if (maxFit < MIN_FRAME_SIZE) {
+            // A couple of milliseconds or less — too short for any windowed
+            // overlap-add to mean anything at all. This is the one case left
+            // that still just resamples, changing pitch and duration
+            // together; there is no frame-based alternative to reach for.
             val out = FloatArray(outputLength)
             Resampler.render(input, 0.0, ratio, out)
             return out
         }
+        val effectiveFrameSize = (maxFit / 2 * 2).coerceIn(MIN_FRAME_SIZE, frameSize)
+        val effectiveOverlap = effectiveFrameSize / 2
+        val effectiveWindow = if (effectiveFrameSize == frameSize) window else Window.hann(effectiveFrameSize)
+        val effectiveSeekWindow = minOf(seekWindow, effectiveOverlap)
 
         val output = FloatArray(outputLength)
-        val analysisHop = overlap * ratio
+        val analysisHop = effectiveOverlap * ratio
 
         var outPos = 0
         var nominal = 0.0
         // Where the previously emitted frame would naturally have continued.
         var continuation = -1
-        while (outPos + frameSize <= outputLength) {
+        while (outPos + effectiveFrameSize <= outputLength) {
             val nominalStart = nominal.roundToInt()
             val start =
                 if (continuation < 0) nominalStart
-                else bestMatch(input, nominalStart, continuation)
+                else bestMatch(input, nominalStart, continuation, effectiveOverlap, effectiveSeekWindow)
 
-            for (i in 0 until frameSize) {
+            for (i in 0 until effectiveFrameSize) {
                 val s = start + i
                 if (s < 0 || s >= input.size) continue
-                output[outPos + i] += input[s] * window[i]
+                output[outPos + i] += input[s] * effectiveWindow[i]
             }
 
-            continuation = start + overlap
-            outPos += overlap
+            continuation = start + effectiveOverlap
+            outPos += effectiveOverlap
             nominal += analysisHop
         }
 
@@ -93,14 +110,14 @@ class TimeStretcher(
         // ramp-down instead, which reaches `2x` — a +6 dB step in a single
         // sample, 23 ms before the end of every stretched or pitch-shifted
         // track, straight into the limiter.
-        for (i in 0 until minOf(overlap, outputLength)) {
-            if (i < input.size) output[i] += input[i] * (1f - window[i])
+        for (i in 0 until minOf(effectiveOverlap, outputLength)) {
+            if (i < input.size) output[i] += input[i] * (1f - effectiveWindow[i])
         }
         if (outPos < outputLength && continuation >= 0) {
             var s = continuation
             for (i in outPos until outputLength) {
-                val inLastFrame = overlap + (i - outPos)
-                val remaining = if (inLastFrame < frameSize) 1f - window[inLastFrame] else 1f
+                val inLastFrame = effectiveOverlap + (i - outPos)
+                val remaining = if (inLastFrame < effectiveFrameSize) 1f - effectiveWindow[inLastFrame] else 1f
                 output[i] += (if (s in input.indices) input[s] else 0f) * remaining
                 s++
             }
@@ -114,7 +131,7 @@ class TimeStretcher(
      * [overlap] samples best correlate with the [target] continuation, by
      * normalised cross-correlation.
      */
-    private fun bestMatch(input: FloatArray, nominal: Int, target: Int): Int {
+    private fun bestMatch(input: FloatArray, nominal: Int, target: Int, overlap: Int, seekWindow: Int): Int {
         if (seekWindow == 0) return nominal
         if (target + overlap > input.size) return nominal
 
@@ -144,6 +161,10 @@ class TimeStretcher(
             }
         }
         return best
+    }
+
+    private companion object {
+        const val MIN_FRAME_SIZE = 64
     }
 }
 

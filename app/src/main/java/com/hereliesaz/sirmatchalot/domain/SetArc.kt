@@ -107,7 +107,7 @@ class SetArc private constructor(private val phases: List<Phase>) {
             val flat = (smoothed.max() - smoothed.min()) < FLAT_ENERGY_RANGE
             val peak = if (flat) ((steps.size - 1) * NOMINAL_PEAK_FRACTION).toInt() else measured
 
-            // The opening is the first stretch, never more than a quarter of the
+            // The opening is the first stretch, never more than a fifth of the
             // set and never past the peak.
             val openingEnd = minOf(opening, maxOf(0, peak - 1))
             // The peak is a stretch rather than an instant: one transition at the

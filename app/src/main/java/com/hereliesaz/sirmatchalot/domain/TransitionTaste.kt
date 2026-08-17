@@ -1,5 +1,6 @@
 package com.hereliesaz.sirmatchalot.domain
 
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.ln
@@ -175,7 +176,11 @@ class TransitionTaste(
 
         const val REPORTABLE_WEIGHT = 0.25
 
-        private fun format(value: Double) = String.format("%.6f", value)
+        // Locale.ROOT, not the default: String.format with no locale renders
+        // the decimal point as a comma on plenty of real devices, which broke
+        // the field count decode() expects and reset this model to zero on
+        // every launch for anyone on such a locale.
+        private fun format(value: Double) = String.format(Locale.ROOT, "%.6f", value)
 
         /** Reads back [encode], returning a fresh model on anything unparseable. */
         fun decode(encoded: String?): TransitionTaste {

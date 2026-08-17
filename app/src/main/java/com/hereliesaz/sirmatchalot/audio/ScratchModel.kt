@@ -26,8 +26,24 @@ class ScratchModel(
     private val curve: Float = 1.7f,
     /** Rate is clamped to this magnitude in both directions. */
     private val maxRate: Double = 3.0,
-    /** Reverse frames that must accumulate before the easter egg fires. */
-    private val easterEggReverseFrames: Double = 44_100.0 * 6,
+    /**
+     * The output rate `frames` in [accountForRenderedFrames] is counted in.
+     * Defaulted for callers (and tests) that only care about the rate curve;
+     * a real engine must pass its actual output rate, since [frames] is
+     * counted in it. Only used to compute the default below — passing
+     * [easterEggReverseFrames] directly overrides it.
+     */
+    sampleRate: Double = 44_100.0,
+    /**
+     * Reverse frames that must accumulate before the easter egg fires.
+     * Defaults to six seconds at [sampleRate].
+     *
+     * This used to be hardcoded to `44_100.0 * 6` regardless of the engine's
+     * actual output rate, so on the common 48 kHz device the "six second"
+     * threshold fired at 5.51 s — 8.8% early — and every intermediate
+     * progress readout over-reported by the same margin.
+     */
+    private val easterEggReverseFrames: Double = sampleRate * 6,
 ) {
     // Every field below is written by the gesture, on the UI thread, and read —
     // and in two cases read-modify-written — by the audio callback. `Deck` says

@@ -138,7 +138,11 @@ class SyncServer(
 
     val isRunning: Boolean get() = running.get()
 
-    val peerCount: Int get() = clients.size
+    // Raw accepted sockets, not approved peers. Anyone on the network can open
+    // a TCP connection to this port for free, before any pairing has
+    // happened — counting them here would let an attacker inflate the "N
+    // devices joined" readout with connections that joined nothing.
+    val peerCount: Int get() = clients.count { it.isJoined }
 
     /** This host's address on the local network, or null when not on one. */
     fun hostAddress(): String? = localAddress()
@@ -253,7 +257,8 @@ class SyncServer(
             val accepted = runCatching { socket.accept() }.getOrNull() ?: continue
             val connection = ClientConnection(accepted)
             clients.add(connection)
-            onPeersChanged?.invoke(clients.size)
+            // Not yet counted in onPeersChanged: an accepted socket has not
+            // joined anything until admitIfReady() says so.
             Thread({ connection.run() }, "SirMatchALot-SyncPeer").apply {
                 isDaemon = true
                 start()
@@ -309,7 +314,11 @@ class SyncServer(
          * never checked at all, and could load tracks, seek decks and drive the
          * filter pad on somebody else's instrument from anywhere on the Wi-Fi.
          */
+        @Volatile
         private var joined = false
+
+        /** Whether this peer has completed a `join` — see [joined]. */
+        val isJoined: Boolean get() = joined
 
         /** This connection's own ephemeral keys, never reused. */
         private val keys = RoomCrypto.newKeyPair()
@@ -370,6 +379,7 @@ class SyncServer(
         private fun admitIfReady() {
             if (joined || !pendingJoin || !approvedByHost) return
             joined = true
+            onPeersChanged?.invoke(clients.count { it.isJoined })
 
             // Remembered here rather than in `approve`, because the fingerprint
             // is only known once the join has arrived and its signature has

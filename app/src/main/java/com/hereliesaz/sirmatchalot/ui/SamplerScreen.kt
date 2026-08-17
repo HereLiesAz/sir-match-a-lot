@@ -35,6 +35,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -250,7 +256,7 @@ fun SamplerScreen(
 
         Text(
             text = "${sampler.emptyPadCount} of ${sampler.padCount} pads free",
-            color = Color(0xFF52525B),
+            color = Color(0xFF9CA3AF),
             fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
         )
@@ -283,22 +289,41 @@ private fun FilterPad(
     onRelease: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // A drag-only XY pad has no discrete "activate" action to expose, so this
+    // only announces what the control is and its current position — a screen
+    // reader user cannot drive it precisely, but is no longer told nothing
+    // about it exists at all.
+    val stateText = position?.let { (x, y) ->
+        val side = when {
+            x < -0.05f -> "low pass"
+            x > 0.05f -> "high pass"
+            else -> "bypass"
+        }
+        "$side, resonance ${(y * 100).toInt()} percent"
+    } ?: "bypass"
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
             .background(Color(0xFF0B0B12))
             .border(1.dp, if (position != null) Color(0xFF22D3EE) else Color(0xFF27272A), RoundedCornerShape(14.dp))
+            .semantics {
+                contentDescription = "Filter pad. Horizontal is low pass to high pass, vertical is resonance."
+                stateDescription = stateText
+            }
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
-                        val down = awaitPointerEvent()
-                        val change = down.changes.firstOrNull() ?: continue
-                        if (change.pressed) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.pressed }
+                        if (change != null) {
                             val x = (change.position.x / size.width * 2f - 1f).coerceIn(-1f, 1f)
                             // Screen y grows downward; resonance grows upward.
                             val y = (1f - change.position.y / size.height).coerceIn(0f, 1f)
                             onMove(x, y)
-                        } else {
+                        } else if (event.changes.isNotEmpty()) {
+                            // Only release once every pointer that touched the pad
+                            // has actually lifted — not just whichever one happens
+                            // to be first in the change list this event.
                             onRelease()
                         }
                     }
@@ -327,7 +352,7 @@ private fun FilterPad(
         }
         Text(
             text = if (position == null) "FILTER — LOW ← | → HIGH, UP = RESONANCE" else "FILTER",
-            color = Color(0xFF3F3F46),
+            color = Color(0xFF9CA3AF),
             fontSize = 8.sp,
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
@@ -357,6 +382,11 @@ private fun PadButton(
         else -> Color.hsl(hue, 0.7f, 0.5f)
     }
 
+    val description = buildString {
+        append(if (isEmpty) "Empty pad" else label ?: "Pad")
+        if (isRecording) append(", recording")
+        if (isPlaying) append(", playing")
+    }
     Box(
         modifier = Modifier
             .aspectRatio(1.1f)
@@ -371,12 +401,23 @@ private fun PadButton(
                         onRelease()
                     },
                 )
+            }
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+                // Mirrors the press-and-release the raw gesture above does —
+                // a screen reader activation is a full tap.
+                onClick {
+                    onPress()
+                    onRelease()
+                    true
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label ?: "empty",
-            color = if (isEmpty) Color(0xFF3F3F46) else Color.White,
+            color = if (isEmpty) Color(0xFF9CA3AF) else Color.White,
             fontSize = 9.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(4.dp),

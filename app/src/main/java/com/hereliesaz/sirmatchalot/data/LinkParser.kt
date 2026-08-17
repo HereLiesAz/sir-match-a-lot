@@ -61,16 +61,31 @@ object LinkParser {
         return ParsedLink(LinkType.UNKNOWN_URL, null, trimmed)
     }
 
+    /**
+     * Splits "Artist - Title" (or "Artist_-_Title", "Artist_Title") from a
+     * bare file name, at the *first* separator only.
+     *
+     * This used to split on every hyphen and then always read positions 0
+     * and 1 — so "01 - Artist - Song.mp3" (a numbered track, the ordinary
+     * case for a ripped album) produced title "Artist" and artist "01", with
+     * "Song" simply dropped, and any name with more than one hyphen lost
+     * everything past the second segment the same way. Only the first
+     * separator is meaningful; whatever comes after it — including more
+     * hyphens — is part of the title, exactly as `PlaylistParser`'s own
+     * "Artist - Title" rule already treats them.
+     */
     fun parseFileName(fileName: String): Pair<String, String> {
-        val cleanName = fileName.substringBeforeLast(".")
+        val cleaned = fileName.substringBeforeLast(".")
             .replace("_", " ")
-            .replace("-", " - ")
-            .split(Pattern.compile("\\s+-\\s+"))
+            .replace(Regex("\\s*-\\s*"), " - ")
+            .trim()
 
-        return if (cleanName.size >= 2) {
-            Pair(cleanName[1].trim(), cleanName[0].trim()) // Title, Artist
-        } else {
-            Pair(cleanName[0].trim(), "Unknown Artist") // Title, Unknown
-        }
+        val separator = cleaned.indexOf(" - ")
+        if (separator <= 0) return cleaned.trim() to "Unknown Artist"
+
+        val artist = cleaned.substring(0, separator).trim()
+        val title = cleaned.substring(separator + 3).trim()
+        if (artist.isEmpty() || title.isEmpty()) return cleaned.trim() to "Unknown Artist"
+        return title to artist
     }
 }

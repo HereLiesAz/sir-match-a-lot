@@ -99,15 +99,22 @@ over a WebSocket on port 8890. **No traffic leaves your network and none of it
 passes through any server operated by this project.**
 
 What travels between the devices while linked: the room code, a device role and
-the label "Android Device", transport state, crossfader position, cue points,
-track ids, pad triggers, and filter positions. No audio and no files are sent.
+name (your device's manufacturer and model, e.g. "Google Pixel 9" — not an
+account name or anything else identifying you), a long-term identity key used
+to recognise a device you have paired with before, transport state, crossfader
+position, cue points, track ids, pad triggers, and filter positions. No audio
+and no files are sent. See [SECURITY.md](SECURITY.md) for the full detail of
+what that identity key is and how it is used.
 
 Two things worth knowing before you host:
 
-- The connection is **unencrypted and unauthenticated**. Anyone on the same
-  network who knows the port can connect and send the same commands. It is
-  designed for a room you control — a booth, a rehearsal space, a house — not a
-  public Wi-Fi network.
+- Every connection is paired and encrypted: the two devices agree a key by
+  Diffie-Hellman, the people at both ends compare a six-digit code before
+  anything is admitted, and every frame after that is sealed with AES-256-GCM.
+  The raw TCP/WebSocket transport itself has to be reachable to be paired with
+  at all, so it is still worth hosting only on a network you control — a booth,
+  a rehearsal space, a house — not a public Wi-Fi network, but nothing sent on
+  it is readable in the clear by someone merely on the same network.
 - Hosting opens listening ports on your device for as long as it is on.
 
 Sync is off unless you start it.
@@ -129,8 +136,12 @@ only produces one when you ask it to.
 The app currently allows Android's automatic backup (`allowBackup="true"`), so
 your library metadata and settings may be included in the device backup Google
 makes to your own Google account, under Google's terms rather than ours. Your
-audio files are not in the app's storage and so are not part of this. You can turn
-Android backup off for the app in your device's system settings.
+audio files are not in the app's storage and so are not part of this. The
+pending crash report (see above) is explicitly excluded from both this backup
+and Android's device-to-device transfer, since it is meant to leave the device
+only when you choose to file it — not through a channel neither of us is
+watching. You can turn Android backup off for the app entirely in your
+device's system settings.
 
 ## Children
 

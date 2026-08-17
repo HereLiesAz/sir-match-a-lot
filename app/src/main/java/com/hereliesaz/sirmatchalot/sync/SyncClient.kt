@@ -101,10 +101,17 @@ class SyncClient(
             WebSocketProtocol.decodeBase64(message.optString("signature")) ?: return null
         val key = DeviceIdentity.decodePublicKey(identityBytes) ?: return null
 
-        hostFingerprint = DeviceIdentity.fingerprintOf(key)
-        if (!trusted.isKnown(hostFingerprint!!)) return null
+        // The fingerprint is derived but not yet trusted: it is only assigned
+        // to `hostFingerprint` — and so only eligible to be remembered by
+        // `approvePairing` — once the signature over this exchange's
+        // transcript has actually verified. Setting it any earlier would let
+        // an unverifiable identity be written down as if it had proved
+        // itself.
+        val candidateFingerprint = DeviceIdentity.fingerprintOf(key)
         if (!DeviceIdentity.verify(key, signed, signature)) return null
-        return trusted.all()[hostFingerprint!!] ?: "the host"
+        hostFingerprint = candidateFingerprint
+        if (!trusted.isKnown(candidateFingerprint)) return null
+        return trusted.all()[candidateFingerprint] ?: "the host"
     }
 
     /**

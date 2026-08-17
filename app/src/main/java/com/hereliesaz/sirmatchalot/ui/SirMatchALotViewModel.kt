@@ -693,6 +693,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                         if (_isPlaying.value) engine.wake()
                     }
                     onDeck.value = onDeck.value + track
+                    // Cue points are a deck-timeline concept — four slots on
+                    // the shared circle, not attached to any one clip — but
+                    // they are stored per track, so they only round-trip for
+                    // the ordinary single-track deck. Restored here, on the
+                    // first clip landing on an otherwise empty deck, from
+                    // whatever this same track had saved.
+                    if (existing.isEmpty()) restoreCuesFor(track, deck)
                     republishPlatter()
                     if (!startSilent) reportConformed(track)
                     syncClient.triggerLoadTrack(if (deck == PlatterGeometry.Deck.A) "A" else "B", track.id, _roomCode.value)
@@ -1706,12 +1713,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     // --- Gesture entry points, mapped to the engine ---
 
     fun nudgeCrossfade(delta: Float) {
-        audioEngine.mixer.crossfade = (audioEngine.mixer.crossfade + delta / 600f).coerceIn(0f, 1f)
+        // Routed through setCrossfaderValue rather than writing
+        // audioEngine.mixer.crossfade directly: that write bypassed
+        // _crossfader entirely, so the on-screen slider stayed put while the
+        // mix moved, the change never reached a linked device over sync, and
+        // the next touch of the slider read the stale _crossfader value and
+        // snapped the mix back across the whole gesture in one step.
+        val position = (audioEngine.mixer.crossfade + delta / 600f).coerceIn(0f, 1f)
+        setCrossfaderValue(((position * 200f) - 100f).toInt().coerceIn(-100, 100))
     }
 
     fun nudgeMasterVolume(deltaRadians: Float) {
-        audioEngine.mixer.masterGain =
-            (audioEngine.mixer.masterGain + deltaRadians * 0.25f).coerceIn(0f, 1f)
+        // See nudgeCrossfade: routed through setVolume so _audioVolume — and
+        // the volume slider it drives — stays in step with the engine.
+        setVolume((audioEngine.mixer.masterGain + deltaRadians * 0.25f).coerceIn(0f, 1f))
     }
 
     /**
@@ -2313,8 +2328,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 for (step in plan.steps.drop(2)) prepareStructure(step.track)
             }
 
+            // The opening track's own deepen has to happen *before* the first
+            // `advance()` call below, not after it: `advance` is what resolves
+            // the transition script for the current index, and the loop cache
+            // that `prepareStructure` fills in here is what makes a loop-roll
+            // or a flourish eligible for that script at all. Deepening only
+            // inside the loop, keyed off an index change, deepened index 0
+            // one tick too late — after its script had already been resolved
+            // against an empty loop list — so the opening transition of every
+            // set could never use either feature.
+            director.currentStep?.let { prepareStructure(it.track) }
+
             var last = System.nanoTime()
-            var deepened = -1
+            var deepened = director.index
             while (!director.finished) {
                 delay(50)
                 val now = System.nanoTime()
@@ -2658,7 +2684,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (_role.value == role) return
         _role.value = role
         if (_isWsConnected.value) {
-            syncClient.joinRoom(_roomCode.value, role.wireName, "Android Device")
+            syncClient.joinRoom(_roomCode.value, role.wireName, DEVICE_NAME)
         }
         _feedbackMsg.value = "This device: ${role.label}"
     }
@@ -2685,11 +2711,47 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         // A cue that cannot be seen is a cue you have to remember. Republish so
         // the mark appears on the ring the moment it is set.
         republishMarkers()
+        persistCuesForDeck(deck)
     }
 
     fun triggerCue(deck: String, index: Int) {
         val time = (if (deck == "A") _cuesA.value else _cuesB.value)[index - 1] ?: return
         deckNamed(deck).seekToSeconds(time.toDouble())
+    }
+
+    /**
+     * Writes this deck's cue points to the DB row of the track they belong
+     * to, so they survive the app being killed and travel with a `.sir`
+     * session — `Track.cuePointsCsv` fed `toSessionTrack()` for exactly this,
+     * but nothing ever wrote it, so it was always empty and a cue set in the
+     * UI lived only in `_cuesA`/`_cuesB` for the life of the process.
+     *
+     * Cues are a deck-timeline concept, not a per-clip one — one set of four
+     * slots on the shared circle — so this only round-trips correctly for
+     * the ordinary case of one track on the deck. With more than one clip
+     * loaded there is no single track to attribute a cue to, so nothing is
+     * written rather than guessing which clip it belongs to.
+     */
+    private fun persistCuesForDeck(deck: String) {
+        val loaded = if (deck == "A") _loadedTracksA.value else _loadedTracksB.value
+        val track = loaded.singleOrNull() ?: return
+        val cues = (if (deck == "A") _cuesA.value else _cuesB.value)
+            .filterNotNull()
+            .map { it.toDouble() }
+        val csv = Track.cuePointsToCsv(cues)
+        if (csv == track.cuePointsCsv) return
+        viewModelScope.launch(Dispatchers.IO) {
+            trackDao.updateTrack(track.copy(cuePointsCsv = csv))
+        }
+    }
+
+    /** The other half of [persistCuesForDeck] — read back when the track loads. */
+    private fun restoreCuesFor(track: Track, deck: PlatterGeometry.Deck) {
+        val cues = track.cuePoints
+        if (cues.isEmpty()) return
+        val padded = (cues.map { it.toFloat() as Float? } + List(4) { null }).take(4)
+        if (deck == PlatterGeometry.Deck.A) _cuesA.value = padded else _cuesB.value = padded
+        republishMarkers()
     }
 
 
@@ -2983,8 +3045,8 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     fun sessionLink(): SessionLink = SessionLink(
         deckA = _loadedTracksA.value.map { SessionLink.TrackRef(it.title, it.artist) },
         deckB = _loadedTracksB.value.map { SessionLink.TrackRef(it.title, it.artist) },
-        cuesA = _cuesA.value.filterNotNull().map { it.toDouble() },
-        cuesB = _cuesB.value.filterNotNull().map { it.toDouble() },
+        cuesA = _cuesA.value.map { it?.toDouble() },
+        cuesB = _cuesB.value.map { it?.toDouble() },
         crossfade = _crossfader.value,
         referenceBpm = _reference.value?.bpm,
         referenceKey = _reference.value?.camelotKey,
@@ -3023,9 +3085,12 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         load(session.deckA, PlatterGeometry.Deck.A)
         load(session.deckB, PlatterGeometry.Deck.B)
 
-        _cuesA.value = session.cuesA.map { it.toFloat() as Float? }
+        // Positions, not just values: session.cuesA is already slot-aligned
+        // (a null is an unset slot, not a hole to skip), so this only pads
+        // or truncates to four — it does not renumber anything.
+        _cuesA.value = session.cuesA.map { it?.toFloat() }
             .plus(List(4) { null }).take(4)
-        _cuesB.value = session.cuesB.map { it.toFloat() as Float? }
+        _cuesB.value = session.cuesB.map { it?.toFloat() }
             .plus(List(4) { null }).take(4)
 
         _feedbackMsg.value = when {
@@ -3561,15 +3626,6 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
-     * The host this device is being asked to confirm, or null.
-     *
-     * Both devices show the same six digits and both users must approve. The
-     * host's approval says "this is the device I meant to let in"; this one says
-     * "this is the room I meant to join". Only both together rule out somebody
-     * sitting in the middle running one exchange with each side — which a key
-     * exchange on its own does nothing whatsoever about.
-     */
-    /**
      * What this device calls itself on another device's approval prompt.
      *
      * The model, so "Pixel 8 wants to join" is a sentence somebody can act on —
@@ -3581,6 +3637,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             .joinToString(" ")
             .ifBlank { "A device" }
 
+    /**
+     * The host this device is being asked to confirm, or null.
+     *
+     * Both devices show the same six digits and both users must approve. The
+     * host's approval says "this is the device I meant to let in"; this one says
+     * "this is the room I meant to join". Only both together rule out somebody
+     * sitting in the middle running one exchange with each side — which a key
+     * exchange on its own does nothing whatsoever about.
+     */
     private val _pendingHostPairing = MutableStateFlow<String?>(null)
     val pendingHostPairing: StateFlow<String?> = _pendingHostPairing
 

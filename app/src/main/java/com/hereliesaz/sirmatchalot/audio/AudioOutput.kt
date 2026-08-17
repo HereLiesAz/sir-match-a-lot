@@ -142,6 +142,9 @@ class AudioTrackOutput(
     companion object Factory {
         private const val BYTES_PER_FLOAT = 4
 
+        /** How long [release] waits for the render thread before giving up. */
+        private const val RELEASE_JOIN_TIMEOUT_MS = 2_000L
+
         /**
          * How long the audio thread parks between idle checks.
          *
@@ -222,6 +225,13 @@ class AudioTrackOutput(
 
     override fun start(render: (FloatArray, Int) -> Unit) {
         if (running.getAndSet(true)) return
+
+        // A start()/stop() cycle without an intervening release() used to
+        // leave the previous AudioTrack allocated: this overwrote `track`
+        // with the new one and never released the old — one leaked native
+        // track per cycle. Torn down here, the same careful way release()
+        // does, before a new one is built.
+        releaseCurrentTrack()
 
         val channelMask = AudioFormat.CHANNEL_OUT_STEREO
         val minimumBytes = AudioTrack.getMinBufferSize(
@@ -342,17 +352,50 @@ class AudioTrackOutput(
         // The thread may be parked in the idle wait; without this, stopping
         // would block for the rest of the poll interval.
         wake()
+        // Bounded, not joined to completion: a caller changing decks should
+        // not be stuck behind a slow teardown. `thread` deliberately keeps
+        // its reference rather than being nulled here — release() and a
+        // following start() both need to know whether it is still alive
+        // before touching the AudioTrack it may still be writing to.
         thread?.join(500)
-        thread = null
         isStoodDown = false
+    }
+
+    /**
+     * Releases [track], but only once the render thread that may still be
+     * writing to it has actually finished.
+     *
+     * [stop]'s join is bounded so it stays responsive; that leaves a narrow
+     * window where the thread is still inside a blocking `AudioTrack.write()`
+     * call when a caller asks to release the track. Releasing underneath it
+     * then would be a use of a freed native object from that thread. Waited
+     * out here instead, with a longer bound: the thread only blocks on I/O
+     * that completes once `running` (already false by the time this runs) is
+     * observed, so this is not expected to matter in practice — but gambling
+     * on that in the code that actually frees the native object is the wrong
+     * trade.
+     *
+     * If the thread is still alive even after that, the track is *not*
+     * released — leaking it is safer than risking a use-after-free, and this
+     * object's own reference to it is dropped either way so nothing else
+     * mistakes it for current.
+     */
+    private fun releaseCurrentTrack() {
+        val renderThread = thread
+        thread = null
+        if (renderThread != null && renderThread.isAlive) {
+            renderThread.join(RELEASE_JOIN_TIMEOUT_MS)
+        }
+        if (renderThread == null || !renderThread.isAlive) {
+            track?.release()
+        }
+        track = null
     }
 
     override fun release() {
         stop()
-        track?.release()
-        track = null
+        releaseCurrentTrack()
     }
-
 }
 
 /**
@@ -415,7 +458,7 @@ class AudioEngine(
      */
     val spectrum = SpectrumMeter(sampleRate = output.sampleRate)
 
-    private val scratch = ScratchModel()
+    private val scratch = ScratchModel(sampleRate = output.sampleRate.toDouble())
     private var started = false
 
     /**

@@ -18,10 +18,12 @@ import androidx.compose.ui.platform.LocalContext
  * Offers to report the last crash the first time the app is opened after it.
  *
  * Reads [store] once per composition rather than on every crash: there is at
- * most one pending report, and it is cleared as soon as it has been shown,
- * whichever button was pressed. Nothing is sent off-device on its own —
- * "Report on GitHub" only opens a browser tab GitHub's own submit button still
- * has to be pressed on.
+ * most one pending report. It is only cleared once it has actually been
+ * filed — dismissing the dialog, or tapping outside it, just closes it for
+ * this launch and leaves the report on disk, so it is offered again next
+ * time the app opens. Nothing is sent off-device on its own — "Report on
+ * GitHub" only opens a browser tab GitHub's own submit button still has to
+ * be pressed on.
  */
 @Composable
 fun CrashReportPrompt(store: CrashReportStore) {
@@ -33,7 +35,6 @@ fun CrashReportPrompt(store: CrashReportStore) {
 
     AlertDialog(
         onDismissRequest = {
-            store.clear()
             report = null
         },
         containerColor = Color(0xFF18181B),
@@ -57,7 +58,6 @@ fun CrashReportPrompt(store: CrashReportStore) {
         },
         dismissButton = {
             TextButton(onClick = {
-                store.clear()
                 report = null
             }) { Text("Dismiss") }
         },
