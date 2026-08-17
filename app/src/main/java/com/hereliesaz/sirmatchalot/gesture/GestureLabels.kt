@@ -128,8 +128,15 @@ class GestureLabels(
             // beside it stayed correct. The two halves of one animation ran on
             // two different clocks. `riseDurationMillis` — a constructor
             // parameter — was read by nothing at all.
+            //
+            // Clamped to 1: a gesture held past riseDurationMillis — an easy
+            // thing to do with a long crossfade or a held scratch — used to
+            // keep climbing forever, since only the *inactive* branch below
+            // ever cleared the slot. The label for the gesture still being
+            // performed floated up past the top of the platter and off
+            // screen while the finger performing it was still down.
             val risen = (nowMillis - slot.startedAt).coerceAtLeast(0L)
-            slot.riseFraction = risen.toFloat() / riseDurationMillis
+            slot.riseFraction = (risen.toFloat() / riseDurationMillis).coerceAtMost(1f)
             if (slot.riseFraction >= 1f && !slot.active) {
                 slot.clear()
             }

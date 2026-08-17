@@ -253,8 +253,22 @@ class SyncServer(
     // --- Connections ---
 
     private fun acceptLoop(socket: ServerSocket) {
+        // A closed listening socket (the ordinary shutdown path) makes
+        // accept() throw immediately and forever, and previously nothing
+        // distinguished that from any other failure — `running.get()` was
+        // the only check, so a persistent accept() failure while still
+        // "running" (fd exhaustion from an attacker holding many open
+        // connections, since nothing here caps `clients`) spun this loop at
+        // 100% CPU on a daemon thread. A short backoff between failures
+        // keeps a genuine shutdown just as fast — it still exits on the
+        // next `running.get()` check — while giving a real failure room to
+        // clear instead of busy-looping on it.
         while (running.get()) {
-            val accepted = runCatching { socket.accept() }.getOrNull() ?: continue
+            val accepted = runCatching { socket.accept() }.getOrNull()
+            if (accepted == null) {
+                if (running.get()) runCatching { Thread.sleep(ACCEPT_FAILURE_BACKOFF_MS) }
+                continue
+            }
             val connection = ClientConnection(accepted)
             clients.add(connection)
             // Not yet counted in onPeersChanged: an accepted socket has not
@@ -687,6 +701,9 @@ class SyncServer(
         const val DISCOVERY_PORT = 8888
         const val DISCOVERY_REQUEST = "SIR_MATCH_A_LOT_DISCOVER"
         private const val MAX_REQUEST_BYTES = 8 * 1024
+
+        /** How long [acceptLoop] waits before retrying after a failed accept(). */
+        private const val ACCEPT_FAILURE_BACKOFF_MS = 200L
 
         /**
          * This device's address on the local network.

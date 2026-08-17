@@ -181,10 +181,14 @@ class Sampler(
      * Mixes every playing pad into [out], which is interleaved stereo.
      *
      * Adds to existing content rather than replacing it, so the sampler layers
-     * over the decks. Allocates nothing.
+     * over the decks. Allocates nothing — `for (pad in pads)` over a `List`
+     * compiles to `List.iterator()`, one iterator object per render call on
+     * the thread whose contract is that it must not allocate, so this is
+     * indexed instead, the same fix [Deck.render] already needed.
      */
     fun render(out: FloatArray, frames: Int) {
-        for (pad in pads) {
+        for (padIndex in pads.indices) {
+            val pad = pads[padIndex]
             val buffer = pad.buffer ?: continue
             var position = pad.playhead
             if (position < 0.0) continue

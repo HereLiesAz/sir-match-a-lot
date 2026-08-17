@@ -226,7 +226,13 @@ class MasterFilter(private val sampleRate: Int) {
          */
         const val BYPASS_FADE = 1f
 
-        /** Per-frame one-pole coefficient, matching the mixer's gain smoothing. */
+        /**
+         * Per-frame one-pole coefficient for the filter's own cutoff/Q glide.
+         *
+         * Deliberately slower than [Mixer.SMOOTHING] (0.0005 here vs. 0.005
+         * there) — a filter sweep audibly zippers at the mixer's gain-fade
+         * rate, so this one is ten times gentler, not matched to it.
+         */
         const val SMOOTHING = 0.0005f
 
         /** Relative change in frequency or Q that justifies recomputing a biquad. */

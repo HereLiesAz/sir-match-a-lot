@@ -125,6 +125,19 @@ class TransitionChoreographer {
 
         val options = eligible(from, to, match, phase, exit, entry)
         val bar = from.barSeconds.takeIf { it > 0.0 } ?: DEFAULT_BAR_SECONDS
+
+        // Shared by the weighting below and the final fade computed after a
+        // style is picked, so a candidate is scored against the exact same
+        // fadeBars value it is later trained on. These used to disagree:
+        // weighting read the nominal `style.bars(phase)` — before either
+        // clamp — while the recorded training example read the fully
+        // clamped `fade / bar`. A clamped transition (any exit inside three
+        // bars) was then trained at a fadeBars coordinate it had never
+        // actually been scored at, and queried at a coordinate it was never
+        // trained on.
+        fun clampedFadeSeconds(style: TransitionStyle): Double =
+            (style.bars(phase) * bar).coerceAtLeast(bar).coerceAtMost(exit.atSeconds / 3.0)
+
         val weights = options.map { (style, weight) ->
             val penalty = if (style in recentStyles) REPEAT_PENALTY else 1.0
             // What has been learned adjusts the rules rather than replacing them.
@@ -137,7 +150,7 @@ class TransitionChoreographer {
                     phase = phase,
                     matchScore = match?.overallScore,
                     energyDelta = energyDelta,
-                    fadeBars = style.bars(phase),
+                    fadeBars = clampedFadeSeconds(style) / bar,
                     entered = entry > 0.0,
                 ),
             ) ?: 1.0
@@ -145,11 +158,9 @@ class TransitionChoreographer {
         }
         val style = pick(options.map { it.first }, weights, random) ?: TransitionStyle.LONG_BLEND
 
-        val fade = (style.bars(phase) * bar)
-            // A transition longer than a third of what it is leaving is not a
-            // transition. Kept from the original director, which was right.
-            .coerceAtMost(exit.atSeconds / 3.0)
-            .coerceAtLeast(bar)
+        // A transition longer than a third of what it is leaving is not a
+        // transition. Kept from the original director, which was right.
+        val fade = clampedFadeSeconds(style)
 
         return TransitionScript(
             style = style,

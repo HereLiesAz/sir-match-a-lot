@@ -223,7 +223,12 @@ class AnalysisService : Service() {
 
         val title = if (state.paused) "Analysis paused" else "Analysing your library"
         val text = buildString {
-            if (state.total > 0) append("${state.done + 1} of ${state.total}")
+            // "done + 1" reads as "working on item N of total" while a track
+            // is in flight — but the state published right after the loop
+            // finishes (done == total, just before finish() clears it) hit
+            // this same formula and briefly showed "38 of 37" here while the
+            // library screen's plain "done/total" correctly read "37/37".
+            if (state.total > 0) append("${(state.done + 1).coerceAtMost(state.total)} of ${state.total}")
             if (state.current.isNotEmpty()) {
                 if (isNotEmpty()) append(" — ")
                 append(state.current)

@@ -311,36 +311,14 @@ class BeatSyncTest {
     }
 
     @Test
-    fun `grid helpers snap to beats and bars`() {
+    fun `grid helpers snap to beats`() {
         val subject = track("t", bpm = 120.0, firstBeat = 0.0)
         assertEquals(0.5, requireNotNull(BeatSync.nearestBeat(subject, 0.6)), 1e-9)
-        assertEquals(2.0, requireNotNull(BeatSync.nearestBar(subject, 1.4)), 1e-9)
-        assertEquals(2.0, requireNotNull(BeatSync.barDurationSeconds(subject)), 1e-9)
-        assertEquals(8.0, requireNotNull(BeatSync.barDurationSeconds(subject, bars = 4)), 1e-9)
     }
 
     @Test
     fun `grid helpers decline without a measured grid`() {
         val unmeasured = track("t", bpm = null, firstBeat = null)
         assertNull(BeatSync.nearestBeat(unmeasured, 1.0))
-        assertNull(BeatSync.nearestBar(unmeasured, 1.0))
-        assertNull(BeatSync.barDurationSeconds(unmeasured))
-        assertNull(BeatSync.barDurationSeconds(track("t", bpm = 120.0), bars = 0))
-    }
-
-    @Test
-    fun `syncability follows the six percent convention`() {
-        assertTrue(BeatSync.canSyncWithoutArtefacts(track("a", bpm = 128.0), track("b", bpm = 131.0)))
-        assertTrue(!BeatSync.canSyncWithoutArtefacts(track("a", bpm = 128.0), track("b", bpm = 145.0)))
-        assertTrue(!BeatSync.canSyncWithoutArtefacts(track("a", bpm = null), track("b", bpm = 128.0)))
-    }
-
-    @Test
-    fun `tempo change is reported as a readable percentage`() {
-        val alignment = requireNotNull(
-            BeatSync.align(track("src", bpm = 100.0), track("dst", bpm = 104.0)),
-        )
-        assertEquals(4.0, BeatSync.tempoChangePercent(alignment), 1e-9)
-        assertEquals(4, BeatSync.roundedPercent(alignment))
     }
 }

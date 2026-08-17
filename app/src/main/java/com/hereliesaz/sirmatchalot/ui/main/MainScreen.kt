@@ -377,7 +377,7 @@ fun MainScreen(
             // would mean the platter resized itself every time a message
             // appeared or expired — including mid-gesture, with a finger on it.
             FeedbackBanner(
-                message = feedbackMsg,
+                event = feedbackMsg,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
         }
@@ -883,9 +883,14 @@ private fun WorkIndicator(
  * state to be acknowledged, and a line that stays forever stops being read.
  */
 @Composable
-private fun FeedbackBanner(message: String, modifier: Modifier = Modifier) {
-    var visible by remember(message) { mutableStateOf(message.isNotBlank()) }
-    LaunchedEffect(message) {
+private fun FeedbackBanner(event: com.hereliesaz.sirmatchalot.ui.FeedbackEvent, modifier: Modifier = Modifier) {
+    val message = event.text
+    // Keyed on event.id, not on the message text: two identical messages in
+    // a row are two distinct FeedbackEvents (see FeedbackEvent's own doc),
+    // so this restarts the show/dismiss timer for the second one instead of
+    // silently doing nothing because the text looked unchanged.
+    var visible by remember(event.id) { mutableStateOf(message.isNotBlank()) }
+    LaunchedEffect(event.id) {
         if (message.isBlank()) return@LaunchedEffect
         visible = true
         kotlinx.coroutines.delay(6_000)

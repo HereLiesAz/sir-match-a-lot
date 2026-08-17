@@ -326,11 +326,9 @@ class MixDirector(
             transitionStarted = true
             // Preload may not have been issued yet on a track shorter than the
             // lead time; issue it now rather than starting a deck holding nothing.
-            if (!commands.any { it is MixCommand.Preload }) {
-                if (!preloadIssued) {
-                    preloadIssued = true
-                    commands.add(MixCommand.Preload(next.track, deck.other))
-                }
+            if (!preloadIssued) {
+                preloadIssued = true
+                commands.add(MixCommand.Preload(next.track, deck.other))
             }
             script?.let { commands.add(MixCommand.Performing(it.style, it.record)) }
             commands.add(

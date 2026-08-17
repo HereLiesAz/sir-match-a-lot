@@ -12,8 +12,8 @@ import kotlin.math.abs
  * without stride arithmetic, and a fractional playhead never lands between two
  * channels of the same frame.
  *
- * **16-bit for 16-bit sources.** A five-minute stereo track is 26 MB as `Short`
- * and 53 MB as `Float`. With two decks holding several clips each, storing
+ * **16-bit for 16-bit sources.** A five-minute stereo track is 53 MB as `Short`
+ * and 106 MB as `Float`. With two decks holding several clips each, storing
  * everything as float runs into hundreds of megabytes. For a CD rip or anything
  * lossy-decoded, 16-bit storage is *lossless* — the source carries no more than
  * that — so the extra memory buys nothing at all.
