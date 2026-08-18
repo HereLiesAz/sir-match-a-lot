@@ -1,6 +1,5 @@
 package com.hereliesaz.sirmatchalot.domain
 
-import androidx.annotation.VisibleForTesting
 import com.hereliesaz.sirmatchalot.data.Track
 import kotlin.math.abs
 import kotlin.math.max
@@ -81,7 +80,6 @@ object HarmonicEngine {
      * Used only by tests, as the round-trip check on [getShortestSemitoneShift]
      * below — applying the shift it returns must land back on the starting key.
      */
-    @VisibleForTesting
     fun transposeCamelotKey(camelotKey: String, semitones: Int): String {
         if (semitones == 0) return camelotKey
         val parsed = parseCamelotKey(camelotKey) ?: return camelotKey

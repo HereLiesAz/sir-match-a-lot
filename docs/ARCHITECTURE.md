@@ -33,15 +33,30 @@ later without touching the DSP or the UI.
 
 ## Module layout
 
+Two Gradle modules as of the desktop-linking work: **`:shared`**, a Kotlin
+Multiplatform module targeting `androidTarget()` and `jvm("desktop")`, holds
+everything with no real dependency on Android or a particular playback
+backend — the mixing brain, the DSP, and the LAN pairing protocol. That is
+what lets an Android phone and a desktop build join the same room and share
+the same domain logic without duplicating it. **`:app`** is the Android
+application: the Compose UI, the Room database, and the two files that
+actually touch `AudioTrack`/`MediaCodec`. A future desktop app depends on
+`:shared` the same way `:app` does, and supplies its own playback backend and
+UI.
+
 This is the real tree, not an aspirational one — regenerated from
-`find app/src/main/java -name '*.kt'` rather than hand-maintained, since the
-previous version of this section had drifted from the code on nearly every
-line (files renamed, moved between packages, or never built at all) and
-nobody reading it could tell which.
+`find shared/src app/src/main/java -name '*.kt'` rather than hand-maintained,
+since a previous version of this section had drifted from the code on nearly
+every line (files renamed, moved between packages, or never built at all)
+and nobody reading it could tell which.
 
 ```
-app/src/main/java/com/hereliesaz/sirmatchalot/
-  dsp/          pure math, zero Android deps, JVM-unit-tested
+shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
+  # "jvmCommonMain" rather than "commonMain": both real targets (Android,
+  # desktop) compile to the JVM, so this is simply "everything shared", not
+  # a strict common/JVM split — see shared/build.gradle.kts.
+
+  dsp/          pure math, zero platform deps, JVM-unit-tested
     Fft.kt                radix-2 Cooley-Tukey, in-place, preallocated
     Window.kt             Hann/Hamming
     Biquad.kt             RBJ cookbook: low/high shelf, peaking, lowpass
@@ -62,35 +77,31 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
     Stft.kt               short-time Fourier transform, shared by the above
     PeakEnvelope.kt       min/max peak reduction for drawing
 
-  audio/        the real-time graph
+  audio/        the real-time graph, minus the two files a platform decides
     PcmBuffer.kt          immutable decoded mono/stereo PCM, 16-bit or float
-    AudioDecoder.kt       MediaCodec -> PcmBuffer
     Deck.kt               a circular timeline of clips, signed-rate playhead
     Mixer.kt              crossfade law, master gain, limiter, level meter
     MasterFilter.kt       the XY performance filter on the master bus
-    AudioOutput.kt        the AudioTrack render thread and its interface,
-                          so tests can drive the graph without a device
     ScratchModel.kt       gesture delta -> non-linear rate curve through zero
     Sampler.kt            pads: record from master bus, replay
     OneShotVoice.kt       plays a short buffer once, for the growl voice
     SpectrumMeter.kt      lock-free band levels for the light show
     DecodedCache.kt       heap-budgeted cache of decoded tracks
+                          (AudioDecoder.kt and AudioOutput.kt — MediaCodec and
+                          AudioTrack — stay in :app; see below)
 
-  analysis/     orchestration of dsp over a library
+  analysis/     the portable half of orchestrating dsp over a library
     TrackAnalyzer.kt      decode once -> BPM, key, beatgrid, energy, peaks
-    AnalysisQueue.kt      bounded parallel, cancellable, resumable
-    AnalysisService.kt    foreground service: notification, pause/resume
     AnalysisProgressBus.kt shared progress state between the service and UI
+                          (AnalysisService.kt, the foreground-service shim
+                          around TrackAnalyzer, stays in :app)
 
   data/
-    Track.kt, TrackDao.kt, AppDatabase.kt   Room entity, DAO, migrations
-    AnalysisQueue.kt      what needs (re-)analysing and why
-    AudioFileCache.kt     local copies of imported audio
-    AudioFileFilter.kt    which files in a folder import counts as audio
-    AzphaltStoreRepository.kt  the sample-pack store
-    EngineSettings.kt     sample rate, memory budget, visual refresh settings
-    LinkParser.kt         playlist-link and pasted-tracklist parsing
-    PlaylistParser.kt     M3U/PLS/XSPF parsing
+    Track.kt              Room @Entity — only the annotations need Room's
+                          artifacts, which are multiplatform; @Dao/@Database
+                          need Android's SQLite driver and stay in :app
+    KeyValueStore.kt      the settings-store interface DeviceIdentity/
+                          KnownDevices persist through
 
   domain/
     HarmonicEngine.kt     Camelot wheel compatibility scoring
@@ -112,16 +123,44 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
     WavCodec.kt           WAV encode/decode for pad takes
 
   sync/
-    SyncServer.kt / SyncClient.kt   the room: hosting and joining
+    SyncServer.kt / SyncClient.kt   the room: hosting and joining — plain
+                          java.net sockets and OkHttp, no Android dependency
     RoomCrypto.kt         ECDH key agreement, SAS, AES-256-GCM framing
-    DeviceIdentity.kt     the long-term identity keypair and its fingerprint
+    DeviceIdentity.kt     the long-term identity keypair and its fingerprint,
+                          and KnownDevices, the paired-device store
     WebSocketProtocol.kt  the WebSocket framing used over the room socket
     SyncRole.kt           which screen a device shows once linked
     SessionLink.kt        share/restore a session as a URL's query params
+    DebugLog.kt           expect/actual: android.util.Log vs println
 
   gesture/
     GestureEngine.kt      concurrent multi-axis gesture recognition
     GestureLabels.kt      clock-position label placement, float-up + dissolve
+
+shared/src/androidMain/kotlin/.../sync/DebugLog.android.kt   Log actual
+shared/src/desktopMain/kotlin/.../sync/DebugLog.desktop.kt   println actual
+
+app/src/main/java/com/hereliesaz/sirmatchalot/
+  audio/
+    AudioDecoder.kt       MediaCodec -> PcmBuffer
+    AudioOutput.kt        the AudioTrack render thread and its interface,
+                          so tests can drive the graph without a device
+
+  analysis/
+    AnalysisQueue.kt      bounded parallel, cancellable, resumable
+    AnalysisService.kt    foreground service: notification, pause/resume
+
+  data/
+    TrackDao.kt, AppDatabase.kt   Room DAO, migrations, over :shared's Track
+    AnalysisQueue.kt      what needs (re-)analysing and why
+    AudioFileCache.kt     local copies of imported audio
+    AudioFileFilter.kt    which files in a folder import counts as audio
+    AzphaltStoreRepository.kt  the sample-pack store
+    EngineSettings.kt     sample rate, memory budget, visual refresh settings
+                          (SettingsStore reads/writes through :shared's
+                          KeyValueStore)
+    LinkParser.kt         playlist-link and pasted-tracklist parsing
+    PlaylistParser.kt     M3U/PLS/XSPF parsing
 
   crash/
     CrashReportingHandler.kt / CrashReportStore.kt / CrashReportPrompt.kt /
