@@ -45,13 +45,21 @@ touch-laptop side: a plain Compose Multiplatform desktop app (`kotlin("jvm")`
 + `org.jetbrains.compose`) that depends on `:shared` the same way `:app`
 does.
 
-`:desktopApp` today is a room controller, not a mixer: it can host or join a
-room, approve pairings, and see the roster and live status — everything
-`RoomSession` (`desktopApp/src/main/kotlin/.../desktop/RoomSession.kt`) wraps
-around `SyncServer`/`SyncClient`, mirroring what `SirMatchALotViewModel` does
-for the same protocol on Android. It has no local audio engine, because
-`:shared`'s two Android-only files (`AudioOutput.kt`/`AudioDecoder.kt`, in
-`:app`) have no desktop equivalent yet — that is the next phase.
+`:desktopApp` is two independent halves. `RoomSession`
+(`desktopApp/src/main/kotlin/.../desktop/RoomSession.kt`) wraps
+`SyncServer`/`SyncClient` the way `SirMatchALotViewModel` does on Android —
+host or join a room, approve pairings, see the roster and live status.
+`PlaybackSession` (Phase 3) plays a local file on one deck: `AudioOutput`
+itself (the interface, `OfflineAudioOutput`, and `AudioEngine`) turned out to
+have no Android dependency at all and moved to `:shared`, so only the two
+concrete outputs differ — `AudioTrackOutput` (`AudioTrack`, in `:app`) and
+`DesktopAudioOutput` (`javax.sound.sampled.SourceDataLine`, here) — and only
+`AudioDecoder` (`MediaCodec`, in `:app`) needed a desktop counterpart,
+`DesktopAudioDecoder`, scoped for now to what `javax.sound.sampled` reads
+natively (WAV/AIFF/AU — broader format support via an SPI provider is a
+follow-up, not a blocker). The two halves aren't wired together yet — a
+loaded deck reacting to room state is UI work on two already-working
+pieces, not new plumbing.
 
 This is the real tree, not an aspirational one — regenerated from
 `find shared/src app/src/main/java -name '*.kt'` rather than hand-maintained,
@@ -86,7 +94,7 @@ shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
     Stft.kt               short-time Fourier transform, shared by the above
     PeakEnvelope.kt       min/max peak reduction for drawing
 
-  audio/        the real-time graph, minus the two files a platform decides
+  audio/        the real-time graph, minus decode and the platform sink
     PcmBuffer.kt          immutable decoded mono/stereo PCM, 16-bit or float
     Deck.kt               a circular timeline of clips, signed-rate playhead
     Mixer.kt              crossfade law, master gain, limiter, level meter
@@ -96,8 +104,12 @@ shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
     OneShotVoice.kt       plays a short buffer once, for the growl voice
     SpectrumMeter.kt      lock-free band levels for the light show
     DecodedCache.kt       heap-budgeted cache of decoded tracks
-                          (AudioDecoder.kt and AudioOutput.kt — MediaCodec and
-                          AudioTrack — stay in :app; see below)
+    AudioOutput.kt        the AudioOutput interface, OfflineAudioOutput (used
+                          by tests), and AudioEngine — none of it touches a
+                          platform sink; only the concrete outputs
+                          (AudioTrackOutput in :app, DesktopAudioOutput in
+                          :desktopApp) and the decoders (AudioDecoder in
+                          :app, DesktopAudioDecoder in :desktopApp) differ
 
   analysis/     the portable half of orchestrating dsp over a library
     TrackAnalyzer.kt      decode once -> BPM, key, beatgrid, energy, peaks
@@ -152,8 +164,8 @@ shared/src/desktopMain/kotlin/.../sync/DebugLog.desktop.kt   println actual
 app/src/main/java/com/hereliesaz/sirmatchalot/
   audio/
     AudioDecoder.kt       MediaCodec -> PcmBuffer
-    AudioOutput.kt        the AudioTrack render thread and its interface,
-                          so tests can drive the graph without a device
+    AudioOutput.kt        AudioTrackOutput — the AudioTrack render thread,
+                          implementing :shared's AudioOutput interface
 
   analysis/
     AnalysisQueue.kt      bounded parallel, cancellable, resumable
@@ -185,12 +197,19 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
     BackgroundWork.kt    tracked long-running work, for the app-bar indicator
 
 desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
-  Main.kt                the entry point and the whole (Phase 2) screen:
-                          host/join, roster, pairing approval
+  Main.kt                 the entry point: the room screen plus one deck
   RoomSession.kt          the desktop analogue of SirMatchALotViewModel's
                           sync half — wraps SyncServer/SyncClient in
                           StateFlows a screen or a test can drive without
                           Compose or a display
+  PlaybackSession.kt      the desktop analogue of its playback half — one
+                          deck, loaded from a local file and played through
+                          DesktopAudioOutput
+  DesktopAudioOutput.kt   AudioOutput via javax.sound.sampled.SourceDataLine,
+                          same blocking-write/idle-standdown shape as
+                          AudioTrackOutput
+  DesktopAudioDecoder.kt  a local file -> PcmBuffer, via javax.sound.sampled
+                          (WAV/AIFF/AU; broader formats are a follow-up)
   DesktopKeyValueStore.kt KeyValueStore backed by a properties file, since
                           there is no SharedPreferences on a desktop JVM
 ```
