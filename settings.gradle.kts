@@ -31,3 +31,4 @@ plugins {
 
 rootProject.name = "Sir Match-a-Lot"
 include(":app")
+include(":shared")

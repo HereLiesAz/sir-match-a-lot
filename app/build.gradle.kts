@@ -131,6 +131,12 @@ ksp {
 }
 
 dependencies {
+    // dsp/, domain/, gesture/, sync/, session/, and the pure DSP half of
+    // audio/ (everything except AudioOutput/AudioDecoder, which are
+    // AudioTrack/MediaCodec-only) live in :shared now — see its build file
+    // for why, and docs/ARCHITECTURE.md for the module boundary.
+    implementation(project(":shared"))
+
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -158,12 +164,12 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Networking. There is deliberately no player library here: the engine in
+    // No networking dependency here: OkHttp is `:shared`'s, for the sync
+    // client. There is deliberately no player library either — the engine in
     // `audio/` renders through AudioTrack, and `AudioDecoder` reads files with
     // the platform's own MediaExtractor/MediaCodec. media3 was dropped along
     // with the last ExoPlayer, because keeping a playback library nothing plays
     // through invites a second, competing audio path back in.
-    implementation(libs.okhttp.core)
 
     // No Firebase, and nothing else that reports on the user.
     //

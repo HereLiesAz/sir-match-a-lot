@@ -1,6 +1,5 @@
 package com.hereliesaz.sirmatchalot.sync
 
-import android.util.Log
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -200,13 +199,13 @@ class SyncClient(
 
                 while (isDiscovering.get() && attempts < 10) {
                     attempts++
-                    Log.d("SyncClient", "Sending UDP broadcast query attempt $attempts...")
+                    debugLog("SyncClient", "Sending UDP broadcast query attempt $attempts...")
                     udpSocket?.send(sendPacket)
 
                     try {
                         udpSocket?.receive(receivePacket)
                         val responseText = String(receivePacket.data, 0, receivePacket.length)
-                        Log.d("SyncClient", "UDP response received: $responseText")
+                        debugLog("SyncClient", "UDP response received: $responseText")
                         
                         val json = JSONObject(responseText)
                         val serverIp = json.getString("serverIp")

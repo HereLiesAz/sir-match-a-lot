@@ -1258,10 +1258,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             energy = energyCache[track.id],
         )
         val reference = _reference.value?.bpm
+        val trackBpm = track.bpm
         // Conforming multiplies the rate by reference/source, so the played
         // duration is divided by it.
-        val ratio = if (reference != null && reference > 0.0 && track.bpm > 0.0) {
-            track.bpm / reference
+        val ratio = if (reference != null && reference > 0.0 && trackBpm != null && trackBpm > 0.0) {
+            trackBpm / reference
         } else {
             1.0
         }

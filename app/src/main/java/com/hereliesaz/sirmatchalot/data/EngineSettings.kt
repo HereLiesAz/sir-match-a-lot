@@ -178,17 +178,6 @@ data class EngineSettings(
     fun requiresEngineRebuild(other: EngineSettings): Boolean = sampleRate != other.sampleRate
 }
 
-/**
- * The smallest thing a settings store has to be.
- *
- * An interface rather than `SharedPreferences` directly, so [SettingsStore] —
- * where the defaulting and the round-tripping live — is testable on the JVM.
- */
-interface KeyValueStore {
-    fun getString(key: String): String?
-    fun putString(key: String, value: String)
-}
-
 /** Reads and writes [EngineSettings] as strings. */
 class SettingsStore(private val store: KeyValueStore) {
 
