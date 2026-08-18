@@ -25,20 +25,69 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 
 /**
- * A touch-laptop's entry point into a room.
+ * A touch-laptop's entry point: the room, and one deck.
  *
- * This is deliberately *only* the room — pairing, roster, live status — and
- * not the mixer. There is no desktop playback backend yet (see
- * `docs/ARCHITECTURE.md`), so a laptop here is a controller, the same shape
- * a phone in `PADS`/`LIBRARY` role already is: it can be in the room and
- * see it happen, before it can make it happen.
+ * The room half (pairing, roster, live status) and the playback half (load a
+ * local file, play it through [DesktopAudioOutput]) are independent — a
+ * laptop can be in a room without anything loaded, or play a file with no
+ * room at all. Wiring the two together (a loaded deck reacting to room
+ * state, the way `SirMatchALotViewModel` does) is UI work on top of two
+ * already-working halves, not new plumbing.
  */
 fun main() = application {
-    val session = remember { RoomSession(DesktopKeyValueStore()) }
-    Window(onCloseRequest = ::exitApplication, title = "Sir Match-a-Lot") {
+    val roomSession = remember { RoomSession(DesktopKeyValueStore()) }
+    val playback = remember { PlaybackSession() }
+    Window(
+        onCloseRequest = {
+            playback.release()
+            exitApplication()
+        },
+        title = "Sir Match-a-Lot",
+    ) {
         MaterialTheme {
-            RoomScreen(session)
+            Column(modifier = Modifier.fillMaxSize()) {
+                PlaybackPanel(playback, modifier = Modifier.padding(24.dp))
+                RoomScreen(roomSession)
+            }
         }
+    }
+}
+
+@Composable
+private fun PlaybackPanel(playback: PlaybackSession, modifier: Modifier = Modifier) {
+    val loadedFileName by playback.loadedFileName.collectAsState()
+    val isPlaying by playback.isPlaying.collectAsState()
+    val loadErrorMessage by playback.loadErrorMessage.collectAsState()
+    val outputErrorMessage by playback.outputErrorMessage.collectAsState()
+    var pathInput by remember { mutableStateOf("") }
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Deck A", style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = pathInput,
+                onValueChange = { pathInput = it },
+                label = { Text("Path to a WAV/AIFF/AU file") },
+            )
+            Button(onClick = { playback.load(pathInput) }, enabled = pathInput.isNotBlank()) {
+                Text("Load")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { if (isPlaying) playback.stop() else playback.play() },
+                enabled = loadedFileName != null,
+            ) { Text(if (isPlaying) "Stop" else "Play") }
+            loadedFileName?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        outputErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        loadErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
