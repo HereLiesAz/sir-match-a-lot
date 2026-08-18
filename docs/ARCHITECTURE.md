@@ -33,16 +33,25 @@ later without touching the DSP or the UI.
 
 ## Module layout
 
-Two Gradle modules as of the desktop-linking work: **`:shared`**, a Kotlin
+Three Gradle modules as of the desktop-linking work: **`:shared`**, a Kotlin
 Multiplatform module targeting `androidTarget()` and `jvm("desktop")`, holds
 everything with no real dependency on Android or a particular playback
 backend — the mixing brain, the DSP, and the LAN pairing protocol. That is
 what lets an Android phone and a desktop build join the same room and share
 the same domain logic without duplicating it. **`:app`** is the Android
 application: the Compose UI, the Room database, and the two files that
-actually touch `AudioTrack`/`MediaCodec`. A future desktop app depends on
-`:shared` the same way `:app` does, and supplies its own playback backend and
-UI.
+actually touch `AudioTrack`/`MediaCodec`. **`:desktopApp`** is the
+touch-laptop side: a plain Compose Multiplatform desktop app (`kotlin("jvm")`
++ `org.jetbrains.compose`) that depends on `:shared` the same way `:app`
+does.
+
+`:desktopApp` today is a room controller, not a mixer: it can host or join a
+room, approve pairings, and see the roster and live status — everything
+`RoomSession` (`desktopApp/src/main/kotlin/.../desktop/RoomSession.kt`) wraps
+around `SyncServer`/`SyncClient`, mirroring what `SirMatchALotViewModel` does
+for the same protocol on Android. It has no local audio engine, because
+`:shared`'s two Android-only files (`AudioOutput.kt`/`AudioDecoder.kt`, in
+`:app`) have no desktop equivalent yet — that is the next phase.
 
 This is the real tree, not an aspirational one — regenerated from
 `find shared/src app/src/main/java -name '*.kt'` rather than hand-maintained,
@@ -174,6 +183,16 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
     LibraryScreen.kt, SamplerScreen.kt, SettingsScreen.kt
     SirMatchALotViewModel.kt   the app's one ViewModel
     BackgroundWork.kt    tracked long-running work, for the app-bar indicator
+
+desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
+  Main.kt                the entry point and the whole (Phase 2) screen:
+                          host/join, roster, pairing approval
+  RoomSession.kt          the desktop analogue of SirMatchALotViewModel's
+                          sync half — wraps SyncServer/SyncClient in
+                          StateFlows a screen or a test can drive without
+                          Compose or a display
+  DesktopKeyValueStore.kt KeyValueStore backed by a properties file, since
+                          there is no SharedPreferences on a desktop JVM
 ```
 
 ## The audio graph
