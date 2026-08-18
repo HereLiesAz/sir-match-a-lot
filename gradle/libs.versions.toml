@@ -19,6 +19,8 @@ okhttp = "5.4.0"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
 sqliteJdbc = "3.53.2.1"
 json = "20260719"
+# Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
+composeMultiplatform = "1.11.1"
 # KSP releases track the Kotlin version they were built against. 2.3.10 is the
 # newest published build; KSP2 accepts the 2.4.x compiler, so this is correct
 # rather than a mismatch. Revisit when a 2.4.x KSP ships.
@@ -69,6 +71,8 @@ json = { module = "org.json:json", version.ref = "json" }
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "androidGradlePlugin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
