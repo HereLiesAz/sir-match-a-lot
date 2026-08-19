@@ -201,8 +201,9 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
 
 desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
   Main.kt                 the entry point: the room screen plus a two-deck
-                          instrument — DeckPanel x2, a crossfader Slider,
-                          and an 8-pad sampler grid
+                          instrument — DeckPanel x2 (each with a native
+                          Browse… picker), a crossfader Slider, an 8-pad
+                          sampler grid, and a Library panel
   RoomSession.kt          the desktop analogue of SirMatchALotViewModel's
                           sync half — wraps SyncServer/SyncClient in
                           StateFlows a screen or a test can drive without
@@ -217,9 +218,26 @@ desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
                           AudioTrackOutput
   DesktopAudioDecoder.kt  a local file -> PcmBuffer, via javax.sound.sampled
                           (WAV/AIFF/AU; broader formats are a follow-up)
+  DesktopFilePicker.kt    java.awt.FileDialog wrapper — the native OS file
+                          chooser, not a Compose-drawn one, so it behaves the
+                          way Finder/Explorer already do
+  DesktopLibrary.kt       a remembered list of local audio files (path +
+                          display name), persisted as JSON — not the
+                          Android app's analysed `Track`/Room entity; see
+                          "What Phase 5 didn't do" below
   DesktopKeyValueStore.kt KeyValueStore backed by a properties file, since
                           there is no SharedPreferences on a desktop JVM
 ```
+
+### What Phase 5 didn't do
+
+`DesktopLibrary` is a remembered file list, not the Android app's `Track`
+entity — no BPM/key/energy analysis, no cached-copy bookkeeping, no cue
+points, and nothing backed by Room. Room's multiplatform story needs a
+SQLite driver plus KSP codegen wired into `:shared`, which is real, separate
+work — bringing `TrackAnalyzer` (already portable, already in `:shared`) to
+the desktop library is a natural follow-up, not something this file list
+blocks.
 
 ## The audio graph
 

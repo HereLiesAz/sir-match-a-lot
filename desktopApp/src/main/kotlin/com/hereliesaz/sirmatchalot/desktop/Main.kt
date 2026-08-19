@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import java.awt.Frame
 
 /**
  * A touch-laptop's entry point: the room, and a two-deck mixing instrument.
@@ -43,6 +44,7 @@ import androidx.compose.ui.window.application
 fun main() = application {
     val roomSession = remember { RoomSession(DesktopKeyValueStore()) }
     val playback = remember { PlaybackSession() }
+    val library = remember { DesktopLibrary() }
     Window(
         onCloseRequest = {
             playback.release()
@@ -52,7 +54,7 @@ fun main() = application {
     ) {
         MaterialTheme {
             Column(modifier = Modifier.fillMaxSize()) {
-                PlaybackPanel(playback, modifier = Modifier.padding(24.dp))
+                PlaybackPanel(playback, library, window, modifier = Modifier.padding(24.dp))
                 RoomScreen(roomSession)
             }
         }
@@ -60,22 +62,28 @@ fun main() = application {
 }
 
 @Composable
-private fun PlaybackPanel(playback: PlaybackSession, modifier: Modifier = Modifier) {
+private fun PlaybackPanel(
+    playback: PlaybackSession,
+    library: DesktopLibrary,
+    owner: Frame,
+    modifier: Modifier = Modifier,
+) {
     val outputErrorMessage by playback.outputErrorMessage.collectAsState()
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         outputErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            DeckPanel("Deck A", playback.deckA, modifier = Modifier.weight(1f))
-            DeckPanel("Deck B", playback.deckB, modifier = Modifier.weight(1f))
+            DeckPanel("Deck A", playback.deckA, owner, modifier = Modifier.weight(1f))
+            DeckPanel("Deck B", playback.deckB, owner, modifier = Modifier.weight(1f))
         }
         CrossfaderPanel(playback)
-        SamplerPanel(playback.samplerPads)
+        SamplerPanel(playback.samplerPads, owner)
+        LibraryPanel(library, playback.deckA, playback.deckB, owner)
     }
 }
 
 @Composable
-private fun DeckPanel(title: String, deck: DeckControl, modifier: Modifier = Modifier) {
+private fun DeckPanel(title: String, deck: DeckControl, owner: Frame, modifier: Modifier = Modifier) {
     val loadedFileName by deck.loadedFileName.collectAsState()
     val isPlaying by deck.isPlaying.collectAsState()
     val loadErrorMessage by deck.loadErrorMessage.collectAsState()
@@ -90,6 +98,9 @@ private fun DeckPanel(title: String, deck: DeckControl, modifier: Modifier = Mod
             modifier = Modifier.fillMaxWidth(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                onClick = { DesktopFilePicker.pickAudioFile(owner)?.let { pathInput = it.path } },
+            ) { Text("Browse…") }
             Button(onClick = { deck.load(pathInput) }, enabled = pathInput.isNotBlank()) {
                 Text("Load")
             }
@@ -121,7 +132,7 @@ private fun CrossfaderPanel(playback: PlaybackSession, modifier: Modifier = Modi
 }
 
 @Composable
-private fun SamplerPanel(pads: List<SamplerPadControl>, modifier: Modifier = Modifier) {
+private fun SamplerPanel(pads: List<SamplerPadControl>, owner: Frame, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Sampler", style = MaterialTheme.typography.titleSmall)
         LazyVerticalGrid(
@@ -130,13 +141,13 @@ private fun SamplerPanel(pads: List<SamplerPadControl>, modifier: Modifier = Mod
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(pads) { pad -> SamplerPadButton(pad) }
+            items(pads) { pad -> SamplerPadButton(pad, owner) }
         }
     }
 }
 
 @Composable
-private fun SamplerPadButton(pad: SamplerPadControl) {
+private fun SamplerPadButton(pad: SamplerPadControl, owner: Frame) {
     val label by pad.label.collectAsState()
     val loadErrorMessage by pad.loadErrorMessage.collectAsState()
     var showLoader by remember { mutableStateOf(false) }
@@ -151,6 +162,9 @@ private fun SamplerPadButton(pad: SamplerPadControl) {
         }
         if (showLoader) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { DesktopFilePicker.pickAudioFile(owner)?.let { pathInput = it.path } },
+                ) { Text("Browse…") }
                 OutlinedTextField(
                     value = pathInput,
                     onValueChange = { pathInput = it },
@@ -163,6 +177,43 @@ private fun SamplerPadButton(pad: SamplerPadControl) {
             }
         }
         loadErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun LibraryPanel(
+    library: DesktopLibrary,
+    deckA: DeckControl,
+    deckB: DeckControl,
+    owner: Frame,
+    modifier: Modifier = Modifier,
+) {
+    val tracks by library.tracks.collectAsState()
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Library", style = MaterialTheme.typography.titleSmall)
+            Button(onClick = { library.add(DesktopFilePicker.pickAudioFiles(owner)) }) { Text("Add files…") }
+        }
+        if (tracks.isEmpty()) {
+            Text("No tracks yet — add a few WAV/AIFF/AU files.", style = MaterialTheme.typography.bodySmall)
+        }
+        tracks.forEach { track ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(track.displayName, style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { deckA.load(track.path) }) { Text("→ A") }
+                        OutlinedButton(onClick = { deckB.load(track.path) }) { Text("→ B") }
+                        OutlinedButton(onClick = { library.remove(track.path) }) { Text("Remove") }
+                    }
+                }
+            }
+        }
     }
 }
 
