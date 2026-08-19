@@ -5,12 +5,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -25,14 +30,15 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 
 /**
- * A touch-laptop's entry point: the room, and one deck.
+ * A touch-laptop's entry point: the room, and a two-deck mixing instrument.
  *
- * The room half (pairing, roster, live status) and the playback half (load a
- * local file, play it through [DesktopAudioOutput]) are independent — a
- * laptop can be in a room without anything loaded, or play a file with no
- * room at all. Wiring the two together (a loaded deck reacting to room
- * state, the way `SirMatchALotViewModel` does) is UI work on top of two
- * already-working halves, not new plumbing.
+ * The room half (pairing, roster, live status) and the playback half (two
+ * decks, a crossfader, an eight-pad sampler, all played through
+ * [DesktopAudioOutput]) are independent — a laptop can be in a room without
+ * anything loaded, or mix locally with no room at all. Wiring the two
+ * together (a loaded deck reacting to room state, the way
+ * `SirMatchALotViewModel` does) is UI work on top of two already-working
+ * halves, not new plumbing.
  */
 fun main() = application {
     val roomSession = remember { RoomSession(DesktopKeyValueStore()) }
@@ -55,38 +61,107 @@ fun main() = application {
 
 @Composable
 private fun PlaybackPanel(playback: PlaybackSession, modifier: Modifier = Modifier) {
-    val loadedFileName by playback.loadedFileName.collectAsState()
-    val isPlaying by playback.isPlaying.collectAsState()
-    val loadErrorMessage by playback.loadErrorMessage.collectAsState()
     val outputErrorMessage by playback.outputErrorMessage.collectAsState()
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        outputErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            DeckPanel("Deck A", playback.deckA, modifier = Modifier.weight(1f))
+            DeckPanel("Deck B", playback.deckB, modifier = Modifier.weight(1f))
+        }
+        CrossfaderPanel(playback)
+        SamplerPanel(playback.samplerPads)
+    }
+}
+
+@Composable
+private fun DeckPanel(title: String, deck: DeckControl, modifier: Modifier = Modifier) {
+    val loadedFileName by deck.loadedFileName.collectAsState()
+    val isPlaying by deck.isPlaying.collectAsState()
+    val loadErrorMessage by deck.loadErrorMessage.collectAsState()
     var pathInput by remember { mutableStateOf("") }
 
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Deck A", style = MaterialTheme.typography.titleMedium)
-        Row(
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = pathInput,
+            onValueChange = { pathInput = it },
+            label = { Text("Path to a WAV/AIFF/AU file") },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = pathInput,
-                onValueChange = { pathInput = it },
-                label = { Text("Path to a WAV/AIFF/AU file") },
-            )
-            Button(onClick = { playback.load(pathInput) }, enabled = pathInput.isNotBlank()) {
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { deck.load(pathInput) }, enabled = pathInput.isNotBlank()) {
                 Text("Load")
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
-                onClick = { if (isPlaying) playback.stop() else playback.play() },
+                onClick = { if (isPlaying) deck.stop() else deck.play() },
                 enabled = loadedFileName != null,
             ) { Text(if (isPlaying) "Stop" else "Play") }
-            loadedFileName?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium)
+        }
+        loadedFileName?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        loadErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun CrossfaderPanel(playback: PlaybackSession, modifier: Modifier = Modifier) {
+    val crossfade by playback.crossfade.collectAsState()
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Crossfader", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("A")
+            Slider(
+                value = crossfade,
+                onValueChange = { playback.setCrossfade(it) },
+                modifier = Modifier.weight(1f),
+            )
+            Text("B")
+        }
+    }
+}
+
+@Composable
+private fun SamplerPanel(pads: List<SamplerPadControl>, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Sampler", style = MaterialTheme.typography.titleSmall)
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(4),
+            modifier = Modifier.fillMaxWidth().height(160.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(pads) { pad -> SamplerPadButton(pad) }
+        }
+    }
+}
+
+@Composable
+private fun SamplerPadButton(pad: SamplerPadControl) {
+    val label by pad.label.collectAsState()
+    val loadErrorMessage by pad.loadErrorMessage.collectAsState()
+    var showLoader by remember { mutableStateOf(false) }
+    var pathInput by remember { mutableStateOf("") }
+
+    Column {
+        Button(
+            onClick = { if (label != null) pad.trigger() else showLoader = !showLoader },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(label ?: "Pad ${pad.index + 1}")
+        }
+        if (showLoader) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = pathInput,
+                    onValueChange = { pathInput = it },
+                    label = { Text("File") },
+                )
+                Button(
+                    onClick = { pad.load(pathInput); showLoader = false },
+                    enabled = pathInput.isNotBlank(),
+                ) { Text("Load") }
             }
         }
-        outputErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         loadErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }

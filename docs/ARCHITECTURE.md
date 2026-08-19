@@ -49,9 +49,12 @@ does.
 (`desktopApp/src/main/kotlin/.../desktop/RoomSession.kt`) wraps
 `SyncServer`/`SyncClient` the way `SirMatchALotViewModel` does on Android —
 host or join a room, approve pairings, see the roster and live status.
-`PlaybackSession` (Phase 3) plays a local file on one deck: `AudioOutput`
-itself (the interface, `OfflineAudioOutput`, and `AudioEngine`) turned out to
-have no Android dependency at all and moved to `:shared`, so only the two
+`PlaybackSession` plays two decks through a crossfader with an eight-pad
+sampler — `DeckControl` and `SamplerPadControl` each wrap a live `Deck`/
+`SamplerPad` from `AudioEngine` in `StateFlow`s a screen or a test can drive
+directly. `AudioOutput` itself (the interface, `OfflineAudioOutput`, and
+`AudioEngine`, with its `deckA`/`deckB`/`mixer`/`sampler`) turned out to have
+no Android dependency at all and moved to `:shared`, so only the two
 concrete outputs differ — `AudioTrackOutput` (`AudioTrack`, in `:app`) and
 `DesktopAudioOutput` (`javax.sound.sampled.SourceDataLine`, here) — and only
 `AudioDecoder` (`MediaCodec`, in `:app`) needed a desktop counterpart,
@@ -197,13 +200,17 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
     BackgroundWork.kt    tracked long-running work, for the app-bar indicator
 
 desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
-  Main.kt                 the entry point: the room screen plus one deck
+  Main.kt                 the entry point: the room screen plus a two-deck
+                          instrument — DeckPanel x2, a crossfader Slider,
+                          and an 8-pad sampler grid
   RoomSession.kt          the desktop analogue of SirMatchALotViewModel's
                           sync half — wraps SyncServer/SyncClient in
                           StateFlows a screen or a test can drive without
                           Compose or a display
-  PlaybackSession.kt      the desktop analogue of its playback half — one
-                          deck, loaded from a local file and played through
+  PlaybackSession.kt      the desktop analogue of its playback half — deckA
+                          and deckB (each a DeckControl), a crossfader onto
+                          AudioEngine.mixer, and an eight-pad sampler (each a
+                          SamplerPadControl), all played through
                           DesktopAudioOutput
   DesktopAudioOutput.kt   AudioOutput via javax.sound.sampled.SourceDataLine,
                           same blocking-write/idle-standdown shape as
