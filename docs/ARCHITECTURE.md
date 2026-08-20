@@ -221,9 +221,12 @@ desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
   DesktopFilePicker.kt    java.awt.FileDialog wrapper — the native OS file
                           chooser, not a Compose-drawn one, so it behaves the
                           way Finder/Explorer already do
-  DesktopLibrary.kt       a remembered list of local audio files (path +
-                          display name), persisted as JSON — not the
-                          Android app's analysed `Track`/Room entity; see
+  DesktopLibrary.kt       a remembered list of local audio files, persisted
+                          as JSON, each measured by the same TrackAnalyzer
+                          (BPM, Camelot key, energy) the Android library
+                          uses — analysis runs on a background thread per
+                          file so a click handler never blocks on FFTs; not
+                          the Android app's Room-backed `Track` entity — see
                           "What Phase 5 didn't do" below
   DesktopKeyValueStore.kt KeyValueStore backed by a properties file, since
                           there is no SharedPreferences on a desktop JVM
@@ -231,13 +234,18 @@ desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
 
 ### What Phase 5 didn't do
 
-`DesktopLibrary` is a remembered file list, not the Android app's `Track`
-entity — no BPM/key/energy analysis, no cached-copy bookkeeping, no cue
-points, and nothing backed by Room. Room's multiplatform story needs a
-SQLite driver plus KSP codegen wired into `:shared`, which is real, separate
-work — bringing `TrackAnalyzer` (already portable, already in `:shared`) to
-the desktop library is a natural follow-up, not something this file list
-blocks.
+`DesktopLibrary` now measures BPM, Camelot key, and energy the same way the
+Android library does — `TrackAnalyzer` and the whole `dsp` pipeline behind
+it were already fully portable, so wiring them in needed no new audio code,
+only a background thread so analysis (real FFT work over the whole track)
+never blocks the UI thread's click handler. What it still isn't is the
+Android app's `Track` entity: no cached-copy bookkeeping, no cue points, and
+nothing backed by Room. Room's multiplatform story needs a SQLite driver
+plus KSP codegen wired into `:shared`, which stays real, separate,
+unstarted work — a JSON file list has no query planner or indices, so it
+will not scale to a library the way a real database would, but that is a
+cost this size of library can absorb for now, not something blocking a
+laptop from measuring and remembering the tracks a working DJ has loaded.
 
 ### Packaging
 
