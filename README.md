@@ -1,7 +1,11 @@
 # Sir Match-a-Lot 🎶
 
-An Android DJ app built around a single circular platter and global multi-touch
-gestures, instead of two skeuomorphic decks and a wall of tiny controls.
+A DJ app built around a single circular platter and global multi-touch
+gestures, instead of two skeuomorphic decks and a wall of tiny controls. The
+platter, gestures, and Camelot-wheel automation described below are the
+Android app; a touch-laptop counterpart shares the same mixing engine and
+sync protocol from a common Kotlin module — see [Desktop](#-desktop) further
+down.
 
 ## ✨ The platter
 
@@ -67,34 +71,58 @@ calibrated probabilities.
 
 ## 🛠️ Architecture
 
-Kotlin and Jetpack Compose throughout.
+Kotlin throughout — Jetpack Compose on Android, Compose Multiplatform on
+desktop — split across three Gradle modules:
 
-| Package | Responsibility |
+| Module | What lives there |
 | :--- | :--- |
-| `dsp/` | FFT, STFT, signed-rate resampling, WSOLA time-stretch, biquad filters, tempo/key/energy/peak detection. No Android dependencies, so it is covered by JVM unit tests. |
-| `audio/` | The real-time graph: decoded PCM, clips on a circular timeline, one signed-rate playhead per deck, EQ, equal-power crossfade, safety limiter, metering, and the `AudioTrack` output stage. |
-| `analysis/` | Runs the DSP pipeline over a decoded track. One decode feeds playback, analysis, and drawing. |
-| `domain/` | The Camelot wheel and mix compatibility scoring. |
-| `gesture/` | Concurrent multi-axis gesture recognition and label placement. |
-| `ui/platter/` | Platter geometry, palette, and rendering. |
-| `sync/` | Multi-device rooms: LAN discovery, an RFC 6455 WebSocket server and client, per-device roles, and the shareable session link. |
+| `:shared` | The portable brain, built once and used by both apps: `dsp/` (FFT, STFT, signed-rate resampling, WSOLA time-stretch, biquad filters, tempo/key/energy/peak detection), `audio/` (the real-time mixing graph — decks, mixer, sampler — everything except the final platform sink), `analysis/` (runs the DSP pipeline over a decoded track), `domain/` (the Camelot wheel and mix compatibility scoring), `gesture/` (concurrent multi-axis gesture recognition and label placement), and `sync/`/`session/` (LAN rooms and shareable session links — see Multi-device below). No Android dependency anywhere in it, so it is covered by plain JVM unit tests. |
+| `:app` | The Android app: Compose UI, the Room database, and the two files that actually touch platform APIs — `AudioTrackOutput` and `AudioDecoder` (`MediaCodec`). |
+| `:desktopApp` | The touch-laptop app: Compose Multiplatform UI, `DesktopAudioOutput` (`javax.sound.sampled`) and `DesktopAudioDecoder` in place of their Android equivalents, a native file picker, and a JSON-backed local library. |
 
 Audio is mixed by the app itself rather than by a platform player, which is what
 makes reverse playback, sample-accurate scratching, crossfading and EQ possible at
-all. The output stage sits behind an interface so it can be replaced without
-touching the DSP or the UI.
+all. The output stage sits behind an interface (`AudioOutput`, in `:shared`) so
+each platform supplies only its own sink and decoder — the mixing graph itself
+is identical code on both.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
-[`docs/AUDIO_QUALITY.md`](docs/AUDIO_QUALITY.md) for the signal path and its known
-limitations, [`docs/PLATTER_VISUAL.md`](docs/PLATTER_VISUAL.md) for the
-rendering specification, and [`docs/API.md`](docs/API.md) for the protocols the
-app speaks.
+[`docs/AUDIO_QUALITY.md`](docs/AUDIO_QUALITY.md) for the signal path, its known
+limitations, and where the two platforms' output stages currently differ,
+[`docs/PLATTER_VISUAL.md`](docs/PLATTER_VISUAL.md) for the rendering
+specification, and [`docs/API.md`](docs/API.md) for the protocols the app
+speaks.
+
+## 🖥️ Desktop
+
+A touch laptop runs the same mixing engine as the phone, from the identical
+`:shared` code — not a scaled-down controller. `./gradlew :desktopApp:run`
+opens a window with:
+
+- **Two decks and a crossfader.** Load a local WAV/AIFF/AU file onto Deck A or
+  B (via a native file-choose dialog, not a typed path), play/stop each
+  independently, and crossfade between them with the same equal-power law the
+  Android app uses.
+- **An eight-pad sampler**, loaded the same way as a deck.
+- **A local library** that remembers files you've pointed it at across
+  launches, and measures each one's BPM, Camelot key, and energy with the same
+  `TrackAnalyzer` the Android library uses — real analysis, not a placeholder.
+- **Room pairing**, described below — a laptop can host or join alongside, or
+  instead of, any Android device.
+
+Native installers (Msi/Dmg/Deb) are versioned from the same
+`version.properties` as the Android app and carry a proper icon; see
+"Building" below. What it doesn't have yet: a real database backing the
+library (it's a JSON file, not Room — see
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) §I) or a platter — the desktop
+UI is decks-and-pads, not the circular gesture surface above.
 
 ## 📡 Multi-device
 
-One phone hosts a room; the others find it on the same Wi-Fi and join. There is
-no server to run and no account — a room is a handful of devices and nothing
-else.
+One device hosts a room; the others find it on the same Wi-Fi and join —
+**a phone or a laptop can do either**, since both speak the identical sync
+protocol from `:shared`. There is no server to run and no account — a room is
+a handful of devices and nothing else.
 
 Each device picks what it is for — the library, the decks, or the pads — and
 shows only that screen, so several people play one instrument rather than three
@@ -107,13 +135,23 @@ Both are open formats rather than an SDK, specified in
 ## 🔨 Building
 
 ```bash
+# Android
 ./gradlew assembleDebug          # debug APK
 ./gradlew testDebugUnitTest      # unit tests
 ./gradlew bundleRelease          # release bundle (unsigned without a keystore)
+
+# Desktop
+./gradlew :desktopApp:run                       # run it directly
+./gradlew :desktopApp:test                       # unit tests
+./gradlew :desktopApp:packageDeb                 # or packageMsi / packageDmg
+                                                  # (each only builds on its native OS)
+
+# Shared module (both apps depend on it)
+./gradlew :shared:desktopTest                    # portable dsp/audio/domain/sync tests, run on the JVM
 ```
 
-Release signing is supplied by CI. Without a keystore the release variant builds
-unsigned rather than failing.
+Release signing is supplied by CI. Without a keystore the Android release variant
+builds unsigned rather than failing.
 
 ## 📋 Status
 
@@ -131,6 +169,13 @@ The automatic loop maker (`LoopHarvest`) runs across a whole playlist, and a pad
 bank can be placed onto a deck slot. `docs/REQUIREMENTS.md` has marked G2–G5
 done for some time; this section had not caught up, and a status section is
 exactly where a reader trusts the answer.
+
+**Desktop.** A touch laptop is a full device in the room, not a stub: the
+shared engine, room pairing, two-deck-plus-crossfader-plus-sampler playback,
+a native file picker, and a locally analysed library are all working — see
+[Desktop](#-desktop) above and `docs/REQUIREMENTS.md` §I. Outstanding: the
+desktop library is a JSON file rather than a real database (§I8), and there
+is no platter UI on desktop by design.
 
 ## 🔒 Privacy, permissions, terms
 

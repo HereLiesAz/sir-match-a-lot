@@ -5,7 +5,10 @@ specification. Where a later prompt revised an earlier one, only the later
 version appears; the superseded reading is noted so the history stays traceable.
 
 Each item carries a status: **done**, **partial**, or **planned (phase N)**,
-keyed to the phases in `docs/ARCHITECTURE.md`.
+keyed to the phases in `docs/ARCHITECTURE.md`'s "Delivery phases" (1–7, the
+original Android build plan). §I's desktop work has its own, separate 1–5
+numbering ("desktop Phase N" in `docs/ARCHITECTURE.md`) — the two sequences
+are unrelated; don't cross-reference a bare "Phase N" between them.
 
 ## A. Analysis — measured, never invented
 
@@ -141,6 +144,24 @@ Azphalt store packs. The app names what you asked for; it does not take it.
 | H3 | Export the loaded session (two tracks, cue points, loop settings) as a shareable link with query parameters | done — `SessionLink`; `web/index.html` reads the parameters, so the default destination understands its own links |
 | H4 | Expose the app's complete API | done — `docs/API.md` specifies all three surfaces: discovery, the room protocol, and the session-link format |
 | H5 | Comprehensive documentation and a web page, describing the app that actually exists | done for the gesture map and platter behaviour — README and `web/` rewritten against §C/§D with an explicit status section; revisit as phases 5-6 land |
+
+## I. Desktop — touch laptops as full devices in a room, not just controllers
+
+Not part of the original prompt log this file otherwise reduces; added when
+"link laptops alongside or instead of Android" became a requirement in its
+own right. Delivered across five desktop phases, documented in
+`docs/ARCHITECTURE.md`.
+
+| # | Requirement | Status |
+| :-- | :--- | :--- |
+| I1 | The engine, DSP, domain logic, and sync protocol are portable to a non-Android JVM, with zero behavioural change to the Android app | done — Phase 1: `dsp/`, `domain/`, `gesture/`, `sync/`, `session/`, and later `audio/`/`analysis/` moved into the `:shared` Kotlin Multiplatform module (`androidTarget()` + `jvm("desktop")`); every test that existed before the move still exists and still passes |
+| I2 | A touch laptop can host or join the same room as an Android device, with identical pairing and roster behaviour | done — Phase 2: `:desktopApp`'s `RoomSession` wraps the identical `SyncServer`/`SyncClient` from `:shared`; `RoomSessionTest` proves a real desktop-host/desktop-guest pairing handshake, not just compiled code |
+| I3 | A desktop build genuinely produces sound, through a real platform audio backend | done — Phase 3: `DesktopAudioOutput` (`javax.sound.sampled.SourceDataLine`) implements the same `AudioOutput` interface `AudioTrackOutput` does; `AudioEngine` itself needed no Android-specific change at all |
+| I4 | The desktop app is a full mixing instrument — two decks, a crossfader, a sampler — not a stripped-down controller | done — Phase 4: `PlaybackSession` drives `AudioEngine.deckA`/`deckB`, `mixer.crossfade`, and the eight-pad `sampler`, each wrapped in testable `DeckControl`/`SamplerPadControl` state |
+| I5 | Loading a track on desktop uses a native file dialog, not a typed path, and remembers files across launches | done — Phase 5: `DesktopFilePicker` (`java.awt.FileDialog`) and `DesktopLibrary` (JSON-backed, `~/.sirmatchalot/library.json`) |
+| I6 | Desktop library tracks get the same measured BPM/key/energy analysis the Android library shows, not placeholders | done — Phase 5: `DesktopLibrary` runs the already-portable `analysis/TrackAnalyzer` on a background thread per added file |
+| I7 | Desktop installers are versioned and branded, not a hardcoded placeholder | done — Phase 5: `desktopApp/build.gradle.kts` reads `major.minor.patch` from the same `version.properties` `:app` uses; Windows/macOS/Linux each get an icon generated from the Android launcher icon |
+| I8 | Desktop library storage is a real, queryable database (Room), matching the Android app's `Track` entity — cached-copy bookkeeping, cue points, indexed queries | **planned** — deferred, tracked in `docs/ARCHITECTURE.md`'s "What desktop Phase 5 didn't do"; needs a SQLite driver and KSP wired into `:shared`, which is real, separate work from bringing the portable analysis pipeline over (I6, done) |
 
 ## Contradictions resolved
 

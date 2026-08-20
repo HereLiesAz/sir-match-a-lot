@@ -18,9 +18,14 @@ Anything is free to speak these — a laptop, a hardware controller, a script, a
 web page. That is what "expose the API" means here: the protocol is the product
 surface, and it is specified rather than merely implemented.
 
-Implementations live in `app/src/main/java/com/hereliesaz/sirmatchalot/sync/`:
+Implementations live in
+`shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/sync/`:
 `WebSocketProtocol.kt` (the wire format), `SyncServer.kt` (host), `SyncClient.kt`
-(peer), `SyncRole.kt` (roles), `SessionLink.kt` (links).
+(peer), `SyncRole.kt` (roles), `SessionLink.kt` (links). This one implementation
+is what both the Android app (`:app`) and the desktop app (`:desktopApp`) speak
+— a phone hosting and a laptop joining, or the other way around, are two
+instances of the same protocol against the same code, not two compatible
+reimplementations.
 
 ---
 

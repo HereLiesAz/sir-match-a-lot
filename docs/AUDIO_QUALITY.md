@@ -16,26 +16,42 @@ PcmBuffer (decoded once)
   -> equal-power crossfade
   -> master gain
   -> safety limiter   linear below -1 dBFS
-  -> AudioTrack       ENCODING_PCM_FLOAT at the device's native rate
+  -> AudioOutput       platform sink — see "Two output backends" below
 ```
 
-Everything from the resampler onward is float32. The only place precision is
-deliberately reduced is source storage, discussed below.
+Everything from the resampler through the limiter is float32, identical on
+both platforms — it is the one shared `AudioEngine`/`Mixer` graph in
+`:shared`. The only place precision is deliberately reduced is source
+storage (discussed below) and, on desktop only, the final output stage.
 
 ## Settled
 
-**Float output, no output dither.** The engine writes `ENCODING_PCM_FLOAT`, so
-there is no truncation to 16-bit on the way out and no dither is needed. Mixing,
-EQ, and gain are all float32; biquad state is float64, which keeps low-frequency
-shelves well-conditioned.
+**Float output, no output dither — on Android.** `AudioTrackOutput` writes
+`ENCODING_PCM_FLOAT`, so there is no truncation to 16-bit on the way out and
+no dither is needed. Mixing, EQ, and gain are all float32; biquad state is
+float64, which keeps low-frequency shelves well-conditioned. **The desktop
+build differs here**: `DesktopAudioOutput` quantises to 16-bit PCM before
+writing to a `javax.sound.sampled.SourceDataLine`, because `PCM_FLOAT`
+support in `SourceDataLine` implementations is inconsistent enough across
+platforms and mixers that a line silently refusing to open was judged the
+worse failure mode. That is a real, deliberate quality difference between
+the two builds' final output stage, not a documentation oversight — see
+`DesktopAudioOutput.kt`'s own class doc for the reasoning.
 
-**Engine runs at the device's native mixer rate.** `AudioTrackOutput.forDevice()`
-queries `PROPERTY_OUTPUT_SAMPLE_RATE` and `PROPERTY_OUTPUT_FRAMES_PER_BUFFER`
-and runs the graph at that rate. This matters more than it looks: running at a
-fixed 44.1 kHz on a 48 kHz device makes AudioFlinger resample every block with
-an algorithm we neither chose nor control. Matching the native rate reduces the
-signal path to **one** sample-rate conversion — done once per track at load
-time, where the algorithm is our choice and we can afford a good one.
+**Engine runs at the device's native mixer rate — on Android.**
+`AudioTrackOutput.forDevice()` queries `PROPERTY_OUTPUT_SAMPLE_RATE` and
+`PROPERTY_OUTPUT_FRAMES_PER_BUFFER` and runs the graph at that rate. This
+matters more than it looks: running at a fixed 44.1 kHz on a 48 kHz device
+makes AudioFlinger resample every block with an algorithm we neither chose
+nor control. Matching the native rate reduces the signal path to **one**
+sample-rate conversion — done once per track at load time, where the
+algorithm is our choice and we can afford a good one. `DesktopAudioOutput`
+does not do this query — a desktop JVM has no `AudioFlinger`-equivalent
+platform-native-rate API to ask, so it runs at a fixed 44.1 kHz
+(`javax.sound.sampled` opens a `SourceDataLine` at whatever rate is
+requested, and resamples in the mixer if the OS device differs). This is a
+known gap for a desktop device whose hardware mixer runs at 48 kHz — see
+"Known limitations" below.
 
 **Limiter threshold at -1 dBFS.** Any always-on nonlinearity colours everything
 through it. The curve is exactly linear (bit-transparent) below -1 dBFS and only
@@ -199,9 +215,26 @@ Rejected alternatives, for the record:
 RBJ coefficients verified against their analytic magnitude response, but a
 three-band DJ EQ with a sweepable mid is the conventional expectation.
 
+### 5. Desktop output stage is a step behind Android's
+
+Two real, deliberate differences from the Android `AudioTrackOutput` path,
+both noted under "Settled" above: `DesktopAudioOutput` truncates to 16-bit
+PCM rather than writing float (`SourceDataLine`'s inconsistent `PCM_FLOAT`
+support across platforms), and it runs the graph at a fixed 44.1 kHz rather
+than querying the OS mixer's native rate (there is no JVM-portable
+equivalent of `AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE` to ask). On a 48 kHz
+desktop audio device this reintroduces the same "wrong-rate resampling
+through an algorithm we don't control" problem item 1 fixed for Android.
+Neither gap is measured yet — no THD+N/passband figures exist for the
+desktop output stage the way they do for the resampler above.
+
 ## How these get checked
 
-Quality claims here are asserted by tests in `app/src/test`, not by inspection:
+Quality claims here are asserted by tests, not by inspection — the DSP and
+mixing-graph tests live in `shared/src/jvmCommonTest` (they moved out of
+`app/src/test` when `dsp/` and `audio/` moved into the portable `:shared`
+module), with `desktopApp/src/test` covering the desktop-specific output and
+decode stages:
 
 - filter responses against their design targets (-3 dB at cutoff, shelf gain at
   DC, unity outside the band)
