@@ -239,6 +239,21 @@ work — bringing `TrackAnalyzer` (already portable, already in `:shared`) to
 the desktop library is a natural follow-up, not something this file list
 blocks.
 
+### Packaging
+
+`desktopApp/build.gradle.kts`'s `nativeDistributions` block produces a Msi
+(Windows), a Dmg (macOS), and a Deb (Linux) — `jpackage` only builds the
+installer for the OS it runs on, so CI would need a matrix of runners to
+produce all three; this repo doesn't have that wired up yet, and a Msi/Dmg
+built this way from Linux is not itself possible (`jpackage` doesn't cross-
+package). The three icon files under `desktopApp/src/main/resources/`
+(`icon.ico`, `icon.icns`, `icon.png`) were generated once from the Android
+app's `xxxhdpi` launcher icon and are checked in rather than regenerated on
+every build; `packageVersion` is read from the same `version.properties`
+`:app` uses (major.minor.patch only — installer formats reject a fourth
+build-number component), so the desktop package version tracks the app's
+real version instead of a hand-maintained `"1.0.0"`.
+
 ## The audio graph
 
 ```

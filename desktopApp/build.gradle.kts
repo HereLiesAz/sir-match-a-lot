@@ -1,5 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -34,6 +36,19 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
 }
 
+// The same version.properties :app reads from, so the desktop package
+// carries the app's real version instead of a number nobody updates.
+// Only major.minor.patch — the installer formats below (MSI in particular)
+// require a strict X.Y.Z and reject the trailing build number :app's own
+// versionName carries.
+val versionProps = Properties()
+val versionPropsFile = rootProject.file("version.properties")
+if (versionPropsFile.exists()) {
+    versionProps.load(FileInputStream(versionPropsFile))
+}
+val desktopPackageVersion = listOf("major", "minor", "patch")
+    .joinToString(".") { versionProps.getProperty(it)?.toIntOrNull()?.toString() ?: "0" }
+
 compose.desktop {
     application {
         mainClass = "com.hereliesaz.sirmatchalot.desktop.MainKt"
@@ -41,7 +56,22 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "SirMatchALot"
-            packageVersion = "1.0.0"
+            packageVersion = desktopPackageVersion
+
+            // One source image, three platform icon formats generated from it
+            // (see desktopApp/src/main/resources) — java.awt.FileDialog and
+            // Compose's own dialogs already use the OS's native chrome, so
+            // this is the last thing that would otherwise still look
+            // unbranded next to a launcher-icon'd app.
+            windows {
+                iconFile.set(project.file("src/main/resources/icon.ico"))
+            }
+            macOS {
+                iconFile.set(project.file("src/main/resources/icon.icns"))
+            }
+            linux {
+                iconFile.set(project.file("src/main/resources/icon.png"))
+            }
         }
     }
 }
