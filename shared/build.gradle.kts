@@ -6,12 +6,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-// The pure-Kotlin brain of the app (dsp/, domain/, gesture/) plus the LAN
-// sync protocol (sync/, session/), shared between the Android app and a
-// future desktop build so two devices on either platform can host or join
-// the same room. Everything else — playback (AudioTrack/MediaCodec), the
-// database (Room), and the Compose UI — stays platform-specific; see
-// docs/ARCHITECTURE.md for why those don't belong here.
+// The pure-Kotlin brain of the app (dsp/, domain/, gesture/), the real-time
+// mixing graph (audio/), the track analyser (analysis/), and the LAN sync
+// protocol (sync/, session/), shared between the Android app (:app) and the
+// desktop app (:desktopApp) so a phone and a laptop can host or join the
+// same room and mix from the same engine. Only the concrete platform sink
+// and decoder (AudioTrack/MediaCodec on Android, javax.sound.sampled on
+// desktop), the database (Room), and the Compose UI stay platform-specific;
+// see docs/ARCHITECTURE.md for why those don't belong here.
 kotlin {
     androidLibrary {
         namespace = "com.hereliesaz.sirmatchalot.shared"

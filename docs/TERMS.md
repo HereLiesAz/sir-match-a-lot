@@ -51,9 +51,14 @@ pack's contents is set by whoever published it, not by these terms.
 
 ## Multi-device sessions
 
-Linking devices runs peer to peer on your local network with **no encryption and
-no authentication**. Anyone on the same network who knows the port can connect to
-a hosted session and control it.
+Linking devices runs peer to peer on your local network. Every connection is
+paired and encrypted — the two devices agree a key by Diffie-Hellman, a
+six-digit code is compared on both ends before anything is admitted, and
+every frame after that is sealed with AES-256-GCM. What is **not** protected
+is the network itself: the raw transport has to be reachable to be paired
+with at all, so anyone on the same network can attempt to pair with a hosted
+session (and would still have to pass the six-digit confirmation to be
+admitted).
 
 That is a deliberate trade for one-press setup with no accounts and no
 infrastructure, and it means: host on a network you control. Do not host a session

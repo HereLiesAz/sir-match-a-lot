@@ -41,6 +41,15 @@ to decode and measure them, holds the decoded audio in memory while it is loaded
 on a deck, and releases it. What it keeps afterwards is the *measurements* —
 numbers describing the music, not the music.
 
+**On the desktop app**, the equivalent library and identity data live in plain
+files under `~/.sirmatchalot/` — `library.json` (each track's file path, display
+name, and measured tempo/key/energy) and `identity.properties` (the pairing
+identity described under "Multi-device sync" below) — rather than in a
+database, since a desktop process has no Android-style private storage or
+`SharedPreferences`. The same rule applies: no audio, only measurements and a
+file path. Unlike the Android app, removing the desktop app's binary does not
+remove this folder — delete `~/.sirmatchalot/` yourself if you want it gone.
+
 ## Permissions
 
 Each one, why it exists, and what happens if you refuse it. The full detail is in

@@ -227,12 +227,12 @@ desktopApp/src/main/kotlin/com/hereliesaz/sirmatchalot/desktop/
                           uses — analysis runs on a background thread per
                           file so a click handler never blocks on FFTs; not
                           the Android app's Room-backed `Track` entity — see
-                          "What Phase 5 didn't do" below
+                          "What desktop Phase 5 didn't do" below
   DesktopKeyValueStore.kt KeyValueStore backed by a properties file, since
                           there is no SharedPreferences on a desktop JVM
 ```
 
-### What Phase 5 didn't do
+### What desktop Phase 5 didn't do
 
 `DesktopLibrary` now measures BPM, Camelot key, and energy the same way the
 Android library does — `TrackAnalyzer` and the whole `dsp` pipeline behind
