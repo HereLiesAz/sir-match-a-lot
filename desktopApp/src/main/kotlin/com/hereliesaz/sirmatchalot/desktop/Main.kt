@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -53,7 +55,7 @@ fun main() = application {
         title = "Sir Match-a-Lot",
     ) {
         MaterialTheme {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                 PlaybackPanel(playback, library, window, modifier = Modifier.padding(24.dp))
                 RoomScreen(roomSession)
             }
@@ -205,7 +207,10 @@ private fun LibraryPanel(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(track.displayName, style = MaterialTheme.typography.bodyMedium)
+                    Column {
+                        Text(track.displayName, style = MaterialTheme.typography.bodyMedium)
+                        Text(track.analysisLabel(), style = MaterialTheme.typography.bodySmall)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { deckA.load(track.path) }) { Text("→ A") }
                         OutlinedButton(onClick = { deckB.load(track.path) }) { Text("→ B") }
@@ -232,7 +237,7 @@ private fun RoomScreen(session: RoomSession) {
     var addressInput by remember { mutableStateOf("") }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxWidth().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Sir Match-a-Lot — Desktop", style = MaterialTheme.typography.headlineSmall)
