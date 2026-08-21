@@ -10,6 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -28,14 +29,22 @@ import androidx.compose.ui.platform.LocalContext
 @Composable
 fun CrashReportPrompt(store: CrashReportStore) {
     var report by remember { mutableStateOf<CrashReport?>(null) }
+    // Whether this report has already been handled (reported or dismissed)
+    // this launch. `rememberSaveable`, not `remember`: a config change like
+    // rotation recreates the whole composition, and a plain `remember` would
+    // forget the dismissal along with it — `report` gets reloaded from the
+    // still-pending (dismiss does not clear the store) `store.load()` below,
+    // and the prompt the user just closed pops right back up on rotation.
+    var handledThisLaunch by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(store) { report = store.load() }
 
+    if (handledThisLaunch) return
     val current = report ?: return
     val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = {
-            report = null
+            handledThisLaunch = true
         },
         containerColor = Color(0xFF18181B),
         title = { Text("Sir Match-a-Lot crashed", color = Color.White) },
@@ -53,12 +62,12 @@ fun CrashReportPrompt(store: CrashReportStore) {
                     Intent(Intent.ACTION_VIEW, Uri.parse(CrashReportIssue.url(current))),
                 )
                 store.clear()
-                report = null
+                handledThisLaunch = true
             }) { Text("Report on GitHub") }
         },
         dismissButton = {
             TextButton(onClick = {
-                report = null
+                handledThisLaunch = true
             }) { Text("Dismiss") }
         },
     )

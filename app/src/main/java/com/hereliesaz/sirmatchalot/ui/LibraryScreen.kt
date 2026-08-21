@@ -6,6 +6,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -235,30 +237,18 @@ fun LibraryScreen(
             }
         }
 
-        // Analysis is an FFT pass over each whole track and takes real seconds.
-        // Without this the button was indistinguishable from a dead one for the
-        // length of the run.
-        analysisProgress?.let { progress ->
-            item {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    // Clamped: the state right after the analysis loop finishes
-                    // (done == total, briefly, before the run is cleared) hit
-                    // this "current item" formula and showed "N+1/N".
-                    "Analysing ${(progress.done + 1).coerceAtMost(progress.total)}/${progress.total}: ${progress.current}",
-                    color = Color(0xFF81E6D9),
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                )
-                LinearProgressIndicator(
-                    progress = { progress.fraction },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Color.Cyan,
-                    trackColor = Color(0xFF27272A),
-                )
-            }
-        }
-
+        // analysisProgress and backgroundAnalysis (the card above, "the
+        // background run, mirrored from the same state its notification
+        // shows") are both derived from the one AnalysisProgressBus.state —
+        // there is only ever one analysis run, background or
+        // user-triggered "Analyse new" alike. This used to render its own
+        // second done/total/track readout and progress bar right underneath
+        // that card, showing the same run twice — including the exact
+        // off-by-one the two used to disagree about (task history: "analysis
+        // progress off-by-one between app bar and library screen"), since
+        // one was clamped to N+1/N and the other was not. analysisProgress
+        // itself is kept: the "Analyse new"/"Stop" button above still needs
+        // it to know whether a run is active.
         item {
             Spacer(Modifier.height(8.dp))
 
@@ -307,72 +297,52 @@ fun LibraryScreen(
         }
 
         item {
+            // Crate, mix, and session actions used to be five buttons stacked across
+            // three separate rows. They're independent actions, not a sequence, so
+            // there's no reason they can't share one scrollable row.
             Spacer(Modifier.height(8.dp))
-
-            // Shuffle Crate and the Automatchic Mix, both driven by measured values.
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
                     onClick = { viewModel.shuffleCrate() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("SHUFFLE CRATE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("SHUFFLE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
                 Button(
                     onClick = { viewModel.buildAutomatchicMix() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDB2777)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("AUTOMATCHIC MIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("AUTOMIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
-            }
-        }
-
-        item {
-            // Planning and performing are separate actions: the plan is worth seeing
-            // before it is committed to, and it was previously the only half that
-            // existed.
-            Spacer(Modifier.height(6.dp))
-            Button(
-                onClick = {
-                    if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    if (isAutoMixing) "STOP THE MIX" else "PLAY THE MIX",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 10.sp,
-                )
-            }
-        }
-
-        item {
-            // A session is the set as arranged — the lineup, where every clip sits on
-            // its deck, the pads and their takes. Saving it is the difference between
-            // an evening's work and an evening.
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+                Button(
+                    onClick = {
+                        if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(
+                        if (isAutoMixing) "STOP" else "PLAY MIX",
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                    )
+                }
                 Button(
                     onClick = { saveSessionLauncher.launch("${viewModel.suggestedSessionName()}.sir") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("SAVE SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("SAVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
                 Button(
                     // Any type: a `.sir` has no registered MIME type, and filtering on
@@ -381,9 +351,8 @@ fun LibraryScreen(
                     onClick = { openSessionLauncher.launch(arrayOf("*/*")) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("OPEN SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("OPEN", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
             }
         }
@@ -679,11 +648,38 @@ fun TrackRowItem(
                     }
                 }
 
+                var confirmingDelete by remember { mutableStateOf(false) }
+
+                // .size(24.dp) used to be the whole tappable area — well
+                // under the 48dp minimum touch target this app uses
+                // elsewhere (see SettingsScreen's DestructiveAction). The
+                // icon glyph stays small; only the touch target grows.
                 IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(24.dp)
+                    onClick = { confirmingDelete = true },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                }
+
+                // Same confirm/cancel dialog shape as SettingsScreen's
+                // DestructiveAction, so a track deleted here is deleted the
+                // same deliberate way settings are reset there — this used
+                // to delete on tap with no way back.
+                if (confirmingDelete) {
+                    AlertDialog(
+                        onDismissRequest = { confirmingDelete = false },
+                        title = { Text("Delete \"${track.title}\"?") },
+                        text = { Text("This removes the track from the library. This cannot be undone.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmingDelete = false
+                                onDelete()
+                            }) { Text("Delete", color = Color(0xFFEF4444)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
         }

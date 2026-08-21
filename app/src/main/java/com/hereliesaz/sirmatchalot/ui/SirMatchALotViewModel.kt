@@ -10,6 +10,7 @@ import com.hereliesaz.sirmatchalot.audio.AudioDecoder
 import com.hereliesaz.sirmatchalot.audio.AudioEngine
 import com.hereliesaz.sirmatchalot.audio.AudioTrackOutput
 import com.hereliesaz.sirmatchalot.audio.Clip
+import com.hereliesaz.sirmatchalot.audio.ClipPlacement
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
@@ -668,15 +669,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             (atSeconds * playable.sampleRate).toInt().coerceAtLeast(0)
 
                         existing.isEmpty() -> 0
-                        atFraction != null && cycle > 0 ->
+                        atFraction != null && cycle > 0 -> {
                             // Snapped, exactly as a drag is. A drop that landed off the
                             // grid while a drag of the same clip snapped onto it would
                             // be two different answers to the same question.
-                            BeatSnap.snapFrame(
+                            val snapped = BeatSnap.snapFrame(
                                 frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
                                 framesPerBeat = sessionFramesPerBeat(),
                                 phaseFrames = sessionBeatPhaseFrames(),
                             ).coerceIn(0, cycle)
+                            // A drop that lands on top of what is already there
+                            // is pulled to the nearest clear stretch of the
+                            // ring instead — two clips sharing a span read as
+                            // one unreadable smear, both in sound and on screen.
+                            ClipPlacement.nonOverlappingStart(
+                                desiredStart = snapped,
+                                length = playable.frameCount,
+                                existingClips = existing,
+                            )
+                        }
                         else -> existing.maxOfOrNull { it.endFrame } ?: 0
                     }
                     engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
@@ -1569,10 +1580,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         // Land on a beat. A finger on a five-minute revolution is tens of
         // milliseconds out at best, which is audibly off and impossible to
         // correct by eye.
-        val startFrame = BeatSnap.snapFrame(
+        val snapped = BeatSnap.snapFrame(
             frame = raw,
             framesPerBeat = sessionFramesPerBeat(),
             phaseFrames = sessionBeatPhaseFrames(),
+        )
+        // Dragged on top of another clip already on the target deck, the move
+        // is pulled to the nearest clear stretch instead — a clip you can drag
+        // onto another must not be a clip you can drag over another.
+        val startFrame = ClipPlacement.nonOverlappingStart(
+            desiredStart = snapped,
+            length = existing.frameCount,
+            existingClips = target.clips,
+            excludingId = clipId,
         )
         if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
 
@@ -1762,7 +1782,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val next = (audioEngine.deckA.bassBoostDb + delta * 0.06).coerceIn(-18.0, 18.0)
         audioEngine.deckA.bassBoostDb = next
         audioEngine.deckB.bassBoostDb = next
+        _bassBoostDb.value = next
     }
+
+    /**
+     * The BASS_BOOST gesture's current value, so the platter can show a live
+     * dB readout while the gesture runs — the same reason [audioVolume] is
+     * exposed for VOLUME. Both decks are always nudged together by this
+     * gesture (see [nudgeBassBoost]), so one flow is enough to describe it.
+     */
+    private val _bassBoostDb = MutableStateFlow(0.0)
+    val bassBoostDb: StateFlow<Double> = _bassBoostDb
 
     /**
      * This device's long-term identity and the devices it has paired with.
@@ -2528,6 +2558,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             deck.bassBoostDb = 0.0
             deck.trebleDb = 0.0
         }
+        _bassBoostDb.value = 0.0
         _transitionStyle.value = null
     }
 
@@ -2601,6 +2632,23 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
         if (abs(totalShift) < 0.01) return
         renderPitchShift(PlatterGeometry.Deck.B, totalShift, alignment.semitoneShift)
+    }
+
+    /**
+     * Returns [deckName]'s playback rate to 1.0 — its original speed.
+     *
+     * There was previously no way back once a deck's rate had drifted:
+     * [syncToDeckA] moves Deck B's rate deliberately, and a scratch used to
+     * (before the fix to `AudioOutput.endScratch`) leave a deck's rate
+     * changed by accident once the gesture ended. Either way, nothing
+     * offered a way to undo it short of reloading the track from scratch.
+     * Rate only — a key shift applied alongside a sync is a separate,
+     * deliberate choice ([_keylock] and the harmonic interval), not
+     * something "back to original speed" implies undoing too.
+     */
+    fun resetDeckRate(deckName: String) {
+        audioEngine.applyAlignment(deckName, 1.0, 0.0)
+        _feedbackMsg.value = "Deck $deckName back to its original speed"
     }
 
     /**
@@ -2740,9 +2788,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private fun persistCuesForDeck(deck: String) {
         val loaded = if (deck == "A") _loadedTracksA.value else _loadedTracksB.value
         val track = loaded.singleOrNull() ?: return
+        // Slot position, not just which cues are set, has to survive the
+        // round trip: cue button 3 must come back as cue button 3. Filtering
+        // out empty slots before encoding — as this used to — compacted them
+        // together, so a cue in slot 3 with slots 1-2 empty was written as
+        // slot 1 and came back on the wrong button.
         val cues = (if (deck == "A") _cuesA.value else _cuesB.value)
-            .filterNotNull()
-            .map { it.toDouble() }
+            .map { it?.toDouble() }
         val csv = Track.cuePointsToCsv(cues)
         if (csv == track.cuePointsCsv) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -2754,7 +2806,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private fun restoreCuesFor(track: Track, deck: PlatterGeometry.Deck) {
         val cues = track.cuePoints
         if (cues.isEmpty()) return
-        val padded = (cues.map { it.toFloat() as Float? } + List(4) { null }).take(4)
+        val padded = (cues.map { it?.toFloat() } + List(4) { null }).take(4)
         if (deck == PlatterGeometry.Deck.A) _cuesA.value = padded else _cuesB.value = padded
         republishMarkers()
     }

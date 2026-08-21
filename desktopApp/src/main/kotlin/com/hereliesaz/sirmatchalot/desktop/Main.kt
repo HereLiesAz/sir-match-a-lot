@@ -43,7 +43,16 @@ import java.awt.Frame
  * `SirMatchALotViewModel` does) is UI work on top of two already-working
  * halves, not new plumbing.
  */
-fun main() = application {
+fun main() {
+    // Installed before anything else runs, so nothing in the window setup
+    // itself is uncaptured. See DesktopCrashLog's own doc for what this is
+    // and isn't — a plain-text last-crash file, not the Android app's
+    // prefilled-issue flow.
+    DesktopCrashLog().installAsUncaughtExceptionHandler()
+    runApplication()
+}
+
+private fun runApplication() = application {
     val roomSession = remember { RoomSession(DesktopKeyValueStore()) }
     val playback = remember { PlaybackSession() }
     val library = remember { DesktopLibrary() }

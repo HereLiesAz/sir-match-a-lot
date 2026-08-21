@@ -220,6 +220,36 @@ class DeckTest {
     }
 
     @Test
+    fun `a gain change mid playback is ramped, not stepped`() {
+        // A scripted gain change (TransitionChoreographer's flourishes write
+        // straight to Deck.gain) used to take effect on the very next sample,
+        // an instantaneous step on a signal that was, an instant before,
+        // somewhere else entirely — an audible click. A constant-signal
+        // clip makes any step visible: a smoothed gain approaches the new
+        // level frame by frame; a stepped one jumps to it on the very next
+        // sample after the change.
+        val deck = deckWith(
+            Clip(id = "flat", buffer = PcmBuffer.monoFromFloat(FloatArray(64) { 1f }, sampleRate), loop = true),
+        )
+        // Settle the smoothing at gain 1 first — the deck's very first block
+        // is deliberately exempt from smoothing (there is no "before" to
+        // ramp from), so this isolates the change this test is about.
+        leftChannel(deck, 8)
+
+        deck.gain = 0.2f
+        val out = leftChannel(deck, 8)
+
+        assertTrue("first sample after the change must not already be at target", out[0] > 0.21f)
+        for (i in 1 until out.size) {
+            assertTrue(
+                "sample $i (${out[i]}) must not overshoot past sample ${i - 1} (${out[i - 1]}) on a monotonic approach",
+                out[i] <= out[i - 1] + 1e-6f,
+            )
+        }
+        assertTrue("should still be settling by frame 8, not already at target", out.last() > 0.21f)
+    }
+
+    @Test
     fun `bass boost changes the signal`() {
         // The previous implementation routed this gesture to a detached synth's
         // field, so it could not affect the music at all. Here it must.

@@ -29,6 +29,22 @@ class EnergyCurveTest {
     }
 
     @Test
+    fun `loudness does not saturate across the range real mastered music occupies`() {
+        // Real mastered tracks sit around -14..-6 dBFS RMS. The loudness term
+        // used to be measured off the raw FFT magnitude sum rather than the
+        // time-domain samples, which put its own "0 dB" reference around
+        // -26 dBFS — so every one of these amplitudes read as the same,
+        // maximal energy. Amplitude for a uniform-noise RMS of X dBFS is
+        // roughly X_dBFS + 4.77 dB (sqrt(3) headroom of a uniform distribution).
+        val quiet = EnergyCurve.compute(noise(4.0, 0.20f), sampleRate) // ~ -14 dBFS
+        val loud = EnergyCurve.compute(noise(4.0, 0.50f), sampleRate) // ~ -6 dBFS
+        assertTrue(
+            "quiet ${quiet.average()} should be measurably below loud ${loud.average()}",
+            quiet.average() < loud.average() - 0.05f,
+        )
+    }
+
+    @Test
     fun `brighter audio reads as higher energy at equal loudness`() {
         val dull = SignalFixtures.sine(120.0, 4.0, amplitude = 0.6f)
         val bright = SignalFixtures.sine(6000.0, 4.0, amplitude = 0.6f)

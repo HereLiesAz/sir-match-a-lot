@@ -70,4 +70,27 @@ class CrashReportStoreTest {
 
         assertNull(store.load())
     }
+
+    @Test
+    fun `a report saved through one instance is visible from a fresh instance over the same backing store`() {
+        // The real store writes with `commit()`, not `apply()`, specifically so
+        // the write is finished — not merely queued — before the caller (a
+        // crash handler, one statement before the process dies) moves on. A
+        // test that only reads back through the *same* CrashReportStore
+        // object never exercises that: an in-memory field read right after a
+        // queued-but-not-yet-flushed write would still pass. This one shares
+        // the backing map (as two `CrashReportStore.forContext` calls would
+        // share one real SharedPreferences file) and constructs a brand new
+        // CrashReportStore to do the read, so the only thing carrying the
+        // value across is the backing store's own persistence — exactly what
+        // `apply()`'s async write would put at risk.
+        val backing = MapStore()
+        val writer = CrashReportStore(backing)
+        val original = report(message = "written by one instance")
+
+        writer.save(original)
+
+        val reader = CrashReportStore(backing)
+        assertEquals(original, reader.load())
+    }
 }

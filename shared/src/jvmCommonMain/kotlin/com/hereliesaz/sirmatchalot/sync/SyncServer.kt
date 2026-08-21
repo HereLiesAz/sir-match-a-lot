@@ -119,8 +119,19 @@ class SyncServer(
      *
      * Held here rather than on whichever device happens to have spoken last,
      * because two devices that each trust their own copy are not one instrument.
+     *
+     * Mutated from whichever peer's reader thread last called [updateState] —
+     * every [ClientConnection] runs on its own thread — and read here by
+     * [admitIfReady] on a joining peer's own thread, so both the mutation and
+     * every read that walks its entries (serialising it into an outgoing
+     * message) go through [roomStateLock]. Without it, one peer's `put()` and
+     * another's `toString()` on the same plain `JSONObject` race exactly like
+     * two threads on a plain `HashMap`: `ConcurrentModificationException`,
+     * caught by `ClientConnection.run()`'s catch-all and misreported as that
+     * peer simply disconnecting.
      */
     private val roomState = JSONObject()
+    private val roomStateLock = Any()
 
     /**
      * Room code peers must present to join.
@@ -289,17 +300,30 @@ class SyncServer(
      * ones.
      */
     fun updateState(update: JSONObject, broadcast: Boolean = true) {
-        for (key in update.keys()) roomState.put(key, update.get(key))
-        onStateChanged?.invoke(roomState)
+        val snapshot = synchronized(roomStateLock) {
+            for (key in update.keys()) roomState.put(key, update.get(key))
+            roomStateSnapshot()
+        }
+        onStateChanged?.invoke(snapshot)
         if (broadcast) {
             send(
                 JSONObject().apply {
                     put("type", "state_synced")
-                    put("state", roomState)
+                    put("state", snapshot)
                 }.toString(),
             )
         }
     }
+
+    /**
+     * A stand-alone copy of [roomState], safe to hand to a caller on another
+     * thread or to serialise after this call returns. Must be called with
+     * [roomStateLock] held — round-tripping through [JSONObject]'s own string
+     * form is the cheapest deep copy available without a JSON library that
+     * exposes one directly, and it still has to see a state nobody else is
+     * mutating while it walks it.
+     */
+    private fun roomStateSnapshot(): JSONObject = JSONObject(roomState.toString())
 
     /** Relays an event to every peer. */
     fun broadcastEvent(event: String, payload: JSONObject) {
@@ -405,11 +429,15 @@ class SyncServer(
             // signature and never before.
             peerFingerprint?.let { known?.remember(it, peerName) }
             // A joiner needs the room as it stands, not only what changes after
-            // it arrives.
+            // it arrives. Snapshotted under the lock rather than handed the
+            // live object — this runs on the joining peer's own connection
+            // thread, which is exactly the thread that is not holding
+            // updateState's lock while some other peer's thread is mid-merge.
+            val snapshot = synchronized(roomStateLock) { roomStateSnapshot() }
             send(
                 JSONObject().apply {
                     put("type", "init_state")
-                    put("roomState", roomState)
+                    put("roomState", snapshot)
                 }.toString(),
             )
         }
@@ -530,12 +558,16 @@ class SyncServer(
         }
 
         /**
-         * Answers `hello`: agrees a key, and asks this device's user about it.
+         * Answers `hello`: agrees a key, and hands back this host's own.
          *
-         * The reply goes out before either user has approved anything, and has
-         * to: until the peer has this host's public key it cannot derive the
-         * code, and until it can derive the code there is nothing for its user
-         * to compare. What the reply does not do is admit anybody.
+         * `hello` carries nothing but an ephemeral public key nobody can do
+         * anything with alone — no name, no identity. Those used to ride here
+         * and on `hello_ack` in the clear, which meant a passive listener on
+         * the same network learned this device's human-readable name and its
+         * long-term identity key on every connection attempt, whether or not
+         * anybody ever approved it. Both now travel sealed, once a session
+         * exists to seal them under — see [handleIdentify] and the sealed
+         * `identify` this sends right after.
          */
         private fun beginPairing(message: JSONObject) {
             if (session != null) return
@@ -543,7 +575,6 @@ class SyncServer(
             val peerKey = RoomCrypto.decodePublicKey(peerKeyBytes) ?: return
             val agreed = RoomCrypto.agree(keys, peerKey, roomCode) ?: return
 
-            peerName = message.optString("name").ifBlank { "A device" }
             session = agreed
 
             val transcript = RoomCrypto.transcriptOf(
@@ -551,24 +582,56 @@ class SyncServer(
                 peerKeyBytes,
                 roomCode,
             )
+            signedTranscript = transcript
 
             sendPlain(
                 JSONObject().apply {
                     put("type", "hello_ack")
                     put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                }.toString(),
+            )
+
+            // This host's identity and its signature over the transcript used
+            // to ride the plaintext `hello_ack` above. Sealed now: the session
+            // exists as of the line above, so a passive listener without the
+            // peer's ephemeral private key cannot read it, while the peer —
+            // who agreed the very same session a moment earlier — can.
+            //
+            // Sent unconditionally, identity or not: the peer waits for this
+            // message before showing its own user the pairing code (see
+            // `SyncClient`'s handling of a sealed `identify`), so a host with
+            // no identity configured still has to send one, just without the
+            // identity/signature fields, or that peer would wait forever.
+            send(
+                JSONObject().apply {
+                    put("type", "identify")
                     identity?.let {
                         put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
                         put("signature", WebSocketProtocol.base64(it.sign(transcript)))
                     }
                 }.toString(),
             )
+        }
 
-            signedTranscript = transcript
+        /**
+         * Answers the peer's sealed `identify`: its name, and the identity it
+         * claims (unverified — a claim only decides whether to wait, per
+         * [claimsKnownIdentity]; recognition itself happens in
+         * [recogniseIdentity] once `join` brings the signature).
+         *
+         * This is where the prompt used to go up straight out of `beginPairing`,
+         * back when the peer's name and claimed identity arrived in the clear
+         * with `hello`. Now they arrive sealed, one round trip later, so the
+         * prompt waits for them.
+         */
+        private fun handleIdentify(message: JSONObject) {
+            val agreed = session ?: return
+            peerName = message.optString("name").ifBlank { "A device" }
 
-            // The prompt goes up now, on the exchange, so both users are looking
-            // at the same digits at the same moment — *unless* this device
-            // claims an identity this host already knows, in which case it waits
-            // for the join to make good on the claim.
+            // The prompt goes up now, so both users are looking at the same
+            // digits at the same moment — *unless* this device claims an
+            // identity this host already knows, in which case it waits for
+            // the join to make good on the claim.
             //
             // Waiting rather than raising-and-withdrawing, because a dialog that
             // appears for a third of a second and vanishes is worse than either:
@@ -633,6 +696,7 @@ class SyncServer(
         private fun handleSealed(text: String) {
             val message = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (message.optString("type")) {
+                "identify" -> handleIdentify(message)
                 "join" -> {
                     // Three things have to hold, and each covers what the others
                     // cannot: the frame opened, so it came from whoever agreed
@@ -692,7 +756,12 @@ class SyncServer(
 
         fun close() {
             runCatching { socket.close() }
-            if (clients.remove(this)) onPeersChanged?.invoke(clients.size)
+            // clients.size counts every accepted socket, joined or not — the
+            // same "N devices joined" inflation peerCount exists to avoid.
+            // isJoined is what this connection actually was; count what's
+            // left the same way, or a device that never joined anything
+            // still moves the readout when it disconnects.
+            if (clients.remove(this)) onPeersChanged?.invoke(clients.count { it.isJoined })
         }
     }
 

@@ -4,8 +4,10 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -17,6 +19,37 @@ object AzphaltStoreRepository {
     private const val BASE_URL = "https://azphalt.org"
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 15_000
+
+    /**
+     * Ceiling on the package-listing response [fetchAudioPackages] will
+     * inflate into memory.
+     *
+     * `readText()` on the raw response stream has no bound at all: a
+     * compromised or simply malfunctioning store returning a
+     * gigabyte-and-growing response would be read to EOF in full before
+     * `JSONObject` ever got a chance to reject it, exhausting the heap on
+     * what is nominally just "the list of packages". Mirrors the bounded
+     * reads [com.hereliesaz.sirmatchalot.session.SessionArchive] uses for
+     * the same reason.
+     */
+    private const val MAX_LISTING_BYTES = 50L * 1024 * 1024
+
+    /** Reads [from] to EOF, refusing to allocate past [limit] bytes. */
+    internal fun readBounded(from: InputStream, limit: Long): String {
+        val buffer = ByteArrayOutputStream()
+        val chunk = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val read = from.read(chunk)
+            if (read < 0) break
+            total += read
+            if (total > limit) {
+                throw IOException("Package listing exceeded $limit bytes")
+            }
+            buffer.write(chunk, 0, read)
+        }
+        return buffer.toString("UTF-8")
+    }
 
     data class StorePackage(
         val id: String,
@@ -35,7 +68,7 @@ object AzphaltStoreRepository {
                 return@withContext emptyList()
             }
 
-            val jsonString = connection.inputStream.bufferedReader().use { it.readText() }
+            val jsonString = readBounded(connection.inputStream, MAX_LISTING_BYTES)
             val root = JSONObject(jsonString)
             val packagesArray = root.optJSONArray("packages") ?: return@withContext emptyList()
 

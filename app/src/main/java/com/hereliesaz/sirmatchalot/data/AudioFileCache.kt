@@ -5,6 +5,7 @@ import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 /**
  * Local copies of imported audio, so the app owns the files it plays.
@@ -81,11 +82,16 @@ class AudioFileCache(
 
         directory.mkdirs()
         val suffix = extension?.takeIf { it.isNotBlank() }?.let { ".$it" } ?: ".audio"
-        // Written to a partial name and renamed on completion, so a copy
-        // interrupted by a crash or a kill is never mistaken for a whole one.
-        // A truncated file that looks complete is worse than no file: it decodes
-        // to a track that ends early, which reads as a corrupt source.
-        val partial = File(directory, "$trackId.$PARTIAL_EXTENSION")
+        // Written to a partial name unique to this call, and renamed on
+        // completion, so a copy interrupted by a crash or a kill is never
+        // mistaken for a whole one, AND so two concurrent stores of the same
+        // trackId (the analysis queue and a deck load racing to warm the same
+        // track, say) never share one output file. A shared partial name let
+        // both writers truncate-and-write the same fd: whichever finished
+        // first got its bytes stomped by the other mid-copy, and the rename
+        // that "wins" could hand back a file interleaved from two different
+        // reads of the source.
+        val partial = File(directory, "$trackId-${UUID.randomUUID()}.$PARTIAL_EXTENSION")
         val target = File(directory, "$trackId$suffix")
 
         val copied = runCatching {
@@ -99,9 +105,20 @@ class AudioFileCache(
             partial.delete()
             return@withContext null
         }
+
+        // Another concurrent store() for the same trackId may have already
+        // finished and renamed its own (differently-named) partial into
+        // place while this copy was still running. Its bytes are exactly as
+        // good as this call's — same uri, same trackId — so this one backs
+        // off rather than clobbering a complete file with a redundant copy.
+        localFile(trackId)?.let {
+            partial.delete()
+            return@withContext it
+        }
+
         if (!partial.renameTo(target)) {
             partial.delete()
-            return@withContext null
+            return@withContext localFile(trackId)
         }
         target
     }
@@ -109,7 +126,10 @@ class AudioFileCache(
     /** Drops the copy for [trackId] — and any partial write left behind for it. */
     fun remove(trackId: String) {
         directory.listFiles()
-            ?.filter { it.nameWithoutExtension == trackId }
+            ?.filter {
+                it.nameWithoutExtension == trackId ||
+                    (it.extension == PARTIAL_EXTENSION && it.nameWithoutExtension.startsWith("$trackId-"))
+            }
             ?.forEach { it.delete() }
     }
 

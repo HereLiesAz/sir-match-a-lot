@@ -246,19 +246,32 @@ class AudioEngine(
     fun applyAlignment(deckName: String, tempoRatio: Double, phaseOffsetSeconds: Double) {
         val deck = if (deckName == "A") deckA else deckB
         deck.rate = tempoRatio
-        val cycle = deck.cycleFrames
-        if (cycle <= 0) return
-        val shift = phaseOffsetSeconds * output.sampleRate
-        var position = deck.playhead + shift
-        // Keep the playhead on the circle rather than letting a correction walk
-        // it off either end.
-        position %= cycle
-        if (position < 0) position += cycle
-        deck.playhead = position
+        // Delegates the playhead shift to nudgeSeconds rather than reading
+        // and rewriting deck.playhead here directly: this used to be a plain
+        // read-modify-write racing the render thread's own end-of-block
+        // write to the same field — exactly what playheadLock exists to
+        // prevent, and what nudgeSeconds already does correctly.
+        deck.nudgeSeconds(phaseOffsetSeconds)
     }
 
+    // The rate deck B was actually running at before a scratch began — not
+    // necessarily 1.0, and not necessarily deck A's rate: a beat-matched
+    // deck B commonly runs at a different rate than deck A the moment a
+    // scratch starts. ScratchModel only remembers one resting rate (deck
+    // A's, per beginScratch below), because the shared "smart scratch" curve
+    // both decks move through during the gesture is deliberately one curve —
+    // that part is correct and unchanged. What was missing was restoring
+    // *each* deck to its *own* resting rate afterwards: endScratch used to
+    // write ScratchModel's single remembered rate to both decks, so any
+    // scratch silently reset deck B's beat-matched tempo back to whatever
+    // deck A happened to be running at, with no correction path afterwards.
+    private var deckBRestingRate: Double = 1.0
+
     /** Begins a scratch on both decks. */
-    fun beginScratch() = scratch.begin(deckA.rate)
+    fun beginScratch() {
+        deckBRestingRate = deckB.rate
+        scratch.begin(deckA.rate)
+    }
 
     /** Updates a scratch in progress from the gesture's cumulative displacement. */
     fun updateScratch(totalDeltaY: Float) {
@@ -268,9 +281,8 @@ class AudioEngine(
     }
 
     fun endScratch() {
-        val rate = scratch.end()
-        deckA.rate = rate
-        deckB.rate = rate
+        deckA.rate = scratch.end()
+        deckB.rate = deckBRestingRate
     }
 
     fun scratchReverseProgress(): Float = scratch.reverseProgress()

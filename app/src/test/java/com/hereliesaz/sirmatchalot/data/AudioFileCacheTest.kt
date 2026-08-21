@@ -83,6 +83,41 @@ class AudioFileCacheTest {
         assertEquals(0L, cache.heldBytes())
     }
 
+    @Test
+    fun `a uniquely-named partial write is still not mistaken for a copy`() {
+        // store() names each in-flight write "trackId-<uuid>.partial" rather
+        // than a bare "trackId.partial", so two concurrent writes for the same
+        // track never share one output file. The lookup must still treat any
+        // such file as incomplete.
+        File(directory, "track-1-${"a".repeat(8)}.partial").writeBytes(ByteArray(500))
+        assertNull(
+            "a uniquely-named partial write must not satisfy a lookup for track-1",
+            cache.localFile("track-1"),
+        )
+    }
+
+    @Test
+    fun `removing a copy also sweeps its uniquely-named partial leftovers`() {
+        // A crash mid-write can leave a "trackId-<uuid>.partial" behind with no
+        // completed copy ever landing. remove() has to find it by prefix, since
+        // it no longer shares the bare trackId name.
+        copy("track-1", 100)
+        File(directory, "track-1-leftover.partial").writeBytes(ByteArray(50))
+        File(directory, "track-2-unrelated.partial").writeBytes(ByteArray(50))
+
+        cache.remove("track-1")
+
+        assertNull(cache.localFile("track-1"))
+        assertTrue(
+            "track-1's partial leftovers should be gone",
+            directory.listFiles()?.none { it.name.startsWith("track-1-") } ?: true,
+        )
+        assertTrue(
+            "an unrelated track's partial file must survive",
+            directory.listFiles()?.any { it.name == "track-2-unrelated.partial" } ?: false,
+        )
+    }
+
     // --- Eviction ---
 
     @Test

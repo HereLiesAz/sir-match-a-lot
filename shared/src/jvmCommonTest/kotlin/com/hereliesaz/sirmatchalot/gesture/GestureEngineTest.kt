@@ -109,6 +109,47 @@ class GestureEngineTest {
     }
 
     @Test
+    fun `two finger rotate is still volume when pivoted at the wrist, not the fingers`() {
+        // The previous test rotates two fingers about their own midpoint —
+        // the centroid never moves, so this could pass even if rotation lost
+        // every real-world race against translation. A real "twist your
+        // wrist" rotation pivots at the wrist, not between the fingers: the
+        // whole hand (and so both fingers, together with their midpoint)
+        // arcs around a point roughly a forearm's length away. That midpoint
+        // drift looks exactly like a CROSSFADE/SCRATCH drag, and it used to
+        // always win — VOLUME could not activate for any rotation pivoted
+        // more than ~400 px from the finger midpoint, which a wrist pivot at
+        // 1000+ px always is.
+        val engine = GestureEngine()
+        // A wrist-pivoted rotation's centroid drift scales linearly with this
+        // pivot distance while the rotation signal itself does not, so past
+        // some radius no magnitude-based comparison against translation can
+        // avoid being either hair-trigger on ordinary drags or unable to ever
+        // recognise a real hard-forearm twist. 700 px is comfortably past the
+        // ~400 px radius at which the previous, radian-vs-pixel comparison
+        // failed outright, and is what this fix is tuned to guarantee.
+        val wristDistance = 700f
+        val fingerHalfSpacing = 90f
+
+        fun handAt(theta: Double): List<Pointer> {
+            val cx = (wristDistance * Math.cos(theta)).toFloat()
+            val cy = (wristDistance * Math.sin(theta)).toFloat()
+            val ox = (fingerHalfSpacing * Math.cos(theta)).toFloat()
+            val oy = (fingerHalfSpacing * Math.sin(theta)).toFloat()
+            return listOf(Pointer(1, cx + ox, cy + oy), Pointer(2, cx - ox, cy - oy))
+        }
+
+        engine.update(handAt(0.0))
+        for (i in 1..14) {
+            engine.update(handAt(i * 0.03))
+        }
+        assertTrue(
+            "expected volume from a wrist-pivoted rotation, got ${kinds(engine)}",
+            GestureKind.VOLUME in kinds(engine),
+        )
+    }
+
+    @Test
     fun `sliding three fingers together does nothing`() {
         // This used to pan the platter. Panning is gone: the platter is a fixed
         // circle centred on the screen, and being able to shove it off-centre

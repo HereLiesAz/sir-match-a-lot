@@ -78,11 +78,22 @@ data class Track(
     val isAnalysed: Boolean
         get() = analysisVersion >= CURRENT_ANALYSIS_VERSION
 
-    /** Cue points in seconds, parsed from storage. */
-    val cuePoints: List<Double>
+    /**
+     * Cue points in seconds, parsed from storage — one entry per cue slot,
+     * `null` where that slot is empty.
+     *
+     * Position matters here: cue button 3 has to come back as cue button 3,
+     * not slide into slot 2 because slot 2 happened to be empty. `mapNotNull`
+     * used to drop empty fields instead of keeping their place, so a CSV like
+     * "1.0,,3.0" — cue 1 and cue 3 set, cue 2 empty — came back as
+     * `[1.0, 3.0]`, and every caller that pads this list back out by index
+     * (see [com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel.restoreCuesFor])
+     * put the real cue 3 into slot 2.
+     */
+    val cuePoints: List<Double?>
         get() = cuePointsCsv
             ?.split(',')
-            ?.mapNotNull { it.trim().toDoubleOrNull() }
+            ?.map { it.trim().toDoubleOrNull() }
             ?: emptyList()
 
     /** Tempo for display, or a dash when it was never measured. */
@@ -98,7 +109,18 @@ data class Track(
          */
         const val CURRENT_ANALYSIS_VERSION = 1
 
-        fun cuePointsToCsv(points: List<Double>): String? =
-            points.takeIf { it.isNotEmpty() }?.joinToString(",")
+        /**
+         * Encodes cue slots positionally: an empty slot before the last set
+         * one is an empty field, not a skipped one, so [cuePoints] can read
+         * the same slot numbers back. Trailing empty slots are dropped rather
+         * than written as trailing commas — nothing is lost, since nothing
+         * after the last set cue carries any position to preserve — and an
+         * all-empty list encodes as `null` rather than a string of commas.
+         */
+        fun cuePointsToCsv(points: List<Double?>): String? {
+            val lastSet = points.indexOfLast { it != null }
+            if (lastSet < 0) return null
+            return points.subList(0, lastSet + 1).joinToString(",") { it?.toString() ?: "" }
+        }
     }
 }

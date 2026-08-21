@@ -268,19 +268,17 @@ class SyncClient(
                 listener.onConnected()
                 // The first thing on the wire, and the only thing this device
                 // sends in the clear: an ephemeral public key nobody can do
-                // anything with on its own.
+                // anything with on its own. This device's name and its
+                // long-term identity key used to ride along here too — which
+                // meant anybody passively listening on the network learned
+                // both on every connection attempt, approved or not. They now
+                // go out sealed, once `hello_ack` gives this device a session
+                // to seal them under — see the sealed `identify` sent in
+                // `hello_ack`'s handler below.
                 webSocket.send(
                     JSONObject().apply {
                         put("type", "hello")
                         put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(ownKeys.public)))
-                        put("name", deviceName)
-                        // The identity is sent before the host's key is known,
-                        // so the signature cannot be made yet. It follows in the
-                        // sealed `join`, which is the message that actually asks
-                        // for anything.
-                        identity?.let {
-                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
-                        }
                     }.toString(),
                 )
             }
@@ -301,22 +299,26 @@ class SyncClient(
                                 pendingRoomCode,
                             )
 
-                            // A host this device has paired with before, and can
-                            // prove it, is rejoined without a dialog. The
-                            // fingerprint only says which key to check; the
-                            // signature over this exchange's transcript is what
-                            // makes claiming somebody else's fingerprint
-                            // pointless, and what stops a recording of an earlier
-                            // exchange being replayed.
-                            val recognised = recogniseHost(outer)
-                            if (recognised != null) {
-                                listener.onKnownHostRejoined(recognised)
-                                approvePairing(pendingRoomCode, pendingRole, pendingName)
-                                return
-                            }
-                            // Both users now hold the same six digits, and
-                            // nothing further happens until this one approves.
-                            listener.onPairingCode(agreed.sas)
+                            // This device's name and its claimed identity used
+                            // to ride the plaintext `hello`. They go out sealed
+                            // now that a session exists to seal them under —
+                            // the host cannot show its approval prompt until
+                            // this arrives, same as before, just one round trip
+                            // later and off a plaintext wire.
+                            sendSealed(
+                                JSONObject().apply {
+                                    put("type", "identify")
+                                    put("name", pendingName)
+                                    identity?.let {
+                                        put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                                    }
+                                },
+                            )
+                            // Both users now hold the same six digits — but
+                            // whether to show them, or skip straight to a
+                            // silent rejoin, is decided once the host's own
+                            // sealed `identify` arrives (handled below via the
+                            // generic "sealed" branch), not here.
                             return
                         }
                         // Sent in the clear, because a refused device may have no
@@ -338,6 +340,19 @@ class SyncClient(
                     val type = data.optString("type")
 
                     when (type) {
+                        // The host's identity and its signature over this
+                        // exchange's transcript, sealed — see the note on the
+                        // `hello` send above for why these no longer arrive
+                        // with `hello_ack` in the clear.
+                        "identify" -> {
+                            val recognised = recogniseHost(data)
+                            if (recognised != null) {
+                                listener.onKnownHostRejoined(recognised)
+                                approvePairing(pendingRoomCode, pendingRole, pendingName)
+                            } else {
+                                session?.let { listener.onPairingCode(it.sas) }
+                            }
+                        }
                         // The server has always sent this on a wrong room code,
                         // and nothing read it — so "a peer that typed it wrong
                         // learns that rather than sitting in silence", as the

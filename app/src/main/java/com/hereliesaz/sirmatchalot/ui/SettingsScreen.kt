@@ -47,6 +47,8 @@ private val ACCENT = Color(0xFF22D3EE)
 // one clears 7:1 against all of them.
 private val DIM = Color(0xFF9CA3AF)
 private val PANEL = Color(0xFF121218)
+/** Destructive-action red, bright enough to clear 4.5:1 against [PANEL] and darker backgrounds. */
+private val DESTRUCTIVE = Color(0xFFF87171)
 
 /**
  * Where memory and power are spent, and who decides.
@@ -374,7 +376,11 @@ private fun DestructiveAction(
     ) {
         Text(
             text = label,
-            color = Color(0xFFDC2626),
+            // 0xFFF87171, not 0xFFDC2626: the darker red measured under 4.5:1
+            // (WCAG AA for normal text, which 10sp bold still is) against this
+            // screen's near-black background — 4.12:1, just short. This one
+            // clears 7:1.
+            color = DESTRUCTIVE,
             fontSize = 10.sp,
             fontWeight = FontWeight.Black,
             fontFamily = FontFamily.Monospace,
@@ -384,16 +390,23 @@ private fun DestructiveAction(
     if (confirming) {
         AlertDialog(
             onDismissRequest = { confirming = false },
+            // Explicit colors, matching every other dialog on this app —
+            // relying on MaterialTheme's default container left the "Confirm"
+            // button's red text (below) at roughly 3:1 against the default
+            // dark-theme dialog surface, well under the 4.5:1 AA needs.
+            containerColor = PANEL,
+            titleContentColor = Color.White,
+            textContentColor = DIM,
             title = { Text(confirmTitle) },
             text = { Text(confirmMessage) },
             confirmButton = {
                 TextButton(onClick = {
                     confirming = false
                     onConfirm()
-                }) { Text("Confirm", color = Color(0xFFDC2626)) }
+                }) { Text("Confirm", color = DESTRUCTIVE) }
             },
             dismissButton = {
-                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+                TextButton(onClick = { confirming = false }) { Text("Cancel", color = Color.White) }
             },
         )
     }

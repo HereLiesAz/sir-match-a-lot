@@ -131,19 +131,16 @@ class SyncServerTest {
 
         private var transcript: ByteArray? = null
 
-        /** Says hello and waits for the host's key, exactly as the app does. */
+        /**
+         * Says hello, waits for the host's key, and then sends this device's
+         * name and claimed identity sealed — exactly as the app does now that
+         * neither travels in the clear with `hello` any more.
+         */
         fun startPairing(roomCode: String) {
             send(
                 JSONObject()
                     .put("type", "hello")
-                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
-                    .put("name", "A test device")
-                    .apply {
-                        val claimed = claimedIdentity ?: identity
-                        claimed?.let {
-                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
-                        }
-                    },
+                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public))),
             )
             val ack = nextOfType("hello_ack")
             assertNotNull("the host must answer hello", ack)
@@ -157,6 +154,17 @@ class SyncServerTest {
                 RoomCrypto.encodePublicKey(keys.public),
                 WebSocketProtocol.decodeBase64(ack.getString("key"))!!,
                 roomCode,
+            )
+            sendSealed(
+                JSONObject()
+                    .put("type", "identify")
+                    .put("name", "A test device")
+                    .apply {
+                        val claimed = claimedIdentity ?: identity
+                        claimed?.let {
+                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                        }
+                    },
             )
         }
 
@@ -634,6 +642,37 @@ class SyncServerTest {
         peer.close()
         // The reader thread notices the close and drops the connection.
         assertEquals(0, counts.poll(2, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `an unauthenticated socket does not move the roster on disconnect`() {
+        // close() used to report clients.size — every accepted socket,
+        // joined or not — while every other reader of the roster (peerCount,
+        // admitIfReady) correctly counted only joined peers. An attacker
+        // opening and closing raw sockets against the port, without ever
+        // completing a handshake, inflated and deflated the "N devices
+        // joined" readout for free.
+        val server = startServer()
+        val counts = ArrayBlockingQueue<Int>(8)
+        server.onPeersChanged = { counts.offer(it) }
+
+        val peer = join(server)
+        peer.nextSealed("init_state")
+        assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
+
+        Socket("127.0.0.1", server.port).use {
+            // Connect and disconnect without ever sending a hello.
+        }
+
+        // The stranger's connect/disconnect must never be reported as 2 (it
+        // never joined) or as 0 (the real peer is still joined) — the only
+        // value this can still legitimately report, if it reports anything
+        // at all, is the unchanged count of joined peers.
+        val reported = counts.poll(500, TimeUnit.MILLISECONDS)
+        assertTrue(
+            "an unauthenticated socket must not move the roster, got $reported",
+            reported == null || reported == 1,
+        )
     }
 
     @Test

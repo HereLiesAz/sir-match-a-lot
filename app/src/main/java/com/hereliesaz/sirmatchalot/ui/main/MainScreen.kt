@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
@@ -107,7 +108,19 @@ fun MainScreen(
 
     // Changing role moves the device to the screen it is now for, rather than
     // leaving it on a tab it is no longer allowed to reach.
-    LaunchedEffect(role) { currentTab = role.tab() }
+    //
+    // Keyed on `role`, but `LaunchedEffect` restarts on the *first*
+    // composition too — including the one after a rotation recreates the
+    // activity, since there is no configChanges entry for it — and that
+    // unconditionally overwrote whatever tab `currentTab` had just been
+    // restored to by `rememberSaveable` above. `lastAppliedRole` makes this
+    // fire only on a real role change, the way the comment already claimed
+    // it did.
+    var lastAppliedRole by rememberSaveable { mutableStateOf(role) }
+    LaunchedEffect(role) {
+        if (role != lastAppliedRole) currentTab = role.tab()
+        lastAppliedRole = role
+    }
 
     // The system back gesture used to fall straight through to the activity
     // and close the app from any tab, mid-set, with nothing intercepting it —
@@ -254,6 +267,19 @@ fun MainScreen(
                             fontSize = 9.sp,
                         )
                     }
+                    // Sync is the one action that deliberately moves a deck's
+                    // rate off 1.0 — and until now there was no way back
+                    // short of reloading the track. Placed next to the
+                    // button that causes the drift, rather than as its own
+                    // row, since this whole strip was already found crowded.
+                    TextButton(onClick = { viewModel.resetDeckRate("B") }) {
+                        Text(
+                            "RESET SPEED",
+                            color = Color(0xFF9CA3AF),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                        )
+                    }
                     Spacer(modifier = Modifier.weight(1f))
                     TextButton(onClick = { viewModel.setKeylock(!keylock) }) {
                         Text(
@@ -353,6 +379,8 @@ fun MainScreen(
                     // every measurement it makes had no effect on.
                     val ranked by viewModel.rankedTracks.collectAsState()
                     val sort by viewModel.librarySort.collectAsState()
+                    val masterVolume by viewModel.audioVolume.collectAsState()
+                    val bassBoostDb by viewModel.bassBoostDb.collectAsState()
                     PlatterScreen(
                         state = platterState,
                         tracks = ranked,
@@ -362,6 +390,8 @@ fun MainScreen(
                         gestureDebugLogging = settings.gestureDebugLogging,
                         sortLabel = sort.label,
                         onCycleSort = { viewModel.cycleLibrarySort() },
+                        masterVolume = masterVolume,
+                        bassBoostDb = bassBoostDb,
                     )
                 }
                 // Keyed on the engine generation: the pad grid holds the
@@ -767,6 +797,13 @@ private fun PairingDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        // dismissOnClickOutside = false: onDismissRequest above still fires
+        // for the system back gesture/button, which still counts as an
+        // explicit "no" — but an accidental tap outside the dialog must not
+        // silently stand in for either button, per the doc comment above.
+        // AlertDialog's own default is true, which had been quietly letting
+        // exactly that happen.
+        properties = DialogProperties(dismissOnClickOutside = false),
         containerColor = Color(0xFF18181B),
         title = { Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
         text = {

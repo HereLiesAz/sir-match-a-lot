@@ -50,6 +50,17 @@ fun PlatterCanvas(
      * as something being worked on.
      */
     pulse: Float = 0f,
+    /**
+     * Where a track being dragged from the strip would land if released now, or
+     * null when nothing is being dragged.
+     *
+     * Drawn with [drawPending]'s own arc — the same "something is coming here"
+     * mark a decode-in-progress clip gets — but fainter and never written to
+     * [PlatterState]: nothing is committed until the finger actually lifts over
+     * the ring, so a drag that ends up somewhere else, or nowhere, leaves no
+     * trace.
+     */
+    dragPreview: PendingClip? = null,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
         val cx = size.width / 2f + offsetX
@@ -63,8 +74,20 @@ fun PlatterCanvas(
         // zoom. Rays and the playhead are both clamped to this bound before
         // they are drawn: the inscribed-circle radius from the platter's
         // centre, so a tip can never leave the canvas regardless of angle.
-        val maxRayLength = (minOf(cx, cy, size.width - cx, size.height - cy) - baseRadius)
-            .coerceAtLeast(0f)
+        //
+        // Measured at scale 1 and then scaled up with it, not measured
+        // directly against the live (already-scaled) baseRadius: the screen
+        // edges do not move when the platter zooms, so a headroom computed
+        // against the current baseRadius shrinks as scale grows and hits zero
+        // well before 2x zoom — every ray clamps to nothing, and "zooming in"
+        // reads as the waveform collapsing into a filled disc. Scaling the
+        // *proportion* instead keeps the waveform's own shape identical at
+        // every zoom level, same as the rest of the platter; it is only the
+        // hard screen-edge clamp for extreme overshoot that changes size, and
+        // it changes together with everything else, as a zoom should.
+        val unscaledBaseRadius = PlatterGeometry.baseRadius(size.width, size.height, scale = 1f)
+        val maxRayLength = (minOf(cx, cy, size.width - cx, size.height - cy) - unscaledBaseRadius)
+            .coerceAtLeast(0f) * scale
 
         val level = state.outputLevel.coerceIn(0f, 1f)
         // A floor so the ring is still legible when paused or between transients.
@@ -110,7 +133,13 @@ fun PlatterCanvas(
         drawBeatGrid(state, cx, cy, baseRadius, rotation)
         drawMarkers(state, cx, cy, baseRadius, rotation)
         drawPlayhead(state, cx, cy, baseRadius, maxHeight, maxRayLength, lengthScale, glow, rotation)
-        drawPending(state, cx, cy, baseRadius, rotation, pulse)
+        drawPending(state.pending, cx, cy, baseRadius, rotation, pulse, alphaScale = 1f)
+        // The drag ghost reuses the exact same arc, at a fraction of the
+        // opacity, so "this is where it would land" and "this is loading" read
+        // as the same kind of promise at different stages of being kept.
+        if (dragPreview != null) {
+            drawPending(listOf(dragPreview), cx, cy, baseRadius, rotation, pulse, alphaScale = 0.35f)
+        }
     }
 }
 
@@ -185,19 +214,20 @@ private fun DrawScope.drawBeatGrid(
  * alive: a decode reports no progress until it finishes.
  */
 private fun DrawScope.drawPending(
-    state: PlatterState,
+    clips: List<PendingClip>,
     cx: Float,
     cy: Float,
     baseRadius: Float,
     rotation: Float,
     pulse: Float,
+    alphaScale: Float = 1f,
 ) {
-    if (state.pending.isEmpty()) return
+    if (clips.isEmpty()) return
 
     // 0..1 and back, so the fade has no seam where it wraps.
     val breath = (sin(pulse) * 0.5f + 0.5f).coerceIn(0f, 1f)
 
-    for (clip in state.pending) {
+    for (clip in clips) {
         val outward = clip.deck == PlatterGeometry.Deck.A
         val radius = PlatterGeometry.ringRadius(clip.deck, baseRadius)
         val colour = Color.hsl(
@@ -205,7 +235,7 @@ private fun DrawScope.drawPending(
             saturation = ClipPalette.saturationFor(),
             lightness = ClipPalette.lightnessFor(energy = 0.5f),
         )
-        val alpha = 0.25f + 0.45f * breath
+        val alpha = (0.25f + 0.45f * breath) * alphaScale
 
         // A short arc at the landing point, drawn as a run of dots so it cannot
         // be mistaken for a waveform — waveform rays are radial, these are not.
@@ -231,7 +261,7 @@ private fun DrawScope.drawPending(
             cy + (px - cx) * sin(rotation) + (py - cy) * cos(rotation),
         )
         drawCircle(
-            color = colour.copy(alpha = (0.5f + 0.5f * breath).coerceIn(0f, 1f)),
+            color = colour.copy(alpha = ((0.5f + 0.5f * breath) * alphaScale).coerceIn(0f, 1f)),
             radius = 5f,
             center = start,
             blendMode = BlendMode.Plus,
@@ -283,7 +313,11 @@ private fun DrawScope.drawMarkers(
     }
 }
 
-private fun markerColour(kind: PlatterMarker.Kind): Color = when (kind) {
+/**
+ * Not private: [PlatterScreen]'s legend draws the same swatches this uses on
+ * the ring, so the key and the marks it explains cannot drift apart.
+ */
+internal fun markerColour(kind: PlatterMarker.Kind): Color = when (kind) {
     // White reads as "mine" against the hue-coded waveform, which is the point:
     // a cue is the one mark the performer put there.
     PlatterMarker.Kind.CUE -> Color(0xFFFFFFFF)

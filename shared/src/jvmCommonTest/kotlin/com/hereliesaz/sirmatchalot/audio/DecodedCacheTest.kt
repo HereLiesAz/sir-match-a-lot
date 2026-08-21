@@ -6,6 +6,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * The decoded-audio cache.
@@ -179,6 +182,63 @@ class DecodedCacheTest {
         cache.clear()
         assertEquals(0, cache.size)
         assertEquals(0L, cache.heldBytes)
+    }
+
+    @Test
+    fun `concurrent put and get from multiple threads does not corrupt the map or the byte count`() {
+        // get() moves an entry to the end of the LinkedHashMap for LRU order —
+        // a mutation, not a plain read — and put() reads-then-writes
+        // heldBytes. Two threads doing either at once on an unsynchronized
+        // LinkedHashMap is the textbook case for a corrupted bucket list or a
+        // lost update; this used to be exactly that, reachable in production
+        // from loadOntoDeck (Dispatchers.IO), harmonizeDeck (Dispatchers.Default)
+        // and clearDecks/removeTrackFromDecks (the calling thread, often main).
+        val cache = DecodedCache(maxBytes = Long.MAX_VALUE / 2)
+        val ids = (0 until 40).map { "track-$it" }
+        val threads = 8
+        val iterationsPerThread = 500
+        val pool = Executors.newFixedThreadPool(threads)
+        val ready = CountDownLatch(threads)
+        val go = CountDownLatch(1)
+        val done = CountDownLatch(threads)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+
+        repeat(threads) { threadIndex ->
+            pool.submit {
+                try {
+                    ready.countDown()
+                    go.await()
+                    val random = kotlin.random.Random(threadIndex)
+                    repeat(iterationsPerThread) {
+                        val id = ids[random.nextInt(ids.size)]
+                        if (random.nextBoolean()) {
+                            cache.put(id, buffer(64))
+                        } else {
+                            cache.get(id)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    failure.compareAndSet(null, t)
+                } finally {
+                    done.countDown()
+                }
+            }
+        }
+        ready.await()
+        go.countDown()
+        assertTrue("threads did not finish in time", done.await(30, TimeUnit.SECONDS))
+        pool.shutdown()
+
+        failure.get()?.let { throw AssertionError("concurrent access threw", it) }
+
+        // heldBytes must exactly match what the map actually holds — the
+        // symptom of the race was this counter drifting from reality, which
+        // silently defeats the memory budget this class exists to enforce.
+        var actual = 0L
+        for (id in ids) {
+            cache.get(id)?.let { actual += it.byteCount }
+        }
+        assertEquals("heldBytes drifted from the map's real contents", actual, cache.heldBytes)
     }
 
     @Test

@@ -104,6 +104,30 @@ class TrackAnalyzerTest {
     }
 
     @Test
+    fun `reports no tempo for white noise rather than inventing one`() {
+        // TempoDetector never actually returns null except for silence — it
+        // measured a plausible-looking BPM for white noise, a sustained tone
+        // and a static chord alike. What used to make silence look "safe" and
+        // noise look "measured" was that nothing gated on TempoDetector's own
+        // confidence figure at all: TrackAnalyzer's default threshold was 0,
+        // which accepts everything TempoDetector hands back. This is the
+        // default-parameters path a real import actually takes — not an
+        // explicit override — so it is the one that must reject noise.
+        val noise = kotlin.random.Random(9)
+        val audio = FloatArray(sampleRate * 8) { (noise.nextFloat() * 2f - 1f) * 0.5f }
+        val analysis = analyzer.analyse(pcmOf(audio))
+        assertNull("white noise has no tempo", analysis.bpm)
+    }
+
+    @Test
+    fun `reports no key for white noise rather than inventing one`() {
+        val noise = kotlin.random.Random(13)
+        val audio = FloatArray(sampleRate * 8) { (noise.nextFloat() * 2f - 1f) * 0.5f }
+        val analysis = analyzer.analyse(pcmOf(audio))
+        assertNull("white noise has no key", analysis.camelotKey)
+    }
+
+    @Test
     fun `a low confidence tempo is withheld`() {
         // Raising the bar above what the signal supports must yield null, not a
         // number carried through anyway.

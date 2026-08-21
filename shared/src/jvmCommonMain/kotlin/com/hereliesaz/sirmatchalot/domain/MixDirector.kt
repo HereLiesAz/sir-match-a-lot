@@ -477,15 +477,41 @@ class MixDirector(
         val step = plan.steps.getOrNull(at) ?: return 0.0
         val bpm = step.track.bpm ?: return 0.0
         if (bpm <= 0.0) return 0.0
-        val bars = crossfadeBars * BEATS_PER_BAR * 60.0 / bpm
+        // The tempo actually sounding, not the track's own recorded BPM: a
+        // step with an alignment has been rate-conformed to the reference
+        // tempo (see durationOf), so its bars pass at bpm * tempoRatio, not
+        // at bpm. Using the unconformed bpm here made a bar-count crossfade
+        // the wrong length in real listening time for every non-reference
+        // tempo — the exact mismatch durationOf's own fix addresses.
+        val soundingBpm = bpm * (step.alignment?.tempoRatio ?: 1.0)
+        if (soundingBpm <= 0.0) return 0.0
+        val bars = crossfadeBars * BEATS_PER_BAR * 60.0 / soundingBpm
         // Never longer than a third of the track: a transition that overruns the
         // material it is leaving is not a transition.
         return min(bars, max(0.0, durationOf(at) / 3.0))
     }
 
+    /**
+     * How long step [at] actually plays for, in real listening seconds —
+     * not the track file's own recorded duration.
+     *
+     * A step with a [MixStep.alignment] is rate-conformed to the reference
+     * tempo (`tempoRatio` is the playback rate multiplier the deck runs it
+     * at), so a track running faster than its own recorded tempo takes
+     * correspondingly less real time to play out, and one running slower
+     * takes more. [elapsed] — the clock every scheduling decision here is
+     * measured against — is real listening time throughout, so this has to
+     * be too: comparing `elapsed` against the raw, unconformed file
+     * duration meant a track stretched to a faster reference tempo was
+     * scripted transitions past the point it had actually finished playing,
+     * and one stretched slower was cut short before its real, longer
+     * runtime was up.
+     */
     private fun durationOf(at: Int): Double {
-        val millis = plan.steps.getOrNull(at)?.track?.durationMs ?: return 0.0
-        return millis / 1000.0
+        val step = plan.steps.getOrNull(at) ?: return 0.0
+        val ratio = step.alignment?.tempoRatio ?: 1.0
+        if (ratio <= 0.0) return 0.0
+        return (step.track.durationMs / 1000.0) / ratio
     }
 
     companion object {
