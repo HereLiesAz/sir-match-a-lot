@@ -2604,6 +2604,23 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     /**
+     * Returns [deckName]'s playback rate to 1.0 — its original speed.
+     *
+     * There was previously no way back once a deck's rate had drifted:
+     * [syncToDeckA] moves Deck B's rate deliberately, and a scratch used to
+     * (before the fix to `AudioOutput.endScratch`) leave a deck's rate
+     * changed by accident once the gesture ended. Either way, nothing
+     * offered a way to undo it short of reloading the track from scratch.
+     * Rate only — a key shift applied alongside a sync is a separate,
+     * deliberate choice ([_keylock] and the harmonic interval), not
+     * something "back to original speed" implies undoing too.
+     */
+    fun resetDeckRate(deckName: String) {
+        audioEngine.applyAlignment(deckName, 1.0, 0.0)
+        _feedbackMsg.value = "Deck $deckName back to its original speed"
+    }
+
+    /**
      * Re-renders every clip on [deck] pitch-shifted by [semitones].
      *
      * Always shifts from the pristine decoded buffer, never from whatever is

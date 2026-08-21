@@ -254,6 +254,19 @@ fun MainScreen(
                             fontSize = 9.sp,
                         )
                     }
+                    // Sync is the one action that deliberately moves a deck's
+                    // rate off 1.0 — and until now there was no way back
+                    // short of reloading the track. Placed next to the
+                    // button that causes the drift, rather than as its own
+                    // row, since this whole strip was already found crowded.
+                    TextButton(onClick = { viewModel.resetDeckRate("B") }) {
+                        Text(
+                            "RESET SPEED",
+                            color = Color(0xFF9CA3AF),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                        )
+                    }
                     Spacer(modifier = Modifier.weight(1f))
                     TextButton(onClick = { viewModel.setKeylock(!keylock) }) {
                         Text(
