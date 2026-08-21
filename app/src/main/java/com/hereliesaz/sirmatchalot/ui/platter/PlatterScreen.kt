@@ -1,5 +1,6 @@
 package com.hereliesaz.sirmatchalot.ui.platter
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -502,6 +503,17 @@ fun PlatterScreen(
                             // also read the finger as a scratch or a crossfade.
                             val recognised =
                                 if (heldClipId != null) emptyList() else gestures.update(pointers)
+
+                            // TEMPORARY — diagnosing a report that rotate/pinch
+                            // never register while crossfade/scratch always do.
+                            // Remove once resolved.
+                            if (pointers.size == 2) {
+                                Log.d(
+                                    "GestureDebug",
+                                    "pointers=${pointers.map { "(${it.x.toInt()},${it.y.toInt()})" }} " +
+                                        "heldClip=$heldClipId recognised=${recognised.map { it.kind }}",
+                                )
+                            }
 
                             for (gesture in recognised) {
                                 when (gesture.kind) {
