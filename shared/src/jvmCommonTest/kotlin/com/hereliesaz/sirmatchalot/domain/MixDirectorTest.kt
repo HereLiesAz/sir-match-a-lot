@@ -137,6 +137,51 @@ class MixDirectorTest {
     }
 
     @Test
+    fun `a tempo conformed track is scripted against its real, stretched playing time`() {
+        // Track "b" is conformed from 100 to 128 BPM to follow "a" — it plays
+        // correspondingly faster, and so finishes in correspondingly less
+        // real time than its own recorded duration. durationOf/crossfadeSeconds
+        // used to measure against the raw file duration and the raw,
+        // unconformed BPM, so a track stretched to a faster reference tempo
+        // was scripted transitions past the point it had actually finished
+        // playing — the outgoing deck asked for audio it did not have, and a
+        // lone clip on a deck loops.
+        val trackA = track("a", bpm = 128.0, seconds = 240.0)
+        val trackB = track("b", bpm = 100.0, seconds = 240.0)
+        val plan = planOf(trackA, trackB)
+        val (ratio, _) = BeatSync.tempoRatioTo(sourceBpm = 100.0, targetBpm = 128.0)
+        val alignment = plan.steps[1].alignment
+        assertNotNull("the second step must have a real computed alignment", alignment)
+        assertEquals(ratio, alignment!!.tempoRatio, 1e-9)
+
+        val director = MixDirector(plan, crossfadeBars = 16)
+        val fade0 = director.crossfadeSeconds(0)
+        val fade1 = director.crossfadeSeconds(1)
+        // The fade out of the *conformed* track must be measured at the
+        // tempo it actually sounds at (128 BPM, matching trackA — that is
+        // the entire point of conforming it), not its own recorded 100 BPM.
+        assertEquals(fade0, fade1, 1e-6)
+
+        director.start()
+        var elapsed = 0.0
+        while (!director.finished && elapsed < 1_000.0) {
+            director.advance(0.01)
+            elapsed += 0.01
+        }
+
+        // trackA plays its full 240s; trackB, conformed to 128 BPM, actually
+        // plays for 240/ratio seconds — not 240. There is exactly one
+        // transition between two tracks, so the one overlapping fade is
+        // subtracted once, not once per track.
+        val expected = 240.0 + 240.0 / ratio - fade0
+        assertTrue(
+            "set ran ${"%.2f".format(elapsed)}s, expected about ${"%.2f".format(expected)}s " +
+                "(would be ${"%.2f".format(480.0 - fade0)}s if the stretch were ignored)",
+            abs(elapsed - expected) < 0.5,
+        )
+    }
+
+    @Test
     fun `the incoming track starts exactly when the fade starts`() {
         val plan = planOf(track("a", seconds = 100.0), track("b"))
         val director = MixDirector(plan, crossfadeBars = 16)
