@@ -31,7 +31,21 @@ package com.hereliesaz.sirmatchalot.audio
  * can decline to load yet another track rather than discovering the ceiling by
  * crashing.
  *
- * Not thread-safe; owned by the ViewModel, which touches it from one coroutine.
+ * Thread-safe: every public member is `@Synchronized` on this instance. This
+ * used to say "owned by the ViewModel, which touches it from one coroutine" —
+ * false on three counts. [get] is called from `Dispatchers.Default`
+ * (`harmonizeDeck`), [put] from `Dispatchers.IO` (`loadOntoDeck`), and [trim]
+ * from the plain calling thread with no dispatcher at all
+ * (`clearDecks`/`removeTrackFromDecks`, both reachable from the main thread).
+ * `get` also *mutates* — it moves the touched entry to the end for LRU order —
+ * so two of those three are a plain `LinkedHashMap` resized by two threads at
+ * once: lost entries, and a [heldBytes] counter that drifts from what the map
+ * actually holds, silently defeating the [maxBytes] budget this class exists
+ * to enforce. `peaksCache`/`energyCache` in the ViewModel hit the identical
+ * shape and were fixed with a `ConcurrentHashMap`; a plain lock is used here
+ * instead because the LRU reorder in [get] and the counter update in [put]
+ * are each a read-modify-write across more than one field, which a
+ * concurrent map's own atomicity does not cover.
  */
 class DecodedCache(
     /** Ceiling on total sample bytes held, summed across channels. */
@@ -45,10 +59,12 @@ class DecodedCache(
      * Lowering it does not evict on its own — [trim] does, and it needs to know
      * what is pinned — so a caller that changes this should trim straight after.
      */
+    @get:Synchronized
     var maxBytes: Long = maxBytes
         private set
 
     /** Moves the ceiling and evicts down to it, keeping [pinned] whatever happens. */
+    @Synchronized
     fun setBudget(bytes: Long, pinned: Set<String>) {
         maxBytes = bytes.coerceAtLeast(1)
         trim(pinned)
@@ -68,6 +84,7 @@ class DecodedCache(
      * is the caller's business to allow for, not this method's, since only the
      * caller knows whether a conversion is coming.
      */
+    @Synchronized
     fun canAdmit(bytes: Long, pinned: Set<String>): Boolean {
         val unavoidable = entries.entries
             .filter { it.key in pinned }
@@ -76,24 +93,29 @@ class DecodedCache(
     }
 
     /** Total sample bytes held, counting each channel at its own depth. */
+    @get:Synchronized
     var heldBytes: Long = 0
         private set
 
+    @get:Synchronized
     val size: Int get() = entries.size
 
     /** True when what is pinned alone exceeds the budget. */
+    @get:Synchronized
     var overBudget: Boolean = false
         private set
 
     /**
      * The buffer for [id], marking it most recently used.
      */
+    @Synchronized
     operator fun get(id: String): PcmBuffer? {
         val buffer = entries.remove(id) ?: return null
         entries[id] = buffer
         return buffer
     }
 
+    @Synchronized
     operator fun contains(id: String): Boolean = id in entries
 
     /**
@@ -102,6 +124,7 @@ class DecodedCache(
      *
      * The new entry is never itself evicted, since it was just asked for.
      */
+    @Synchronized
     fun put(id: String, buffer: PcmBuffer, pinned: Set<String> = emptySet()) {
         entries.remove(id)?.let { heldBytes -= it.byteCount }
         entries[id] = buffer
@@ -110,6 +133,7 @@ class DecodedCache(
     }
 
     /** Drops [id] if it is held and not pinned elsewhere. */
+    @Synchronized
     fun remove(id: String) {
         entries.remove(id)?.let { heldBytes -= it.byteCount }
     }
@@ -120,6 +144,7 @@ class DecodedCache(
      * Called after a track is retired from a deck as well as on insertion, so a
      * long mix releases each track as it finishes rather than at the end.
      */
+    @Synchronized
     fun trim(pinned: Set<String>) {
         if (heldBytes <= maxBytes) {
             overBudget = false
@@ -133,6 +158,7 @@ class DecodedCache(
         overBudget = heldBytes > maxBytes
     }
 
+    @Synchronized
     fun clear() {
         entries.clear()
         heldBytes = 0
