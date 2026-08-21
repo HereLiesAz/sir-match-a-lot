@@ -20,6 +20,9 @@ jobs:
       issues: write
       pull-requests: write
       checks: read
+    outputs:
+      tag_name: ${{ steps.release_vars.outputs.tag_name }}
+      published: ${{ steps.release_vars.outputs.tag_name != '' }}
 
     steps:
       - name: Checkout
@@ -250,6 +253,7 @@ jobs:
 
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
           echo "APK_FILE=$TARGET_NAME" >> $GITHUB_ENV
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Publish Release
         if: success() && github.event_name == 'push'
@@ -278,3 +282,111 @@ jobs:
                --notes "Auto-build from commit $GITHUB_SHA" \
                --target $GITHUB_SHA
           fi
+
+  # ------------------------------------------------------------------
+  # DESKTOP PACKAGING
+  # ------------------------------------------------------------------
+  # jpackage (which Compose Multiplatform's packageMsi/packageDmg/packageDeb
+  # tasks wrap) can only produce an installer for the OS it runs on — there is
+  # no cross-compiling a .msi from Linux. So this is a genuine 3-runner matrix,
+  # one per installer format, rather than one job picking a target. Depends on
+  # build-and-release (not parallel with it) because it uploads into the same
+  # release the Android job just created; running it standalone would have
+  # nothing to attach these installers to.
+  desktop-package:
+    needs: build-and-release
+    if: needs.build-and-release.result == 'success' && needs.build-and-release.outputs.published == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            task: packageMsi
+            dir: msi
+            ext: msi
+          - os: macos-latest
+            task: packageDmg
+            dir: dmg
+            ext: dmg
+          - os: ubuntu-latest
+            task: packageDeb
+            dir: deb
+            ext: deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      # jpackage's Linux deb backend shells out to fakeroot/dpkg-deb, which
+      # ubuntu-latest doesn't ship by default.
+      - name: Install Linux packaging tools
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+
+      # jpackage's Windows msi backend shells out to the WiX Toolset, which
+      # isn't preinstalled on windows-latest.
+      - name: Install WiX Toolset
+        if: matrix.os == 'windows-latest'
+        run: choco install wixtoolset --no-progress -y
+
+      - name: Grant execute permission for gradlew
+        shell: bash
+        run: chmod +x gradlew
+
+      # The Android SDK isn't needed to package :desktopApp, but Gradle still
+      # configures every project in the build (including :app) before running
+      # any task, and the Android Gradle plugin fails at configuration time
+      # without ANDROID_HOME set — even for a task that never touches :app.
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # `shell: bash` rather than the platform default (pwsh on windows-latest)
+      # — gradlew is a Unix shell script, and windows-latest ships Git Bash,
+      # so this is the one invocation that works unmodified on all three OSes.
+      - name: Package desktop installer (${{ matrix.ext }})
+        shell: bash
+        run: ./gradlew :desktopApp:${{ matrix.task }} --build-cache
+
+      # jpackage writes its actual error to a log file rather than stdout, so
+      # a failed run otherwise shows only "Exit code: 1" and a path nobody can
+      # reach once the runner is gone.
+      - name: Dump jpackage logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for f in desktopApp/build/compose/logs/*/*.txt; do
+            echo "----- $f -----"
+            cat "$f" || true
+          done
+
+      - name: Locate installer
+        id: locate
+        shell: bash
+        run: |
+          set -e
+          FILE=$(find desktopApp/build/compose/binaries/main/${{ matrix.dir }} -name "*.${{ matrix.ext }}" | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "Error: no .${{ matrix.ext }} produced!"
+            exit 1
+          fi
+          echo "Found: $FILE"
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload installer to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ needs.build-and-release.outputs.tag_name }}" "${{ steps.locate.outputs.file }}" --clobber
