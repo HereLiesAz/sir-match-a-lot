@@ -149,6 +149,13 @@ fun PlatterScreen(
      * is most likely to want back as battery.
      */
     lightShow: Boolean = true,
+    /**
+     * Whether to log each two-finger gesture frame to logcat under the tag
+     * "GestureDebug". Off by default — this is a diagnostic toggle, not a
+     * feature, wired to the settings screen so it can be turned on without a
+     * special debug build.
+     */
+    gestureDebugLogging: Boolean = false,
 ) {
     val gestures = remember { GestureEngine() }
     val labels = remember { GestureLabels() }
@@ -252,6 +259,11 @@ fun PlatterScreen(
     // `rememberUpdatedState` because this effect is keyed on `Unit` and so
     // captures its parameters once; reading the captured `state` would pin the
     // loop to whatever was playing at first composition.
+    // rememberUpdatedState because the pointer-input loop below is keyed on
+    // Unit and reads this from inside a long-lived coroutine: without it,
+    // flipping the setting while the platter is already composed would have
+    // no effect until the composable recreated its pointer input handler.
+    val debugLoggingEnabled by androidx.compose.runtime.rememberUpdatedState(gestureDebugLogging)
     val playing by androidx.compose.runtime.rememberUpdatedState(state.isPlaying)
     // A pending clip pulses, so the clock has to keep running while one exists
     // even with the transport stopped — which is exactly the case: you drop a
@@ -504,10 +516,11 @@ fun PlatterScreen(
                             val recognised =
                                 if (heldClipId != null) emptyList() else gestures.update(pointers)
 
-                            // TEMPORARY — diagnosing a report that rotate/pinch
-                            // never register while crossfade/scratch always do.
-                            // Remove once resolved.
-                            if (pointers.size == 2) {
+                            // Gated on the "Log platter gestures" settings toggle —
+                            // see EngineSettings.gestureDebugLogging — rather than
+                            // unconditional, so this can ship in every build
+                            // instead of a one-off debug APK.
+                            if (debugLoggingEnabled && pointers.size == 2) {
                                 Log.d(
                                     "GestureDebug",
                                     "pointers=${pointers.map { "(${it.x.toInt()},${it.y.toInt()})" }} " +

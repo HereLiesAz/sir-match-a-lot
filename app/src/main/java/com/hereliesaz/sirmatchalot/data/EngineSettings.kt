@@ -173,6 +173,16 @@ data class EngineSettings(
      * every one of those has happened.
      */
     val localCopies: LocalCopyBudget = LocalCopyBudget.GB_2,
+
+    /**
+     * Whether the platter logs each two-finger gesture frame to logcat.
+     *
+     * Off by default — this is a diagnostic, not a feature. It exists so a
+     * report of a gesture the platter is not recognizing can be chased down
+     * on whatever build is already installed, without needing a special
+     * debug APK sideloaded just to get a `Log.d` call into the binary.
+     */
+    val gestureDebugLogging: Boolean = false,
 ) {
     /** Whether a change from [other] requires rebuilding the audio engine. */
     fun requiresEngineRebuild(other: EngineSettings): Boolean = sampleRate != other.sampleRate
@@ -188,6 +198,7 @@ class SettingsStore(private val store: KeyValueStore) {
         memoryBudget = MemoryBudget.fromKey(store.getString(KEY_MEMORY_BUDGET)),
         lightShow = store.getString(KEY_LIGHT_SHOW)?.toBooleanStrictOrNull() ?: true,
         idleShutdown = store.getString(KEY_IDLE_SHUTDOWN)?.toBooleanStrictOrNull() ?: true,
+        gestureDebugLogging = store.getString(KEY_GESTURE_DEBUG_LOGGING)?.toBooleanStrictOrNull() ?: false,
     )
 
     /**
@@ -211,6 +222,7 @@ class SettingsStore(private val store: KeyValueStore) {
         store.putString(KEY_LIGHT_SHOW, settings.lightShow.toString())
         store.putString(KEY_IDLE_SHUTDOWN, settings.idleShutdown.toString())
         store.putString(KEY_LOCAL_COPIES, settings.localCopies.name)
+        store.putString(KEY_GESTURE_DEBUG_LOGGING, settings.gestureDebugLogging.toString())
     }
 
     companion object {
@@ -223,6 +235,7 @@ class SettingsStore(private val store: KeyValueStore) {
         private const val KEY_IDLE_SHUTDOWN = "idle_shutdown"
         private const val KEY_LOCAL_COPIES = "local_copies"
         private const val KEY_TASTE = "transition_taste"
+        private const val KEY_GESTURE_DEBUG_LOGGING = "gesture_debug_logging"
 
         /**
          * The raw store behind [forContext].

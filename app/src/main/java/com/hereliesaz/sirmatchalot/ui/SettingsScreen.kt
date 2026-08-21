@@ -294,6 +294,22 @@ fun SettingsScreen(
             )
         }
 
+        Section(
+            title = "DIAGNOSTICS",
+            explanation = null,
+        ) {
+            Toggle(
+                label = "Log platter gestures",
+                detail = "Writes each two-finger platter frame — pointer positions and " +
+                    "which gesture was recognized — to logcat under the tag " +
+                    "\"GestureDebug\". Leave off unless you're chasing a gesture report.",
+                on = settings.gestureDebugLogging,
+                onClick = {
+                    viewModel.updateSettings { it.copy(gestureDebugLogging = !it.gestureDebugLogging) }
+                },
+            )
+        }
+
         Text(
             text = "Output ${viewModel.audioEngine.output.sampleRate} Hz, " +
                 "${viewModel.audioEngine.output.framesPerBuffer} frames per block",
