@@ -86,6 +86,32 @@ compose.desktop {
             // unbranded next to a launcher-icon'd app.
             windows {
                 iconFile.set(project.file("src/main/resources/icon.ico"))
+
+                // None of this was set, so the MSI's defaults applied: no
+                // Start Menu entry, no desktop shortcut, and no fixed
+                // product identity across builds. jpackage still technically
+                // registers the product with Windows Installer either way,
+                // but with nothing in the Start Menu and no desktop icon to
+                // click, an install that actually succeeded is
+                // indistinguishable from one that silently failed — there is
+                // no visible sign the app exists anywhere. `menu`/`shortcut`
+                // fix that. `upgradeUuid` fixes the other half: without a
+                // uuid, every jpackage run computes its own, so installing a
+                // newer release doesn't upgrade the old entry in place —
+                // Windows can refuse the install ("another version of this
+                // product is already installed") or, on Deb/Msi, leave
+                // stray duplicate entries instead of one program that
+                // updates in Programs and Features. `perUserInstall = false`
+                // is the plugin's own default, but is stated explicitly
+                // here since a per-machine install is what makes the
+                // program show up for every user's Programs and Features
+                // rather than needing to run as the same account that
+                // installed it.
+                menu = true
+                menuGroup = "Sir Match-a-Lot"
+                shortcut = true
+                perUserInstall = false
+                upgradeUuid = "2da89fce-e460-5236-b644-24205364de50"
             }
             macOS {
                 iconFile.set(project.file("src/main/resources/icon.icns"))
