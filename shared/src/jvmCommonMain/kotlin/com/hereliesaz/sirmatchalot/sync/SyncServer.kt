@@ -558,12 +558,16 @@ class SyncServer(
         }
 
         /**
-         * Answers `hello`: agrees a key, and asks this device's user about it.
+         * Answers `hello`: agrees a key, and hands back this host's own.
          *
-         * The reply goes out before either user has approved anything, and has
-         * to: until the peer has this host's public key it cannot derive the
-         * code, and until it can derive the code there is nothing for its user
-         * to compare. What the reply does not do is admit anybody.
+         * `hello` carries nothing but an ephemeral public key nobody can do
+         * anything with alone — no name, no identity. Those used to ride here
+         * and on `hello_ack` in the clear, which meant a passive listener on
+         * the same network learned this device's human-readable name and its
+         * long-term identity key on every connection attempt, whether or not
+         * anybody ever approved it. Both now travel sealed, once a session
+         * exists to seal them under — see [handleIdentify] and the sealed
+         * `identify` this sends right after.
          */
         private fun beginPairing(message: JSONObject) {
             if (session != null) return
@@ -571,7 +575,6 @@ class SyncServer(
             val peerKey = RoomCrypto.decodePublicKey(peerKeyBytes) ?: return
             val agreed = RoomCrypto.agree(keys, peerKey, roomCode) ?: return
 
-            peerName = message.optString("name").ifBlank { "A device" }
             session = agreed
 
             val transcript = RoomCrypto.transcriptOf(
@@ -579,24 +582,56 @@ class SyncServer(
                 peerKeyBytes,
                 roomCode,
             )
+            signedTranscript = transcript
 
             sendPlain(
                 JSONObject().apply {
                     put("type", "hello_ack")
                     put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                }.toString(),
+            )
+
+            // This host's identity and its signature over the transcript used
+            // to ride the plaintext `hello_ack` above. Sealed now: the session
+            // exists as of the line above, so a passive listener without the
+            // peer's ephemeral private key cannot read it, while the peer —
+            // who agreed the very same session a moment earlier — can.
+            //
+            // Sent unconditionally, identity or not: the peer waits for this
+            // message before showing its own user the pairing code (see
+            // `SyncClient`'s handling of a sealed `identify`), so a host with
+            // no identity configured still has to send one, just without the
+            // identity/signature fields, or that peer would wait forever.
+            send(
+                JSONObject().apply {
+                    put("type", "identify")
                     identity?.let {
                         put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
                         put("signature", WebSocketProtocol.base64(it.sign(transcript)))
                     }
                 }.toString(),
             )
+        }
 
-            signedTranscript = transcript
+        /**
+         * Answers the peer's sealed `identify`: its name, and the identity it
+         * claims (unverified — a claim only decides whether to wait, per
+         * [claimsKnownIdentity]; recognition itself happens in
+         * [recogniseIdentity] once `join` brings the signature).
+         *
+         * This is where the prompt used to go up straight out of `beginPairing`,
+         * back when the peer's name and claimed identity arrived in the clear
+         * with `hello`. Now they arrive sealed, one round trip later, so the
+         * prompt waits for them.
+         */
+        private fun handleIdentify(message: JSONObject) {
+            val agreed = session ?: return
+            peerName = message.optString("name").ifBlank { "A device" }
 
-            // The prompt goes up now, on the exchange, so both users are looking
-            // at the same digits at the same moment — *unless* this device
-            // claims an identity this host already knows, in which case it waits
-            // for the join to make good on the claim.
+            // The prompt goes up now, so both users are looking at the same
+            // digits at the same moment — *unless* this device claims an
+            // identity this host already knows, in which case it waits for
+            // the join to make good on the claim.
             //
             // Waiting rather than raising-and-withdrawing, because a dialog that
             // appears for a third of a second and vanishes is worse than either:
@@ -661,6 +696,7 @@ class SyncServer(
         private fun handleSealed(text: String) {
             val message = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (message.optString("type")) {
+                "identify" -> handleIdentify(message)
                 "join" -> {
                     // Three things have to hold, and each covers what the others
                     // cannot: the frame opened, so it came from whoever agreed

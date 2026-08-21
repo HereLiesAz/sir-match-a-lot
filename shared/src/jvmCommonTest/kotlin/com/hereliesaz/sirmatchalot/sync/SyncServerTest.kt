@@ -131,19 +131,16 @@ class SyncServerTest {
 
         private var transcript: ByteArray? = null
 
-        /** Says hello and waits for the host's key, exactly as the app does. */
+        /**
+         * Says hello, waits for the host's key, and then sends this device's
+         * name and claimed identity sealed — exactly as the app does now that
+         * neither travels in the clear with `hello` any more.
+         */
         fun startPairing(roomCode: String) {
             send(
                 JSONObject()
                     .put("type", "hello")
-                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
-                    .put("name", "A test device")
-                    .apply {
-                        val claimed = claimedIdentity ?: identity
-                        claimed?.let {
-                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
-                        }
-                    },
+                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public))),
             )
             val ack = nextOfType("hello_ack")
             assertNotNull("the host must answer hello", ack)
@@ -157,6 +154,17 @@ class SyncServerTest {
                 RoomCrypto.encodePublicKey(keys.public),
                 WebSocketProtocol.decodeBase64(ack.getString("key"))!!,
                 roomCode,
+            )
+            sendSealed(
+                JSONObject()
+                    .put("type", "identify")
+                    .put("name", "A test device")
+                    .apply {
+                        val claimed = claimedIdentity ?: identity
+                        claimed?.let {
+                            put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
+                        }
+                    },
             )
         }
 
