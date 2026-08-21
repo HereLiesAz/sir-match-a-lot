@@ -56,6 +56,17 @@ val desktopPackageVersion = "$versionMajor.$versionMinor.$versionPatch"
 // must start with a positive integer. Windows and Linux have no such rule
 // and package the real 0.x.y fine, so this only needs to widen what macOS
 // specifically sees, not the version everyone else builds with.
+//
+// This is a real, permanent divergence while versionMajor is 0, not a bug to
+// chase further: the macOS package's own "Get Info" version and the DMG
+// filename will read e.g. "1.5.0" while the identical Windows/Linux build
+// reads "0.5.0" for the same commit. There is no way around Apple's
+// non-zero-major rule for that OS-level metadata short of not being 0.x yet.
+// The desktop app has no in-app version display of its own today, so this
+// discrepancy is confined to the OS package manager's metadata — it does not
+// leak into anything the app itself tells a user. Once versionMajor reaches
+// 1, `coerceAtLeast(1)` becomes a no-op and the two schemes converge on
+// their own.
 val isMacOs = org.gradle.internal.os.OperatingSystem.current().isMacOsX
 val macDesktopPackageVersion = "${versionMajor.coerceAtLeast(1)}.$versionMinor.$versionPatch"
 

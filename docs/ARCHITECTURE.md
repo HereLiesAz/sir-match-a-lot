@@ -280,9 +280,13 @@ Deck B: clips -> resample(rate, signed) -> WSOLA(tempoRatio) -> EQ -> gain ┘  
 
 Rules for the render thread:
 - One thread, `THREAD_PRIORITY_URGENT_AUDIO`. Never blocks, never allocates.
-- Control changes arrive through `AtomicReference` snapshots or a lock-free
-  command ring buffer, applied at buffer boundaries; gains are smoothed
-  per-sample toward the target to avoid zipper noise.
+- Control changes arrive as plain `@Volatile` fields on `Deck`/`AudioOutput`
+  (rate, gain, EQ, and so on) — no `AtomicReference`, no command ring buffer.
+  The one exception is `playhead`, which a loader thread can both read and
+  rewrite while the render thread is mid-block; that single field goes
+  through a short `synchronized` block (`Deck.playheadLock`), not the whole
+  render path. Gains are smoothed per-render-block toward the target to
+  avoid zipper noise (`Deck.applyGain`, `Mixer`'s crossfade/master gain).
 - Metering publishes into a preallocated double-buffered array the UI reads.
 
 ### Playhead and reverse

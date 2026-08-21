@@ -22,11 +22,12 @@ import org.json.JSONObject
  * thin state holder over code shared between the two platforms, which is
  * the whole point of the module split.
  *
- * Local mixing (the audio graph, the library) has no desktop backend yet —
- * see `docs/ARCHITECTURE.md` — so this class only carries what a room needs
- * to exist: hosting, joining, pairing, and the raw room state as JSON. A
- * later phase teaches a desktop screen to *act* on that state instead of
- * just displaying it.
+ * Local mixing (`PlaybackSession`) and the library (`DesktopLibrary`) do have
+ * a desktop backend now — see `docs/ARCHITECTURE.md` — but neither is wired
+ * to *this* class: `RoomSession` only carries what a room needs to exist —
+ * hosting, joining, pairing, and the raw room state as JSON. Acting on that
+ * state (driving `PlaybackSession` from a room's `roomState` updates) is a
+ * later phase.
  */
 class RoomSession(
     identityStore: KeyValueStore,
@@ -35,7 +36,15 @@ class RoomSession(
 
     private val deviceIdentity = DeviceIdentity.load(identityStore)
 
-    /** Devices this machine has paired with before, for the settings list. */
+    /**
+     * Devices this machine has paired with before.
+     *
+     * Named "for the settings list" because that is where the Android app
+     * surfaces it (Settings > paired devices, with a "forget all" action).
+     * The desktop app has no settings screen yet, so this list exists here
+     * and is exercised by tests, but nothing in `:desktopApp`'s UI reads or
+     * clears it today.
+     */
     val knownDevices = KnownDevices(identityStore)
 
     private val syncServer = SyncServer(identity = deviceIdentity, known = knownDevices)
