@@ -278,13 +278,17 @@ fun PlatterScreen(
             withFrameMillis { frameTimeMillis ->
                 elapsedMillis = frameTimeMillis
                 labels.update(
-                    // CLIP_DRAG is excluded: it fires for a one-finger drag that
-                    // did not start on a clip (the ring-based path above handles
-                    // that case directly, outside the gesture engine), and the
-                    // "CLIP" label for it promised a drag that never happens —
-                    // GestureKind.CLIP_DRAG's handler below is a no-op by design.
+                    // CLIP_DRAG now does something real — scrubbing the
+                    // playhead or spinning the disc, depending on
+                    // playheadLocked — so it is no longer filtered out here
+                    // the way it was while its handler was a no-op.
+                    // CROSSFADE and SCRATCH took the opposite path: the
+                    // engine can still recognise the two-finger shapes, but
+                    // the dispatch below no longer acts on them, so showing
+                    // their labels would announce a gesture that visibly did
+                    // nothing.
                     activeTexts = gestures.active
-                        .filter { it.kind != GestureKind.CLIP_DRAG }
+                        .filter { it.kind != GestureKind.CROSSFADE && it.kind != GestureKind.SCRATCH }
                         .map { it.kind.label }
                         .toSet(),
                     nowMillis = frameTimeMillis,
@@ -511,10 +515,31 @@ fun PlatterScreen(
                                 pinchRatio = 1f
                             }
 
-                            // While a clip is held, the gesture engine must not
-                            // also read the finger as a scratch or a crossfade.
-                            val recognised =
-                                if (heldClipId != null) emptyList() else gestures.update(pointers)
+                            // While a clip is held, most two-finger shapes are
+                            // ambiguous with the pinch-to-stretch handled just
+                            // above (BASS_BOOST is the same span-change
+                            // motion) or are already no-ops (CROSSFADE,
+                            // SCRATCH) — so those are filtered out below
+                            // rather than fed to the actions dispatch. VOLUME
+                            // is not ambiguous: a rotation is a different
+                            // shape from a pinch, and the engine's own
+                            // dominance arbitration already keeps incidental
+                            // rotation during a deliberate pinch from firing
+                            // it. Without this, a clip covering most of the
+                            // platter — which one clip alone on a deck
+                            // ordinarily does — made rotate/volume
+                            // unreachable almost everywhere, which is the
+                            // same "the gesture never registers" complaint
+                            // the GestureEngine arbitration fix addresses,
+                            // just from a different cause.
+                            val recognised = gestures.update(pointers)
+                                .let { active ->
+                                    if (heldClipId == null) {
+                                        active
+                                    } else {
+                                        active.filter { it.kind == GestureKind.VOLUME }
+                                    }
+                                }
 
                             // Gated on the "Log platter gestures" settings toggle —
                             // see EngineSettings.gestureDebugLogging — rather than
@@ -530,33 +555,72 @@ fun PlatterScreen(
 
                             for (gesture in recognised) {
                                 when (gesture.kind) {
-                                    GestureKind.CROSSFADE -> actions.onCrossfade(gesture.delta)
-                                    GestureKind.SCRATCH -> {
-                                        if (!scratching) {
-                                            scratching = true
-                                            actions.onScratchBegin()
-                                        }
-                                        actions.onScratch(gesture.total)
-                                    }
+                                    // Deliberately no-ops now. Two-finger
+                                    // horizontal/vertical used to drive the
+                                    // crossfader and a "smart scratch" — but
+                                    // the crossfader already has its own
+                                    // slider directly below the platter, and
+                                    // scratching moved to a one-finger drag
+                                    // on the playhead itself (see CLIP_DRAG
+                                    // below), which does not collide with the
+                                    // rotate/pinch axes the way a two-finger
+                                    // drag did. Left recognised rather than
+                                    // deleted from GestureEngine: the shape is
+                                    // still detected, just not wired to
+                                    // anything here, in case it finds another
+                                    // use later.
+                                    GestureKind.CROSSFADE -> Unit
+                                    GestureKind.SCRATCH -> Unit
                                     GestureKind.VOLUME -> actions.onVolume(gesture.delta)
                                     GestureKind.BASS_BOOST -> actions.onBassBoost(gesture.delta)
                                     GestureKind.PLATTER_SCALE ->
                                         scale = (scale + gesture.delta * 0.004f).coerceIn(0.4f, 4f)
                                     GestureKind.PLATTER_ROTATE -> rotation += gesture.delta
-                                    // Deliberately a no-op: a one-finger drag that
-                                    // starts on a clip is already handled above,
-                                    // outside the gesture engine, and moves that
-                                    // clip directly. This fires for a one-finger
-                                    // drag that started somewhere else on the
-                                    // platter with nothing to grab — there is no
-                                    // clip to act on. Excluded from the label bus
-                                    // above so it does not announce a drag that
-                                    // never happens.
-                                    GestureKind.CLIP_DRAG -> Unit
+                                    // A one-finger drag that starts somewhere
+                                    // on the platter with no clip to grab —
+                                    // the playhead, in effect. What it does
+                                    // depends on playheadLocked, because that
+                                    // setting already decides which of the
+                                    // two things is standing still:
+                                    //
+                                    // - Free: the playhead itself sweeps the
+                                    //   circle and the disc is fixed, so a
+                                    //   drag here scrubs the playhead — the
+                                    //   same scratch that used to require a
+                                    //   two-finger vertical drag, driven by
+                                    //   the same ScratchModel curve.
+                                    // - Locked: the disc turns to keep the
+                                    //   playhead visually fixed, so there is
+                                    //   no moving playhead to grab — a drag
+                                    //   here instead spins the platter view
+                                    //   itself, the same `rotation` state the
+                                    //   three-finger transform already
+                                    //   writes to, converted from pixels to
+                                    //   radians via arc length at the
+                                    //   platter's own radius so the disc
+                                    //   tracks the finger 1:1 at the rim.
+                                    GestureKind.CLIP_DRAG -> {
+                                        if (playheadLocked) {
+                                            val baseRadius = PlatterGeometry.baseRadius(
+                                                canvasSize.width.toFloat(),
+                                                canvasSize.height.toFloat(),
+                                                scale,
+                                            )
+                                            if (baseRadius > 0f) {
+                                                rotation += gesture.delta / baseRadius
+                                            }
+                                        } else {
+                                            if (!scratching) {
+                                                scratching = true
+                                                actions.onScratchBegin()
+                                            }
+                                            actions.onScratch(gesture.total)
+                                        }
+                                    }
                                 }
                             }
 
-                            if (scratching && recognised.none { it.kind == GestureKind.SCRATCH }) {
+                            if (scratching && recognised.none { it.kind == GestureKind.CLIP_DRAG }) {
                                 scratching = false
                                 actions.onScratchEnd()
                             }

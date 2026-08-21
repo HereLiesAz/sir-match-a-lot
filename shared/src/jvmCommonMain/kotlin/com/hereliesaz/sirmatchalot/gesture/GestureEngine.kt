@@ -10,12 +10,17 @@ data class Pointer(val id: Long, val x: Float, val y: Float)
 /**
  * What a recognised gesture controls.
  *
- * The mapping is the one from the final revision of the requirements: all
- * single-finger gestures manipulate the audio clips, two fingers control the
- * mix, three fingers transform the platter itself.
+ * Two fingers control the mix, three fingers transform the platter itself.
+ * One finger is either a clip drag (when it started on a clip — handled
+ * directly by the platter, outside this engine) or, when it did not, this
+ * engine's own [CLIP_DRAG] — which despite the name is no longer only about
+ * clips at the call site: the platter uses it to scrub the playhead or spin
+ * the disc itself, depending on whether the playhead is locked. The engine
+ * only knows "one finger, no clip under it"; what that means is the
+ * caller's call.
  */
 enum class GestureKind(val label: String) {
-    CLIP_DRAG("CLIP"),
+    CLIP_DRAG("SCRUB"),
     CROSSFADE("CROSSFADER"),
     SCRATCH("SMART SCRATCH"),
     VOLUME("VOLUME"),
