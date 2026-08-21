@@ -2740,9 +2740,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private fun persistCuesForDeck(deck: String) {
         val loaded = if (deck == "A") _loadedTracksA.value else _loadedTracksB.value
         val track = loaded.singleOrNull() ?: return
+        // Slot position, not just which cues are set, has to survive the
+        // round trip: cue button 3 must come back as cue button 3. Filtering
+        // out empty slots before encoding — as this used to — compacted them
+        // together, so a cue in slot 3 with slots 1-2 empty was written as
+        // slot 1 and came back on the wrong button.
         val cues = (if (deck == "A") _cuesA.value else _cuesB.value)
-            .filterNotNull()
-            .map { it.toDouble() }
+            .map { it?.toDouble() }
         val csv = Track.cuePointsToCsv(cues)
         if (csv == track.cuePointsCsv) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -2754,7 +2758,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private fun restoreCuesFor(track: Track, deck: PlatterGeometry.Deck) {
         val cues = track.cuePoints
         if (cues.isEmpty()) return
-        val padded = (cues.map { it.toFloat() as Float? } + List(4) { null }).take(4)
+        val padded = (cues.map { it?.toFloat() } + List(4) { null }).take(4)
         if (deck == PlatterGeometry.Deck.A) _cuesA.value = padded else _cuesB.value = padded
         republishMarkers()
     }

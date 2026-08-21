@@ -63,8 +63,20 @@ fun PlatterCanvas(
         // zoom. Rays and the playhead are both clamped to this bound before
         // they are drawn: the inscribed-circle radius from the platter's
         // centre, so a tip can never leave the canvas regardless of angle.
-        val maxRayLength = (minOf(cx, cy, size.width - cx, size.height - cy) - baseRadius)
-            .coerceAtLeast(0f)
+        //
+        // Measured at scale 1 and then scaled up with it, not measured
+        // directly against the live (already-scaled) baseRadius: the screen
+        // edges do not move when the platter zooms, so a headroom computed
+        // against the current baseRadius shrinks as scale grows and hits zero
+        // well before 2x zoom — every ray clamps to nothing, and "zooming in"
+        // reads as the waveform collapsing into a filled disc. Scaling the
+        // *proportion* instead keeps the waveform's own shape identical at
+        // every zoom level, same as the rest of the platter; it is only the
+        // hard screen-edge clamp for extreme overshoot that changes size, and
+        // it changes together with everything else, as a zoom should.
+        val unscaledBaseRadius = PlatterGeometry.baseRadius(size.width, size.height, scale = 1f)
+        val maxRayLength = (minOf(cx, cy, size.width - cx, size.height - cy) - unscaledBaseRadius)
+            .coerceAtLeast(0f) * scale
 
         val level = state.outputLevel.coerceIn(0f, 1f)
         // A floor so the ring is still legible when paused or between transients.

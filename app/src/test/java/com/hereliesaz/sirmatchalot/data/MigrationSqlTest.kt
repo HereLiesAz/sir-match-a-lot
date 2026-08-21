@@ -434,12 +434,12 @@ class MigrationSqlTest {
     }
 
     @Test
-    fun `an interior gap is harmless because the reader drops empty fields`() {
+    fun `an interior gap keeps its position rather than compacting`() {
         val csv = cuesAfterMigration(listOf(1.0, null, 3.0, null))
         assertEquals("1.0,,3.0", csv)
-        // What matters is what Track makes of it.
+        // Cue 2 must come back empty, not have cue 3 slide into its slot.
         val parsed = Track(title = "t", artist = "a", cuePointsCsv = csv).cuePoints
-        assertEquals(listOf(1.0, 3.0), parsed)
+        assertEquals(listOf(1.0, null, 3.0), parsed)
     }
 
     @Test

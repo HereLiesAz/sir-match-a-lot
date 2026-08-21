@@ -637,6 +637,37 @@ class SyncServerTest {
     }
 
     @Test
+    fun `an unauthenticated socket does not move the roster on disconnect`() {
+        // close() used to report clients.size — every accepted socket,
+        // joined or not — while every other reader of the roster (peerCount,
+        // admitIfReady) correctly counted only joined peers. An attacker
+        // opening and closing raw sockets against the port, without ever
+        // completing a handshake, inflated and deflated the "N devices
+        // joined" readout for free.
+        val server = startServer()
+        val counts = ArrayBlockingQueue<Int>(8)
+        server.onPeersChanged = { counts.offer(it) }
+
+        val peer = join(server)
+        peer.nextSealed("init_state")
+        assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
+
+        Socket("127.0.0.1", server.port).use {
+            // Connect and disconnect without ever sending a hello.
+        }
+
+        // The stranger's connect/disconnect must never be reported as 2 (it
+        // never joined) or as 0 (the real peer is still joined) — the only
+        // value this can still legitimately report, if it reports anything
+        // at all, is the unchanged count of joined peers.
+        val reported = counts.poll(500, TimeUnit.MILLISECONDS)
+        assertTrue(
+            "an unauthenticated socket must not move the roster, got $reported",
+            reported == null || reported == 1,
+        )
+    }
+
+    @Test
     fun `discovery answers the broadcast the client has always sent`() {
         val discoveryPort = freePort()
         val instance = SyncServer(port = freePort(), discoveryPort = discoveryPort)

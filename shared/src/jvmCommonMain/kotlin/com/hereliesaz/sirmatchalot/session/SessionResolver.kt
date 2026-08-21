@@ -128,6 +128,10 @@ fun Track.toSessionTrack(): SessionTrack = SessionTrack(
     firstBeatSeconds = firstBeatSeconds,
     downbeatOffset = downbeatOffset,
     energyLevel = energyLevel,
-    cuePoints = cuePoints,
+    // Session files record cue times, not deck-button slot numbers — a
+    // session opened on another device replays "cue at 40.2s", not "cue
+    // button 3" — so the position-preserving nulls Track.cuePoints keeps
+    // for the deck-persistence round trip are dropped here.
+    cuePoints = cuePoints.filterNotNull(),
     sourceHint = sourceUri,
 )

@@ -119,8 +119,19 @@ class SyncServer(
      *
      * Held here rather than on whichever device happens to have spoken last,
      * because two devices that each trust their own copy are not one instrument.
+     *
+     * Mutated from whichever peer's reader thread last called [updateState] —
+     * every [ClientConnection] runs on its own thread — and read here by
+     * [admitIfReady] on a joining peer's own thread, so both the mutation and
+     * every read that walks its entries (serialising it into an outgoing
+     * message) go through [roomStateLock]. Without it, one peer's `put()` and
+     * another's `toString()` on the same plain `JSONObject` race exactly like
+     * two threads on a plain `HashMap`: `ConcurrentModificationException`,
+     * caught by `ClientConnection.run()`'s catch-all and misreported as that
+     * peer simply disconnecting.
      */
     private val roomState = JSONObject()
+    private val roomStateLock = Any()
 
     /**
      * Room code peers must present to join.
@@ -289,17 +300,30 @@ class SyncServer(
      * ones.
      */
     fun updateState(update: JSONObject, broadcast: Boolean = true) {
-        for (key in update.keys()) roomState.put(key, update.get(key))
-        onStateChanged?.invoke(roomState)
+        val snapshot = synchronized(roomStateLock) {
+            for (key in update.keys()) roomState.put(key, update.get(key))
+            roomStateSnapshot()
+        }
+        onStateChanged?.invoke(snapshot)
         if (broadcast) {
             send(
                 JSONObject().apply {
                     put("type", "state_synced")
-                    put("state", roomState)
+                    put("state", snapshot)
                 }.toString(),
             )
         }
     }
+
+    /**
+     * A stand-alone copy of [roomState], safe to hand to a caller on another
+     * thread or to serialise after this call returns. Must be called with
+     * [roomStateLock] held — round-tripping through [JSONObject]'s own string
+     * form is the cheapest deep copy available without a JSON library that
+     * exposes one directly, and it still has to see a state nobody else is
+     * mutating while it walks it.
+     */
+    private fun roomStateSnapshot(): JSONObject = JSONObject(roomState.toString())
 
     /** Relays an event to every peer. */
     fun broadcastEvent(event: String, payload: JSONObject) {
@@ -405,11 +429,15 @@ class SyncServer(
             // signature and never before.
             peerFingerprint?.let { known?.remember(it, peerName) }
             // A joiner needs the room as it stands, not only what changes after
-            // it arrives.
+            // it arrives. Snapshotted under the lock rather than handed the
+            // live object — this runs on the joining peer's own connection
+            // thread, which is exactly the thread that is not holding
+            // updateState's lock while some other peer's thread is mid-merge.
+            val snapshot = synchronized(roomStateLock) { roomStateSnapshot() }
             send(
                 JSONObject().apply {
                     put("type", "init_state")
-                    put("roomState", roomState)
+                    put("roomState", snapshot)
                 }.toString(),
             )
         }
@@ -692,7 +720,12 @@ class SyncServer(
 
         fun close() {
             runCatching { socket.close() }
-            if (clients.remove(this)) onPeersChanged?.invoke(clients.size)
+            // clients.size counts every accepted socket, joined or not — the
+            // same "N devices joined" inflation peerCount exists to avoid.
+            // isJoined is what this connection actually was; count what's
+            // left the same way, or a device that never joined anything
+            // still moves the readout when it disconnects.
+            if (clients.remove(this)) onPeersChanged?.invoke(clients.count { it.isJoined })
         }
     }
 
