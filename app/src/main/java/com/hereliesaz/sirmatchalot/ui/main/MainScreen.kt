@@ -359,6 +359,7 @@ fun MainScreen(
                         actions = rememberPlatterActions(viewModel),
                         transportRunning = isPlaying,
                         lightShow = settings.lightShow,
+                        gestureDebugLogging = settings.gestureDebugLogging,
                         sortLabel = sort.label,
                         onCycleSort = { viewModel.cycleLibrarySort() },
                     )
