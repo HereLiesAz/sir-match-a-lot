@@ -75,6 +75,7 @@ import kotlin.math.hypot
 import com.hereliesaz.sirmatchalot.gesture.Pointer
 import androidx.compose.runtime.withFrameMillis
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** What the platter screen can ask the app to do. */
 interface PlatterActions {
@@ -288,6 +289,19 @@ fun PlatterScreen(
      * special debug build.
      */
     gestureDebugLogging: Boolean = false,
+    /**
+     * The master volume the VOLUME gesture drives, 0..1, for the live
+     * percentage readout shown while that gesture is running. Read live via
+     * [androidx.compose.runtime.rememberUpdatedState] below rather than
+     * captured once, same reason as [state]: the pointer loop this feeds is
+     * keyed on `Unit`.
+     */
+    masterVolume: Float = 1f,
+    /**
+     * The BASS_BOOST gesture's current value in dB, -18..18, for the live
+     * readout shown while that gesture is running.
+     */
+    bassBoostDb: Double = 0.0,
 ) {
     val gestures = remember { GestureEngine() }
     val labels = remember { GestureLabels() }
@@ -378,6 +392,43 @@ fun PlatterScreen(
 
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
+
+    // VOLUME and BASS_BOOST get a clock-slot name like every other gesture,
+    // same as before, but a name alone does not say what the control is
+    // actually set to. PLATTER_SCALE/PLATTER_ROTATE and CLIP_DRAG's scrub are
+    // all visibly self-reporting — the ring itself grows, turns or scrubs
+    // under the finger — but a mixer control's own current value is nowhere
+    // else on screen while the gesture is what is changing it. These two
+    // flags drive a small numeric readout, the same idea as the STRETCH
+    // indicator below for the clip pinch.
+    var volumeGestureActive by remember { mutableStateOf(false) }
+    var bassBoostGestureActive by remember { mutableStateOf(false) }
+
+    // Failure feedback for a touch that never became any gesture at all.
+    //
+    // `interactionTravel` accumulates how far the pointer set's centroid has
+    // moved since the current touch began; `interactionRecognisedAny` and
+    // `interactionGrabbedClip` record whether *anything* — a GestureEngine
+    // axis or a direct clip grab — ever came of it. On release, a touch that
+    // moved a real distance and produced neither is the one case this covers:
+    // a deliberate attempt at a gesture that the app silently ignored. A
+    // stationary tap is excluded by the travel floor, so tap-to-select,
+    // double-tap and long-press — which already have their own feedback —
+    // never trip this.
+    var interactionActive by remember { mutableStateOf(false) }
+    var interactionTravel by remember { mutableFloatStateOf(0f) }
+    var interactionRecognisedAny by remember { mutableStateOf(false) }
+    var interactionGrabbedClip by remember { mutableStateOf(false) }
+    var interactionCentroid by remember { mutableStateOf<Offset?>(null) }
+    var noGestureFlashToken by remember { mutableStateOf(0) }
+    var noGestureFlashVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(noGestureFlashToken) {
+        if (noGestureFlashToken == 0) return@LaunchedEffect
+        noGestureFlashVisible = true
+        kotlinx.coroutines.delay(NO_GESTURE_FLASH_MILLIS)
+        noGestureFlashVisible = false
+    }
 
     // True while fingers are on the glass. Gesture labels are created and expired
     // by the loop below, so it has to keep running while a gesture is live even
@@ -529,6 +580,35 @@ fun PlatterScreen(
                             // there is nothing moving on screen.
                             pointerActive = pointers.isNotEmpty()
 
+                            // Tracks one touch interaction end to end, so a
+                            // release with real movement and no recognised
+                            // gesture can be told apart from a tap.
+                            if (pointers.isNotEmpty() && !interactionActive) {
+                                interactionActive = true
+                                interactionTravel = 0f
+                                interactionRecognisedAny = false
+                                interactionGrabbedClip = false
+                                interactionCentroid = null
+                            } else if (pointers.isEmpty() && interactionActive) {
+                                interactionActive = false
+                                if (interactionTravel >= NO_GESTURE_TRAVEL_THRESHOLD_PX &&
+                                    !interactionRecognisedAny && !interactionGrabbedClip
+                                ) {
+                                    noGestureFlashToken++
+                                }
+                                interactionCentroid = null
+                            }
+                            if (pointers.isNotEmpty()) {
+                                val centroid = Offset(
+                                    pointers.sumOf { it.x.toDouble() }.toFloat() / pointers.size,
+                                    pointers.sumOf { it.y.toDouble() }.toFloat() / pointers.size,
+                                )
+                                interactionCentroid?.let {
+                                    interactionTravel += (centroid - it).getDistance()
+                                }
+                                interactionCentroid = centroid
+                            }
+
                             // One finger starting on a clip drags that clip's
                             // placement rather than feeding the gesture engine.
                             // Angle is time here, so moving it around the circle
@@ -572,6 +652,7 @@ fun PlatterScreen(
                                             heldClipTitle = clip.title
                                             heldClipDeck = deck
                                             heldClipOffCircle = false
+                                            interactionGrabbedClip = true
                                             // Where on the clip it was taken
                                             // hold of. Without this the clip's
                                             // *start* jumped to the finger:
@@ -681,6 +762,11 @@ fun PlatterScreen(
                                         active.filter { it.kind == GestureKind.VOLUME }
                                     }
                                 }
+
+                            if (recognised.isNotEmpty()) interactionRecognisedAny = true
+                            volumeGestureActive = recognised.any { it.kind == GestureKind.VOLUME }
+                            bassBoostGestureActive =
+                                recognised.any { it.kind == GestureKind.BASS_BOOST }
 
                             // Gated on the "Log platter gestures" settings toggle —
                             // see EngineSettings.gestureDebugLogging — rather than
@@ -1031,6 +1117,57 @@ fun PlatterScreen(
                 )
             }
 
+            // What VOLUME and BASS_BOOST are actually set to while the gesture
+            // that changes them is running. Their clock-position label already
+            // names the gesture; PLATTER_SCALE and PLATTER_ROTATE show their
+            // own effect directly in the ring's size and turn, and CLIP_DRAG's
+            // scrub shows in the waveform sweeping — but a mixer value has no
+            // other place on screen to be seen changing, so without this a
+            // performer riding VOLUME or BASS_BOOST could see that *a* gesture
+            // was recognised and not what it had actually done. Same shape as
+            // the STRETCH readout above: plain text, top centre, only while
+            // the gesture runs.
+            if (volumeGestureActive) {
+                Text(
+                    text = "VOLUME ${(masterVolume * 100f).roundToInt()}%",
+                    color = Color(0xFF7DF9FF),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 34.dp),
+                )
+            }
+            if (bassBoostGestureActive) {
+                Text(
+                    text = "BASS BOOST ${"%+.1f".format(bassBoostDb)} dB",
+                    color = Color(0xFF7DF9FF),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 34.dp),
+                )
+            }
+
+            // A touch that moved for real and produced no gesture at all —
+            // see `interactionTravel`/`interactionRecognisedAny` above. This is
+            // the one case in the whole screen where a finger does something
+            // and the app was previously silent about it either way: not "here
+            // is what happened" and not "nothing happened, on purpose". A
+            // brief, quiet flash rather than a dialog, because most of the
+            // time this fires it is one sloppy stroke in an otherwise fluent
+            // set, not a problem to interrupt anyone over.
+            if (noGestureFlashVisible) {
+                Text(
+                    text = "NO GESTURE",
+                    color = Color(0xFF9CA3AF).copy(alpha = 0.75f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 34.dp),
+                )
+            }
+
             // A clip dragged off the circle is gone from the deck but still in
             // hand: it follows the finger, marked for removal, until release.
             if (heldClipId != null && heldClipOffCircle) {
@@ -1252,6 +1389,16 @@ private fun CentreTransport(
  * Draws gesture names at their clock positions.
  *
  * Text only — no box, no background — floating upward and dissolving.
+ *
+ * Clock positions are laid out at 1.45x the platter's own radius, which is
+ * fixed to the platter's virtual coordinate space — not to the screen. Pinch
+ * the ring up past roughly 2x zoom and that radius alone exceeds what the
+ * composable actually measures, so a label for a gesture happening at the
+ * edge of a zoomed-in platter used to be positioned entirely off the visible
+ * canvas: the finger doing the gesture was on screen, its feedback was not.
+ * Every label's draw origin is clamped here to [canvasSize] — the real,
+ * measured bounds of this composable — inset by the label's own last-measured
+ * size, so feedback always lands somewhere the performer can actually see it.
  */
 @Composable
 private fun GestureLabelOverlay(
@@ -1270,18 +1417,47 @@ private fun GestureLabelOverlay(
         canvasSize.width.toFloat(), canvasSize.height.toFloat(), scale,
     ) * 1.45f
 
+    // A label's own rendered size, remembered per clock slot from the previous
+    // frame it was visible. Used only to inset the clamp below; a label is
+    // never mispositioned by more than one frame's lag on its own size, and a
+    // slot's very first frame falls back to a conservative estimate rather
+    // than measuring nothing.
+    val measuredSizes = remember { arrayOfNulls<IntSize>(GestureLabels.CLOCK_SLOTS.size) }
+    val fallbackWidthPx = with(density) { 96.dp.toPx() }
+    val fallbackHeightPx = with(density) { 18.dp.toPx() }
+    val marginPx = with(density) { 4.dp.toPx() }
+    val leftInsetPx = with(density) { 48.dp.toPx() }
+    val topInsetPx = with(density) { 8.dp.toPx() }
+
     for (label in labels) {
         val fraction = GestureLabels.CLOCK_SLOTS[label.slot]
         val (x, y) = PlatterGeometry.pointAt(fraction, radius, cx, cy)
         // Float upward as it lives, so a fast sequence never backs up.
         val rise = label.riseFraction * canvasSize.height * 0.25f
 
+        val measured = measuredSizes[label.slot]
+        val labelWidthPx = measured?.width?.toFloat() ?: fallbackWidthPx
+        val labelHeightPx = measured?.height?.toFloat() ?: fallbackHeightPx
+
+        // The un-clamped draw origin — same math as before, just not yet
+        // applied to the composable.
+        val rawBoxX = x - leftInsetPx
+        val rawBoxY = y - rise - topInsetPx
+
+        // Coerced against this composable's own measured size, not the
+        // platter's virtual radius, so the clamp still holds however far
+        // `radius` above has grown with zoom. `coerceAtLeast(marginPx)` on the
+        // upper bound covers a canvas narrower than the label itself, where
+        // the lower bound would otherwise sit below the upper one.
+        val maxX = (canvasSize.width - labelWidthPx - marginPx).coerceAtLeast(marginPx)
+        val maxY = (canvasSize.height - labelHeightPx - marginPx).coerceAtLeast(marginPx)
+        val boxX = rawBoxX.coerceIn(marginPx, maxX)
+        val boxY = rawBoxY.coerceIn(marginPx, maxY)
+
         Box(
             modifier = Modifier
-                .offset(
-                    x = with(density) { x.toDp() } - 48.dp,
-                    y = with(density) { (y - rise).toDp() } - 8.dp,
-                )
+                .offset { IntOffset(boxX.roundToInt(), boxY.roundToInt()) }
+                .onSizeChanged { measuredSizes[label.slot] = it }
                 .alpha(label.alpha),
         ) {
             Text(
@@ -1322,6 +1498,21 @@ private const val IDLE_FRAME_POLL_MILLIS = 100L
 
 /** One breath of the pending-clip pulse. Slow enough to read as waiting. */
 private const val PULSE_PERIOD_MS = 1_600L
+
+/**
+ * How far a touch's centroid has to travel before a release with no
+ * recognised gesture counts as a failed attempt rather than a tap.
+ *
+ * Comfortably above ordinary tap jitter, so a stationary tap-to-select never
+ * trips this — those already have their own feedback (selection changes on
+ * the ring). Above that floor it fires only for a touch that moved for real
+ * and still never crossed any [GestureEngine] axis's own enter threshold —
+ * the case this exists to surface.
+ */
+private const val NO_GESTURE_TRAVEL_THRESHOLD_PX = 24f
+
+/** How long the "no gesture recognised" flash stays on screen. */
+private const val NO_GESTURE_FLASH_MILLIS = 260L
 
 /**
  * The track list: along the bottom, scrolling horizontally, best match first.

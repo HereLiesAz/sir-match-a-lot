@@ -1782,7 +1782,17 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val next = (audioEngine.deckA.bassBoostDb + delta * 0.06).coerceIn(-18.0, 18.0)
         audioEngine.deckA.bassBoostDb = next
         audioEngine.deckB.bassBoostDb = next
+        _bassBoostDb.value = next
     }
+
+    /**
+     * The BASS_BOOST gesture's current value, so the platter can show a live
+     * dB readout while the gesture runs — the same reason [audioVolume] is
+     * exposed for VOLUME. Both decks are always nudged together by this
+     * gesture (see [nudgeBassBoost]), so one flow is enough to describe it.
+     */
+    private val _bassBoostDb = MutableStateFlow(0.0)
+    val bassBoostDb: StateFlow<Double> = _bassBoostDb
 
     /**
      * This device's long-term identity and the devices it has paired with.
@@ -2548,6 +2558,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             deck.bassBoostDb = 0.0
             deck.trebleDb = 0.0
         }
+        _bassBoostDb.value = 0.0
         _transitionStyle.value = null
     }
 

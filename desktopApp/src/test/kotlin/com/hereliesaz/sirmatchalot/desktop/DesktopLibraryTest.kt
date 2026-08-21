@@ -1,9 +1,13 @@
 package com.hereliesaz.sirmatchalot.desktop
 
+import com.hereliesaz.sirmatchalot.analysis.AnalysisProgressBus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
@@ -133,5 +137,67 @@ class DesktopLibraryTest {
         Thread.sleep(500)
         val track = library.tracks.value.first { it.path == file.path }
         assertTrue(!track.isAnalysed)
+    }
+
+    @Test
+    fun `a decode failure does not leave the progress bus stuck running`() {
+        // A batch that throws its way out of the analysis loop instead of
+        // catching per-track failures used to skip AnalysisProgressBus.finish()
+        // for whatever came after the bad file, leaving the UI showing
+        // "Analysing…" forever even once the thread had actually stopped.
+        val storeFile = tempStoreFile()
+        val bad = File.createTempFile("not-audio", ".wav").apply {
+            deleteOnExit()
+            writeText("this is not a wav file")
+        }
+        val good = File.createTempFile("tone", ".wav").apply { deleteOnExit() }
+        toneWav(good)
+
+        val library = DesktopLibrary(storeFile)
+        library.add(listOf(bad, good))
+
+        awaitAnalysis(library, good.path)
+
+        val deadline = System.currentTimeMillis() + 10_000
+        while (AnalysisProgressBus.state.value.running && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+        }
+        assertFalse(
+            "the progress bus must not be left running once the batch is done",
+            AnalysisProgressBus.state.value.running,
+        )
+    }
+
+    @Test
+    fun `concurrent add calls do not lose tracks to a race`() {
+        // add() used to do a plain, unsynchronized read-modify-write of
+        // _tracks.value. Two callers racing (a second folder import landing
+        // while the first is still being persisted, say) could each read the
+        // same starting list and then each overwrite the other's addition —
+        // whichever write landed last "won" and the other's files vanished
+        // from both the in-memory list and the file on disk.
+        val storeFile = tempStoreFile()
+        val batches = (0 until 8).map { batch ->
+            (0 until 5).map { File.createTempFile("track-$batch-$it", ".wav").apply { deleteOnExit() } }
+        }
+        val library = DesktopLibrary(storeFile)
+
+        val ready = CountDownLatch(batches.size)
+        val go = CountDownLatch(1)
+        val threads = batches.map { files ->
+            Thread {
+                ready.countDown()
+                go.await()
+                library.add(files)
+            }
+        }
+        threads.forEach { it.start() }
+        ready.await(5, TimeUnit.SECONDS)
+        go.countDown()
+        threads.forEach { it.join(10_000) }
+
+        val expected = batches.flatten().size
+        assertEquals(expected, library.tracks.value.size)
+        assertEquals(expected, DesktopLibrary(storeFile).tracks.value.size)
     }
 }

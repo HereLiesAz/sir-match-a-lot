@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * One remembered local audio file, with whatever [TrackAnalyzer] has measured
@@ -54,8 +55,35 @@ class DesktopLibrary(
     private val analyzer: TrackAnalyzer = TrackAnalyzer(),
 ) {
 
+    /**
+     * Guards every read-modify-write of [_tracks] (and the file it is
+     * persisted to). `add`, `remove`, and each analysis result all replace
+     * the whole list based on its current value; without a lock, two of
+     * those racing — a folder import landing while a previous batch's
+     * analysis is still writing results back, say — is the same lost-update
+     * shape `DecodedCache` was fixed for: whichever write finishes last wins
+     * and the other's change vanishes.
+     */
+    private val lock = Any()
+
     private val _tracks = MutableStateFlow(load())
     val tracks: StateFlow<List<LibraryTrack>> = _tracks
+
+    /**
+     * Runs analysis batches one at a time.
+     *
+     * [AnalysisProgressBus] is a single process-wide progress readout, not
+     * one per batch — two batches analysing concurrently (a second `add()`
+     * call arriving mid-analysis) used to each spawn their own `Thread` and
+     * both call `begin`/`update`/`finish` on it independently, so the totals
+     * and "current track" shown were whichever batch wrote last, and one
+     * batch's `finish()` could hide the progress bar while the other was
+     * still only half done. A single-thread executor serializes them: a
+     * second `add()` while one batch is running enqueues rather than races.
+     */
+    private val analysisExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SirMatchALot-DesktopAnalysis").apply { isDaemon = true }
+    }
 
     /**
      * Adds [files] not already present (by path), then measures each of them
@@ -65,51 +93,72 @@ class DesktopLibrary(
      */
     fun add(files: List<File>) {
         if (files.isEmpty()) return
-        val existingPaths = _tracks.value.map { it.path }.toSet()
-        val newFiles = files.filter { it.path !in existingPaths }
+        val newFiles = synchronized(lock) {
+            val existingPaths = _tracks.value.map { it.path }.toSet()
+            val toAdd = files.filter { it.path !in existingPaths }
+            if (toAdd.isNotEmpty()) {
+                _tracks.value = _tracks.value + toAdd.map { LibraryTrack(path = it.path, displayName = it.name) }
+                persistLocked()
+            }
+            toAdd
+        }
         if (newFiles.isEmpty()) return
-
-        _tracks.value = _tracks.value + newFiles.map { LibraryTrack(path = it.path, displayName = it.name) }
-        persist()
-        analyseInBackground(newFiles)
+        analysisExecutor.execute { analyse(newFiles) }
     }
 
     fun remove(path: String) {
-        val next = _tracks.value.filterNot { it.path == path }
-        if (next.size == _tracks.value.size) return
-        _tracks.value = next
-        persist()
+        synchronized(lock) {
+            val next = _tracks.value.filterNot { it.path == path }
+            if (next.size == _tracks.value.size) return
+            _tracks.value = next
+            persistLocked()
+        }
     }
 
-    private fun analyseInBackground(files: List<File>) {
-        Thread {
-            AnalysisProgressBus.begin(files.size)
-            var failed = 0
+    private fun analyse(files: List<File>) {
+        AnalysisProgressBus.begin(files.size)
+        var failed = 0
+        try {
             files.forEachIndexed { index, sourceFile ->
-                val pcm = runCatching { DesktopAudioDecoder.decode(sourceFile) }.getOrNull()
-                val analysis = pcm?.let { runCatching { analyzer.analyse(it) }.getOrNull() }
-                if (analysis == null) failed++
-                if (analysis != null) {
-                    _tracks.value = _tracks.value.map { track ->
-                        if (track.path == sourceFile.path) {
-                            track.copy(
-                                bpm = analysis.bpm,
-                                camelotKey = analysis.camelotKey,
-                                energyLevel = analysis.energyLevel,
-                            )
-                        } else {
-                            track
+                // Each track's own try/catch, so one bad file — a decode
+                // that throws instead of returning null, say — fails just
+                // that track and moves on, rather than escaping the loop
+                // entirely and leaving every track after it (and the ones
+                // still to come in this batch) stuck showing "Analysing…"
+                // forever because AnalysisProgressBus.update/finish never
+                // ran again.
+                try {
+                    val pcm = runCatching { DesktopAudioDecoder.decode(sourceFile) }.getOrNull()
+                    val analysis = pcm?.let { runCatching { analyzer.analyse(it) }.getOrNull() }
+                    if (analysis == null) {
+                        failed++
+                    } else {
+                        synchronized(lock) {
+                            _tracks.value = _tracks.value.map { track ->
+                                if (track.path == sourceFile.path) {
+                                    track.copy(
+                                        bpm = analysis.bpm,
+                                        camelotKey = analysis.camelotKey,
+                                        energyLevel = analysis.energyLevel,
+                                    )
+                                } else {
+                                    track
+                                }
+                            }
+                            runCatching { persistLocked() }
                         }
                     }
-                    persist()
+                } catch (e: Exception) {
+                    failed++
+                } finally {
+                    AnalysisProgressBus.update(done = index + 1, current = sourceFile.name, failed = failed)
                 }
-                AnalysisProgressBus.update(done = index + 1, current = sourceFile.name, failed = failed)
             }
+        } finally {
+            // Always reached, even if something above threw past its own
+            // per-track guard — the progress readout must never be left
+            // showing a run that has actually stopped.
             AnalysisProgressBus.finish()
-        }.apply {
-            name = "SirMatchALot-DesktopAnalysis"
-            isDaemon = true
-            start()
         }
     }
 
@@ -131,7 +180,8 @@ class DesktopLibrary(
         }.getOrDefault(emptyList())
     }
 
-    private fun persist() {
+    /** Writes [_tracks] to disk. Caller must hold [lock]. */
+    private fun persistLocked() {
         val array = JSONArray()
         _tracks.value.forEach { track ->
             array.put(
