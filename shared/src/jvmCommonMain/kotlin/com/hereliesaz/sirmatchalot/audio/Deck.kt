@@ -372,7 +372,13 @@ class Deck(
     /** Seeks to a fraction of one revolution. */
     fun seekToFraction(fraction: Float) {
         val cycle = cycleFrames
-        playhead = if (cycle <= 0) 0.0 else fraction.coerceIn(0f, 1f).toDouble() * cycle
+        val position = if (cycle <= 0) 0.0 else fraction.coerceIn(0f, 1f).toDouble() * cycle
+        // Synchronized against the render thread's own end-of-block write to
+        // this same field, same as nudgeSeconds/seekToSeconds — an
+        // unsynchronized write here is a lost update if the render thread's
+        // in-flight block finishes and overwrites it with a position computed
+        // from before this seek landed.
+        synchronized(playheadLock) { playhead = position }
     }
 
     fun reset() {
