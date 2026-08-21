@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
@@ -378,6 +379,8 @@ fun MainScreen(
                     // every measurement it makes had no effect on.
                     val ranked by viewModel.rankedTracks.collectAsState()
                     val sort by viewModel.librarySort.collectAsState()
+                    val masterVolume by viewModel.audioVolume.collectAsState()
+                    val bassBoostDb by viewModel.bassBoostDb.collectAsState()
                     PlatterScreen(
                         state = platterState,
                         tracks = ranked,
@@ -387,6 +390,8 @@ fun MainScreen(
                         gestureDebugLogging = settings.gestureDebugLogging,
                         sortLabel = sort.label,
                         onCycleSort = { viewModel.cycleLibrarySort() },
+                        masterVolume = masterVolume,
+                        bassBoostDb = bassBoostDb,
                     )
                 }
                 // Keyed on the engine generation: the pad grid holds the
@@ -792,6 +797,13 @@ private fun PairingDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        // dismissOnClickOutside = false: onDismissRequest above still fires
+        // for the system back gesture/button, which still counts as an
+        // explicit "no" — but an accidental tap outside the dialog must not
+        // silently stand in for either button, per the doc comment above.
+        // AlertDialog's own default is true, which had been quietly letting
+        // exactly that happen.
+        properties = DialogProperties(dismissOnClickOutside = false),
         containerColor = Color(0xFF18181B),
         title = { Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
         text = {
