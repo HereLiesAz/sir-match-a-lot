@@ -251,10 +251,12 @@ laptop from measuring and remembering the tracks a working DJ has loaded.
 
 `desktopApp/build.gradle.kts`'s `nativeDistributions` block produces a Msi
 (Windows), a Dmg (macOS), and a Deb (Linux) — `jpackage` only builds the
-installer for the OS it runs on, so CI would need a matrix of runners to
-produce all three; this repo doesn't have that wired up yet, and a Msi/Dmg
-built this way from Linux is not itself possible (`jpackage` doesn't cross-
-package). The three icon files under `desktopApp/src/main/resources/`
+installer for the OS it runs on, and cannot cross-package a Msi/Dmg from
+Linux. `.github/workflows/build-and-release.yml`'s `desktop-package` job is
+that matrix: one job per format, each on its native runner
+(`windows-latest`/`macos-latest`/`ubuntu-latest`), running after the Android
+job so it can upload into the same GitHub release rather than needing one of
+its own. The three icon files under `desktopApp/src/main/resources/`
 (`icon.ico`, `icon.icns`, `icon.png`) were generated once from the Android
 app's `xxxhdpi` launcher icon and are checked in rather than regenerated on
 every build; `packageVersion` is read from the same `version.properties`

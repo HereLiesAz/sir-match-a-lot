@@ -54,11 +54,33 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest
 
+      # The desktop app (:desktopApp) and the shared engine's desktop target
+      # (:shared:desktopTest) exist alongside the Android app but were never
+      # actually run in CI — `testDebugUnitTest` above is an Android Gradle
+      # task and only touches :app. A regression in DesktopAudioOutput,
+      # DesktopLibrary, or the shared dsp/audio/sync code as seen from the
+      # desktop target could land without a single test running against it.
+      # These need the same JDK/Gradle setup as above but no emulator or
+      # display — none of the desktop tests open a Compose window.
+      - name: Run desktop unit tests
+        run: ./gradlew :shared:desktopTest :desktopApp:test
+
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-report
           path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload desktop test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-report
+          path: |
+            shared/build/reports/tests/desktopTest
+            desktopApp/build/reports/tests/test
           if-no-files-found: ignore
           retention-days: 14
