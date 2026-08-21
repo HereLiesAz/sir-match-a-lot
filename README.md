@@ -142,6 +142,11 @@ Both are open formats rather than an SDK, specified in
 
 # Desktop
 ./gradlew :desktopApp:run                       # run it directly
+./gradlew :desktopApp:hotRun                     # run with Compose Hot Reload — edit
+                                                  # a @Composable, save, see it update
+                                                  # in the already-running window,
+                                                  # no restart. Downloads a JetBrains
+                                                  # Runtime (JBR) the first time.
 ./gradlew :desktopApp:test                       # unit tests
 ./gradlew :desktopApp:packageDeb                 # or packageMsi / packageDmg
                                                   # (each only builds on its native OS)
@@ -152,6 +157,18 @@ Both are open formats rather than an SDK, specified in
 
 Release signing is supplied by CI. Without a keystore the Android release variant
 builds unsigned rather than failing.
+
+### Compose Hot Reload's MCP server
+
+Hot Reload also ships a Model Context Protocol server, exposed as the Gradle
+task `:desktopApp:hotMcpServer`. `.mcp.json` at the repo root registers it as
+`compose-hot-reload`, so an MCP-aware coding agent (this one included) can
+`reload`, `take_screenshot`, `get_semantic_tree`, `get_logs`, and simulate
+`click`/`type_text`/`scroll` against the actual running desktop window —
+reasoning about the real, live layout instead of only the Compose source. The
+task manages the running application itself; there is no separate app process
+to start first. This surface is marked experimental upstream (introduced in
+Compose Hot Reload 1.2.0), so treat its exact behavior as still settling.
 
 ## 📋 Status
 

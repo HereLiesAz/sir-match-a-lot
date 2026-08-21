@@ -21,6 +21,11 @@ sqliteJdbc = "3.53.2.1"
 json = "20260719"
 # Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
 composeMultiplatform = "1.11.1"
+# Compose Hot Reload's minimum supported Compose Multiplatform version is
+# 1.10.0, so 1.11.1 above qualifies. 1.2.0 is the first stable release with
+# the MCP server (reload/screenshot/semantic-tree/click tools for an agent
+# driving the running desktop app) rather than only the IDE hot-reload path.
+composeHotReload = "1.2.0"
 # KSP releases track the Kotlin version they were built against. 2.3.10 is the
 # newest published build; KSP2 accepts the 2.4.x compiler, so this is correct
 # rather than a mismatch. Revisit when a 2.4.x KSP ships.
@@ -72,6 +77,7 @@ android-application = { id = "com.android.application", version.ref = "androidGr
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "androidGradlePlugin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
+compose-hot-reload = { id = "org.jetbrains.compose.hot-reload", version.ref = "composeHotReload" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

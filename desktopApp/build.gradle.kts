@@ -7,6 +7,16 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.compose.multiplatform)
+    // Iterating on this module's UI previously meant a full JVM restart —
+    // reload the audio engine, rebuild the deck state, reconnect any open
+    // sync room — for every layout tweak. This runs the app under the
+    // JetBrains Runtime's enhanced class redefinition instead, so a saved
+    // Compose UI change hot-swaps into the already-running window. It also
+    // exposes a `hotMcpServer` Gradle task (see .mcp.json at the repo
+    // root) that lets an agent reload, screenshot, read the semantic tree
+    // of, and simulate input against the running app directly, rather than
+    // reasoning about layout from source alone.
+    alias(libs.plugins.compose.hot.reload)
 }
 
 // The touch-laptop side of the room: a plain desktop JVM app, not another
