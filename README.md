@@ -163,12 +163,18 @@ builds unsigned rather than failing.
 Hot Reload also ships a Model Context Protocol server, exposed as the Gradle
 task `:desktopApp:hotMcpServer`. `.mcp.json` at the repo root registers it as
 `compose-hot-reload`, so an MCP-aware coding agent (this one included) can
-`reload`, `take_screenshot`, `get_semantic_tree`, `get_logs`, and simulate
+`take_screenshot`, `get_semantic_tree`, `get_logs`, `reload`, and simulate
 `click`/`type_text`/`scroll` against the actual running desktop window —
-reasoning about the real, live layout instead of only the Compose source. The
-task manages the running application itself; there is no separate app process
-to start first. This surface is marked experimental upstream (introduced in
-Compose Hot Reload 1.2.0), so treat its exact behavior as still settling.
+reasoning about the real, live layout instead of only the Compose source.
+
+`hotMcpServer` does not launch the app itself: it watches
+`desktopApp/build/run/main/main.pid` for an already-running instance started
+by `:desktopApp:hotRun`, and its tools report `"connected": false` until one
+is found. Start `hotRun` first, then the MCP server. Verified working
+end-to-end in this repo (Kotlin 2.4.10 / Compose 1.11.1 / Hot Reload 1.2.0,
+under Xvfb with a software GL fallback): `status`, `list_windows`,
+`take_screenshot`, and `get_semantic_tree` all returned real, live state from
+a running instance of this app.
 
 ## 📋 Status
 
