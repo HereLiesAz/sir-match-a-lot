@@ -267,24 +267,33 @@ class TransitionChoreographerTest {
 
     @Test
     fun `a bass swap hands the low end over rather than stacking it`() {
-        val script = TransitionScript(
-            style = TransitionStyle.BASS_SWAP,
-            exitSeconds = 200.0,
-            entrySeconds = 0.0,
-            fadeSeconds = 30.0,
-            curve = FadeCurve.FAST_IN,
-        )
-        // The incoming track must arrive with its bass already out of the way;
-        // two basslines at once is the thing this style exists to avoid.
-        val real = choreographer.choreograph(
-            structure(),
-            structure(id = "b"),
-            match(95),
-            SetArc.Phase.BUILD,
-            Random(0),
-        )
-        assertTrue(script.endSeconds == 230.0)
-        assertTrue(real.fadeSeconds > 0.0)
+        // The incoming track must arrive with its bass already cut, and the
+        // outgoing track must keep its own until the handoff — never both at
+        // full strength together, which is the entire reason this style
+        // exists instead of a plain blend. The previous version of this test
+        // built its own unused TransitionScript and checked `endSeconds`
+        // against arithmetic it had just performed itself
+        // (`exitSeconds + fadeSeconds == 230.0` for inputs of 200 and 30) —
+        // true regardless of anything BASS_SWAP's actual events do, and it
+        // never looked at `real` — the choreographed script — at all.
+        val script = (0 until 500)
+            .map { choreographer.choreograph(structure(), structure(id = "b"), match(95), SetArc.Phase.BUILD, Random(it.toLong())) }
+            .first { it.style == TransitionStyle.BASS_SWAP }
+
+        val eq = script.events.mapNotNull { event ->
+            (event.action as? ScriptAction.Eq)?.let { Triple(event.atSeconds, it.role, it.bassDb) }
+        }
+
+        val (atZero, roleAtZero, bassAtZero) = eq.first()
+        assertEquals(0.0, atZero, 1e-9)
+        assertEquals(MixRole.INCOMING, roleAtZero)
+        assertTrue("incoming must arrive with its bass already cut", bassAtZero < 0.0)
+
+        val handoffTime = script.fadeSeconds * 0.75
+        val outgoingAtHandoff = eq.first { it.first == handoffTime && it.second == MixRole.OUTGOING }.third
+        val incomingAtHandoff = eq.first { it.first == handoffTime && it.second == MixRole.INCOMING }.third
+        assertTrue("outgoing's bass must be gone by the handoff", outgoingAtHandoff <= -18.0)
+        assertEquals("incoming must be full by the handoff", 0.0, incomingAtHandoff, 1e-9)
     }
 
     @Test
