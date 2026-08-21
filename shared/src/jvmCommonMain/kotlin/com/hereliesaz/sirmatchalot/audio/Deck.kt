@@ -312,9 +312,32 @@ class Deck(
         }
     }
 
+    /**
+     * Smoothed towards [gain] one frame at a time, same time constant as
+     * [Mixer]'s crossfade/master smoothing — 1/[GAIN_SMOOTHING] = 200
+     * samples, ~4.5 ms at 44.1 kHz.
+     *
+     * This used to read [gain] once per block and multiply the whole block
+     * by it, unlike every other gain stage in the render graph: a scripted
+     * gain change (`TransitionChoreographer`'s flourishes go straight to
+     * this field) took effect on the very next sample as a step, not a ramp
+     * — an audible click on every flourish, in the middle of an automated
+     * mix.
+     */
+    private var smoothedGain = 1f
+    private var gainInitialised = false
+
     private fun applyGain(out: FloatArray, frames: Int) {
         val target = gain
-        for (i in 0 until frames * CHANNELS) out[i] *= target
+        if (!gainInitialised) {
+            smoothedGain = target
+            gainInitialised = true
+        }
+        for (frame in 0 until frames) {
+            smoothedGain += (target - smoothedGain) * GAIN_SMOOTHING
+            val base = frame * CHANNELS
+            for (channel in 0 until CHANNELS) out[base + channel] *= smoothedGain
+        }
     }
 
     private fun peakOf(out: FloatArray, frames: Int): Float {
@@ -391,5 +414,8 @@ class Deck(
 
     companion object {
         const val CHANNELS = 2
+
+        /** See [applyGain]; same time constant as [Mixer.SMOOTHING]. */
+        private const val GAIN_SMOOTHING = 0.005f
     }
 }
