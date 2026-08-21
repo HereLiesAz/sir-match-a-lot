@@ -360,6 +360,18 @@ jobs:
         shell: bash
         run: ./gradlew :desktopApp:${{ matrix.task }} --build-cache
 
+      # jpackage writes its actual error to a log file rather than stdout, so
+      # a failed run otherwise shows only "Exit code: 1" and a path nobody can
+      # reach once the runner is gone.
+      - name: Dump jpackage logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for f in desktopApp/build/compose/logs/*/*.txt; do
+            echo "----- $f -----"
+            cat "$f" || true
+          done
+
       - name: Locate installer
         id: locate
         shell: bash
