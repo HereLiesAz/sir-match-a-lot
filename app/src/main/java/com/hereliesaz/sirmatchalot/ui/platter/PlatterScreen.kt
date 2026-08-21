@@ -26,7 +26,9 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
@@ -187,6 +189,63 @@ private fun DeckClipList(
 }
 
 /**
+ * What each dot on the ring means, in a corner nothing else uses.
+ *
+ * The ring itself carries this information in colour alone — five kinds of
+ * mark distinguished only by hue, with nothing anywhere naming which is
+ * which. A performer who did not set every cue and does not already know
+ * that amber is a drop and violet is a build cannot read the ring at all; the
+ * dots were, in effect, information the UI had and never told anyone. Text
+ * only, no `clickable`/`pointerInput`, same as [DeckClipList]: it explains
+ * the ring, it does not sit on top of it as a control.
+ *
+ * Only kinds actually present are listed, so an empty or cue-only session
+ * does not get a five-line key for four marks it has none of.
+ */
+@Composable
+private fun MarkerLegend(
+    markers: List<PlatterMarker>,
+    modifier: Modifier = Modifier,
+) {
+    val present = PlatterMarker.Kind.entries.filter { kind -> markers.any { it.kind == kind } }
+    if (present.isEmpty()) return
+
+    Column(
+        modifier = modifier
+            .background(Color(0xFF05050A).copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        for (kind in present) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "●",
+                    color = markerColour(kind),
+                    fontSize = 10.sp,
+                )
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = markerLabel(kind),
+                    color = Color.White.copy(alpha = 0.82f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 0.5.sp,
+                )
+            }
+        }
+    }
+}
+
+private fun markerLabel(kind: PlatterMarker.Kind): String = when (kind) {
+    PlatterMarker.Kind.CUE -> "CUE"
+    PlatterMarker.Kind.DROP -> "DROP"
+    PlatterMarker.Kind.BREAKDOWN -> "BREAKDOWN"
+    PlatterMarker.Kind.BUILD -> "BUILD"
+    PlatterMarker.Kind.VOCAL -> "VOCAL"
+}
+
+/**
  * The platter, as the feature of the app.
  *
  * Not inside a card, not on a panel — it fills the screen, with only the
@@ -308,6 +367,15 @@ fun PlatterScreen(
         return PlatterGeometry.deckAt(radius, baseRadius) to
             PlatterGeometry.fractionOf(local.x, local.y, cx, cy, drawnRotation)
     }
+    // A long press on the ring deletes the selected clip(s) — and until now
+    // did it immediately, with nothing telling the performer beforehand that
+    // long-pressing IS the delete gesture; the first anyone learned that was
+    // by accidentally triggering it mid-set. This gates the actual removal
+    // behind the same confirm/cancel dialog pattern SettingsScreen's
+    // DestructiveAction uses for its own irreversible actions, rather than
+    // inventing a second pattern for the same kind of decision.
+    var pendingRemoveConfirm by remember { mutableStateOf(false) }
+
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
 
@@ -748,10 +816,15 @@ fun PlatterScreen(
                         // play button for the long-press timeout is an ordinary
                         // way to press it, and it deleted the selection and
                         // started playback in the same gesture.
+                        //
+                        // This used to remove on the spot, with no warning
+                        // beforehand and no way back. It now only arms the
+                        // confirm dialog below; the actual removal happens on
+                        // "Confirm" there.
                         onLongPress = { position ->
                             if (isTransportButton(position)) return@detectTapGestures
                             if (!isOnPlatter(position)) return@detectTapGestures
-                            currentActions.onRemoveSelected()
+                            pendingRemoveConfirm = true
                         },
                     )
                 }
@@ -828,6 +901,24 @@ fun PlatterScreen(
                 modifier = Modifier.align(Alignment.Center),
             )
 
+            // Where a track dragged up from the strip would land if let go
+            // right now, or null while nothing is being dragged or the finger
+            // is off the rings. Computed fresh every frame from `dragPosition`
+            // rather than stored — it is a read of where the finger already
+            // is, not state of its own, and it never reaches the view model
+            // unless the drag actually ends on the ring.
+            val dragPreview = draggingTrack?.let { track ->
+                dropTargetAt(dragPosition)?.let { (deck, fraction) ->
+                    PendingClip(
+                        id = "__drag_preview__",
+                        deck = deck,
+                        fraction = fraction,
+                        title = track.title,
+                        stage = "",
+                    )
+                }
+            }
+
             PlatterCanvas(
                 state = state,
                 scale = scale,
@@ -838,6 +929,7 @@ fun PlatterScreen(
                 // the top and the waveform sweeps past it.
                 rotation = drawnRotation,
                 pulse = elapsedMillis % PULSE_PERIOD_MS / PULSE_PERIOD_MS.toFloat() * TWO_PI,
+                dragPreview = dragPreview,
             )
 
             // What is actually on each deck, in words. The ring says it in
@@ -870,6 +962,17 @@ fun PlatterScreen(
                     .align(Alignment.BottomEnd)
                     .padding(end = 10.dp, bottom = 10.dp)
                     .widthIn(max = 140.dp),
+            )
+
+            // What every dot on the ring means. Top-right, the one corner
+            // neither deck's clip list uses (Deck A's list is top-left, Deck
+            // B's is bottom-right), so the key never crowds what it explains.
+            MarkerLegend(
+                markers = state.markers,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 10.dp, top = 10.dp)
+                    .widthIn(max = 120.dp),
             )
 
             // What the platter is waiting for, in the middle of the platter.
@@ -941,38 +1044,6 @@ fun PlatterScreen(
                 }
             }
 
-            draggingTrack?.let {
-                val target = dropTargetAt(dragPosition)
-                if (target != null) {
-                    val (deck, fraction) = target
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val cx = size.width / 2f
-                        val cy = size.height / 2f
-                        val baseRadius = PlatterGeometry.baseRadius(
-                            size.width.toFloat(), size.height.toFloat(), scale,
-                        )
-                        // Where the rays actually start, which is the base
-                        // radius for both decks — they grow outward from it for
-                        // A and inward for B (see PlatterCanvas.drawDeck). The
-                        // preview drew at `ringRadius`, 1.25 and 0.75 of the
-                        // base, so the circle promising "your clip lands here"
-                        // was drawn at a radius nothing lands on. The mark for
-                        // the exact start point stays on the same radius, so the
-                        // promise and the drop agree.
-                        val ringRadius = baseRadius
-                        val colour =
-                            if (deck == PlatterGeometry.Deck.A) Color(0xFF06B6D4) else Color(0xFFF59E0B)
-                        drawCircle(
-                            color = colour.copy(alpha = 0.25f),
-                            radius = ringRadius,
-                            center = Offset(cx, cy),
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
-                        )
-                        val (px, py) = PlatterGeometry.pointAt(fraction, ringRadius, cx, cy)
-                        drawCircle(color = colour, radius = 16f, center = Offset(px, py))
-                    }
-                }
-            }
         }
 
         // Playhead lock. Off by default: a fixed waveform is easier to aim a
@@ -1051,6 +1122,37 @@ fun PlatterScreen(
             Text(track.title, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
+    }
+
+    // Confirms the long-press-on-the-ring delete armed above. Mirrors
+    // SettingsScreen's DestructiveAction dialog rather than a new pattern:
+    // same title/message/Confirm/Cancel shape, red for the destructive verb.
+    if (pendingRemoveConfirm) {
+        AlertDialog(
+            onDismissRequest = { pendingRemoveConfirm = false },
+            containerColor = Color(0xFF18181B),
+            title = { Text("Remove clip?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Text(
+                    "This removes the selected clip(s) from the platter. This cannot be undone.",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRemoveConfirm = false
+                    currentActions.onRemoveSelected()
+                }) {
+                    Text("Remove", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoveConfirm = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            },
+        )
     }
 }
 
