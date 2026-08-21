@@ -262,7 +262,13 @@ app's `xxxhdpi` launcher icon and are checked in rather than regenerated on
 every build; `packageVersion` is read from the same `version.properties`
 `:app` uses (major.minor.patch only — installer formats reject a fourth
 build-number component), so the desktop package version tracks the app's
-real version instead of a hand-maintained `"1.0.0"`.
+real version instead of a hand-maintained `"1.0.0"`. macOS's `jpackage`
+bundler additionally rejects a leading `0` in that version
+("`app-version` cannot be zero or negative") — `CFBundleShortVersionString`
+must start with a positive integer — which Windows and Linux don't enforce;
+`build.gradle.kts` widens the major component to at least 1 only when
+running on macOS (`isMacOs`/`macDesktopPackageVersion`), leaving the real
+`0.x.y` the other two platforms package unaffected.
 
 ## The audio graph
 

@@ -46,8 +46,18 @@ val versionPropsFile = rootProject.file("version.properties")
 if (versionPropsFile.exists()) {
     versionProps.load(FileInputStream(versionPropsFile))
 }
-val desktopPackageVersion = listOf("major", "minor", "patch")
-    .joinToString(".") { versionProps.getProperty(it)?.toIntOrNull()?.toString() ?: "0" }
+val versionMajor = versionProps.getProperty("major")?.toIntOrNull() ?: 0
+val versionMinor = versionProps.getProperty("minor")?.toIntOrNull() ?: 0
+val versionPatch = versionProps.getProperty("patch")?.toIntOrNull() ?: 0
+val desktopPackageVersion = "$versionMajor.$versionMinor.$versionPatch"
+
+// jpackage's macOS app-image bundler rejects a leading 0 ("The first number
+// in an app-version cannot be zero or negative") — CFBundleShortVersionString
+// must start with a positive integer. Windows and Linux have no such rule
+// and package the real 0.x.y fine, so this only needs to widen what macOS
+// specifically sees, not the version everyone else builds with.
+val isMacOs = org.gradle.internal.os.OperatingSystem.current().isMacOsX
+val macDesktopPackageVersion = "${versionMajor.coerceAtLeast(1)}.$versionMinor.$versionPatch"
 
 compose.desktop {
     application {
@@ -56,7 +66,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "SirMatchALot"
-            packageVersion = desktopPackageVersion
+            packageVersion = if (isMacOs) macDesktopPackageVersion else desktopPackageVersion
 
             // One source image, three platform icon formats generated from it
             // (see desktopApp/src/main/resources) — java.awt.FileDialog and
@@ -68,6 +78,7 @@ compose.desktop {
             }
             macOS {
                 iconFile.set(project.file("src/main/resources/icon.icns"))
+                dmgPackageVersion = macDesktopPackageVersion
             }
             linux {
                 iconFile.set(project.file("src/main/resources/icon.png"))
