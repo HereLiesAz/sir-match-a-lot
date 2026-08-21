@@ -648,11 +648,38 @@ fun TrackRowItem(
                     }
                 }
 
+                var confirmingDelete by remember { mutableStateOf(false) }
+
+                // .size(24.dp) used to be the whole tappable area — well
+                // under the 48dp minimum touch target this app uses
+                // elsewhere (see SettingsScreen's DestructiveAction). The
+                // icon glyph stays small; only the touch target grows.
                 IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(24.dp)
+                    onClick = { confirmingDelete = true },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                }
+
+                // Same confirm/cancel dialog shape as SettingsScreen's
+                // DestructiveAction, so a track deleted here is deleted the
+                // same deliberate way settings are reset there — this used
+                // to delete on tap with no way back.
+                if (confirmingDelete) {
+                    AlertDialog(
+                        onDismissRequest = { confirmingDelete = false },
+                        title = { Text("Delete \"${track.title}\"?") },
+                        text = { Text("This removes the track from the library. This cannot be undone.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmingDelete = false
+                                onDelete()
+                            }) { Text("Delete", color = Color(0xFFEF4444)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
         }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -215,11 +216,23 @@ fun SamplerScreen(
         // `revision` is read so the grid recomposes as pads change underneath it.
         @Suppress("UNUSED_EXPRESSION") revision
 
+        // Weighted rather than left to its own intrinsic height: with 1.1
+        // aspect-ratio cells four across, the grid's natural height scales
+        // with available *width* — and in landscape, where width is large
+        // and height is short, that natural height comfortably exceeds the
+        // whole screen. An unweighted grid in a plain Column claims all of
+        // it, leaving nothing for the FilterPad below (also weighted), which
+        // measured to 0dp. Splitting the leftover space between the two
+        // means neither can starve the other regardless of orientation; the
+        // grid still scrolls internally if its content doesn't fit its share.
         LazyVerticalGrid(
             columns = GridCells.Fixed(4),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .heightIn(min = 96.dp),
         ) {
             items(sampler.pads) { pad ->
                 PadButton(
