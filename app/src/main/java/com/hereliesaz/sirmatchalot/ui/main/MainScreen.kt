@@ -107,7 +107,19 @@ fun MainScreen(
 
     // Changing role moves the device to the screen it is now for, rather than
     // leaving it on a tab it is no longer allowed to reach.
-    LaunchedEffect(role) { currentTab = role.tab() }
+    //
+    // Keyed on `role`, but `LaunchedEffect` restarts on the *first*
+    // composition too — including the one after a rotation recreates the
+    // activity, since there is no configChanges entry for it — and that
+    // unconditionally overwrote whatever tab `currentTab` had just been
+    // restored to by `rememberSaveable` above. `lastAppliedRole` makes this
+    // fire only on a real role change, the way the comment already claimed
+    // it did.
+    var lastAppliedRole by rememberSaveable { mutableStateOf(role) }
+    LaunchedEffect(role) {
+        if (role != lastAppliedRole) currentTab = role.tab()
+        lastAppliedRole = role
+    }
 
     // The system back gesture used to fall straight through to the activity
     // and close the app from any tab, mid-set, with nothing intercepting it —

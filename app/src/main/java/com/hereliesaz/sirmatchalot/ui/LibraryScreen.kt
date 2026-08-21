@@ -235,30 +235,18 @@ fun LibraryScreen(
             }
         }
 
-        // Analysis is an FFT pass over each whole track and takes real seconds.
-        // Without this the button was indistinguishable from a dead one for the
-        // length of the run.
-        analysisProgress?.let { progress ->
-            item {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    // Clamped: the state right after the analysis loop finishes
-                    // (done == total, briefly, before the run is cleared) hit
-                    // this "current item" formula and showed "N+1/N".
-                    "Analysing ${(progress.done + 1).coerceAtMost(progress.total)}/${progress.total}: ${progress.current}",
-                    color = Color(0xFF81E6D9),
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                )
-                LinearProgressIndicator(
-                    progress = { progress.fraction },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Color.Cyan,
-                    trackColor = Color(0xFF27272A),
-                )
-            }
-        }
-
+        // analysisProgress and backgroundAnalysis (the card above, "the
+        // background run, mirrored from the same state its notification
+        // shows") are both derived from the one AnalysisProgressBus.state —
+        // there is only ever one analysis run, background or
+        // user-triggered "Analyse new" alike. This used to render its own
+        // second done/total/track readout and progress bar right underneath
+        // that card, showing the same run twice — including the exact
+        // off-by-one the two used to disagree about (task history: "analysis
+        // progress off-by-one between app bar and library screen"), since
+        // one was clamped to N+1/N and the other was not. analysisProgress
+        // itself is kept: the "Analyse new"/"Stop" button above still needs
+        // it to know whether a run is active.
         item {
             Spacer(Modifier.height(8.dp))
 
