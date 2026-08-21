@@ -43,7 +43,33 @@ class KeyDetector(
 ) {
     fun detect(samples: FloatArray, sampleRate: Int): KeyEstimate? {
         val chroma = chromagram(samples, sampleRate) ?: return null
+        // A flat chroma — energy spread evenly across all twelve pitch
+        // classes, which is what white noise and unpitched broadband material
+        // produce — carries no tonal shape to classify. Without this gate,
+        // [classify] still picks a "winner" among the 24 profiles: one of them
+        // correlates least poorly purely by chance, and that chance winner
+        // came back with the confidence of a real key. Verified directly
+        // against white noise across several seeds, all landing near the
+        // concentration floor this rejects.
+        if (chromaConcentration(chroma) < MINIMUM_TONAL_CONCENTRATION) return null
         return classify(chroma)
+    }
+
+    /**
+     * How far [chroma]'s energy is concentrated on particular pitch classes,
+     * 0..1 — 0 for energy spread perfectly evenly across all twelve, rising as
+     * real weight piles onto the notes actually played. Measured as the
+     * chroma's variance against the maximum a 12-bin distribution summing to 1
+     * can have (all mass in one bin).
+     */
+    internal fun chromaConcentration(chroma: DoubleArray): Double {
+        var variance = 0.0
+        for (i in 0 until 12) {
+            val d = chroma[i] - 1.0 / 12.0
+            variance += d * d
+        }
+        variance /= 12.0
+        return (variance / MAX_CHROMA_VARIANCE).coerceIn(0.0, 1.0)
     }
 
     /**
@@ -108,7 +134,9 @@ class KeyDetector(
         }
 
         // Pearson correlations live in [-1, 1]; map the winner's margin into a
-        // 0..1 confidence.
+        // 0..1 confidence. This says nothing about whether there was any
+        // tonal content to classify in the first place — that is [detect]'s
+        // job, via [chromaConcentration], before this is ever reached.
         val margin = ((bestScore - runnerUp) / 2.0).coerceIn(0.0, 1.0)
         return KeyEstimate(bestRoot, bestMinor, margin.toFloat())
     }
@@ -149,5 +177,23 @@ class KeyDetector(
         val MINOR_PROFILE = doubleArrayOf(
             6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
         )
+
+        /**
+         * Variance of a 12-bin distribution summing to 1 with every value 0
+         * except one bin at 1 — the most concentrated a chroma can be. See
+         * [chromaConcentration].
+         */
+        private const val MAX_CHROMA_VARIANCE = (11.0 * 11.0 + 11.0) / (144.0 * 12.0)
+
+        /**
+         * The concentration floor below which [detect] declines to classify at
+         * all. Chosen from measurement: white noise across several seeds
+         * consistently measured concentration around 0.0044, a real I-IV-V-I
+         * chord progression measured 0.107 (~24x that), and a plain sustained
+         * triad measured 0.225 (~50x). 0.02 sits with roughly 4.5x headroom
+         * above the measured noise ceiling and 5x headroom below the weakest
+         * real tonal signal measured — not pinned to the edge of either.
+         */
+        private const val MINIMUM_TONAL_CONCENTRATION = 0.02
     }
 }

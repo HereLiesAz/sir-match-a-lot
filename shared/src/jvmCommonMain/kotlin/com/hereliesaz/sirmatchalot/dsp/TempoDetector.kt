@@ -151,14 +151,49 @@ class TempoDetector(
         return bestOffset.toDouble()
     }
 
-    /** How far the winner stood above the mean of all candidate scores. */
+    /**
+     * How far the winner stands above the field, in standard deviations of the
+     * candidate scores — then squashed to 0..1.
+     *
+     * This used to be `(bestScore - mean) / (bestScore + mean)`, hard-clamped to
+     * 0 whenever the mean score was not positive. Autocorrelation scores swing
+     * negative at anti-phase lags as a matter of course, so for many genuinely
+     * sharp, correct periodicities the mean of all candidate lags landed at or
+     * below zero — and the winner's confidence was reported as exactly 0 no
+     * matter how far it stood out. Verified against the detector's own click
+     * track fixture: 90, 100, 110, 140 and 174 BPM all measured the correct
+     * tempo with the old formula reporting confidence 0.0, while unperiodic
+     * input (white noise, a sustained tone, a static chord) also reported 0.0 —
+     * making the figure useless for telling a real tempo from noise, which is
+     * the one job it exists to do.
+     *
+     * A z-score does not have that sign problem: it measures the winner's
+     * distance from the field in units of the field's own spread, whichever way
+     * the mean sits. `z / (z + Z_HALF)` maps that unbounded distance onto 0..1
+     * with a smooth knee, rather than a raw sigmoid whose scale would need
+     * separate tuning.
+     */
     private fun confidenceOf(scores: DoubleArray, minLag: Int, maxLag: Int, bestScore: Double): Float {
         var sum = 0.0
+        var sumSquares = 0.0
         var count = 0
-        for (lag in minLag..maxLag) { sum += scores[lag]; count++ }
+        for (lag in minLag..maxLag) {
+            val s = scores[lag]
+            sum += s
+            sumSquares += s * s
+            count++
+        }
         if (count == 0) return 0f
         val mean = sum / count
-        if (mean <= 0.0) return 0f
-        return ((bestScore - mean) / (bestScore + mean)).coerceIn(0.0, 1.0).toFloat()
+        val variance = (sumSquares / count - mean * mean).coerceAtLeast(0.0)
+        val stdDev = kotlin.math.sqrt(variance)
+        if (stdDev <= 1e-9) return 0f
+        val z = ((bestScore - mean) / stdDev).coerceAtLeast(0.0)
+        return (z / (z + Z_HALF_CONFIDENCE)).coerceIn(0.0, 1.0).toFloat()
+    }
+
+    companion object {
+        /** z-score at which confidence reads 0.5 — see [confidenceOf]. */
+        private const val Z_HALF_CONFIDENCE = 2.2
     }
 }

@@ -90,16 +90,35 @@ class EnergyCurve(
             val bins = stft.bins
             stft.forEachFrame(samples) { frame, magnitudes ->
                 val window = frame / framesPerWindow
-                var power = 0.0
+                // Loudness is measured directly from the time-domain samples of
+                // this frame, in dBFS relative to full scale (±1.0) — not from
+                // the FFT magnitude sum, whose scale depends on frame size and
+                // window function and has no fixed relationship to the sample
+                // amplitude. Using the raw magnitude sum as if it were dBFS put
+                // 0 dB at roughly -26 dBFS of real signal (a Hann-windowed
+                // 1024-point sum inflates RMS by ~19.6x), so every real,
+                // mastered track (-14..-6 dBFS) saturated the [0,1] loudness
+                // term at the same value: every track came out "equally
+                // energetic".
+                val offset = frame * stft.hop
+                var sumSquares = 0.0
+                var sampleCount = 0
+                for (i in 0 until stft.frameSize) {
+                    val s = offset + i
+                    if (s >= samples.size) break
+                    val v = samples[s].toDouble()
+                    sumSquares += v * v
+                    sampleCount++
+                }
+                loudness[window] += if (sampleCount > 0) sqrt(sumSquares / sampleCount) else 0.0
+
                 var weighted = 0.0
                 var total = 0.0
                 for (k in 1 until bins) {
                     val magnitude = magnitudes[k].toDouble()
-                    power += magnitude * magnitude
                     weighted += magnitude * stft.binFrequency(k, sampleRate)
                     total += magnitude
                 }
-                loudness[window] += sqrt(power / bins)
                 brightness[window] += if (total > 0.0) weighted / total else 0.0
                 counts[window]++
             }

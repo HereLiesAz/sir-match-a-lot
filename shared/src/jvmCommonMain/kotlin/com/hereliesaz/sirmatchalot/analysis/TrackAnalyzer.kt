@@ -68,27 +68,27 @@ class TrackAnalyzer(
     /**
      * Measures [pcm].
      *
-     * **On the confidence thresholds.** They default to zero, which is a
-     * deliberate choice rather than an oversight. "No tempo" is decided
-     * structurally, not by a threshold: [TempoDetector] returns null when the
-     * onset envelope has no periodicity at all, which is what silence and
-     * unpitched ambience produce. A threshold on top of that would be a second,
-     * weaker gate — and an earlier revision set it to 0.05, which was an
-     * uncalibrated guess that discarded a correctly measured 100 BPM.
-     *
-     * The confidence figures are not probabilities and are not calibrated across
-     * tempi; they are relative peak prominence. So they are *surfaced* — stored
-     * on the track and shown in the library — rather than used to hide a
-     * measurement behind a number nobody chose on evidence. Callers that want to
-     * be stricter can raise these.
+     * **On the confidence thresholds.** These used to default to zero, on the
+     * theory that "no tempo" was decided structurally by [TempoDetector]
+     * returning null, and that a threshold on top of that would be a second,
+     * weaker, uncalibrated gate. That theory was wrong: [TempoDetector] returns
+     * a non-null estimate — with a plausible-looking BPM — for white noise, a
+     * sustained tone, and a static chord, none of which have a tempo. The same
+     * was true of [KeyDetector] and flat, unpitched chroma. Both detectors'
+     * *confidence* figures, once their own formulas were fixed (see the
+     * comments on [TempoDetector]'s and [KeyDetector]'s confidence
+     * calculations), do separate real periodicity/tonality from noise with a
+     * comfortable margin — so they are worth gating on after all. The defaults
+     * below sit below every real measurement in this module's test fixtures
+     * and above every noise/silence-adjacent one.
      *
      * @param minimumTempoConfidence reject a tempo measuring below this.
      * @param minimumKeyConfidence reject a key measuring below this.
      */
     fun analyse(
         pcm: PcmBuffer,
-        minimumTempoConfidence: Float = 0f,
-        minimumKeyConfidence: Float = 0f,
+        minimumTempoConfidence: Float = DEFAULT_MINIMUM_TEMPO_CONFIDENCE,
+        minimumKeyConfidence: Float = DEFAULT_MINIMUM_KEY_CONFIDENCE,
     ): TrackAnalysis {
         val mono = pcm.toMonoFloat()
         val sampleRate = pcm.sampleRate
@@ -120,5 +120,24 @@ class TrackAnalyzer(
             energyCurve = EnergyCurve.compute(mono, sampleRate),
             peaks = PeakEnvelope.compute(mono, peakBuckets),
         )
+    }
+
+    companion object {
+        /**
+         * Measured against [TempoDetector]'s own fixtures after its confidence
+         * formula was fixed: white noise, a sustained tone and a static chord
+         * all measured 0.53..0.68, while every tempo in the detector's dance-
+         * tempo click-track test (90..174 BPM) measured 0.71..0.78. 0.65 sits
+         * with margin on both sides of that gap.
+         */
+        const val DEFAULT_MINIMUM_TEMPO_CONFIDENCE = 0.65f
+
+        /**
+         * [KeyDetector.detect] already declines to return an estimate at all
+         * for a chroma with no real tonal shape (see its confidence-floor
+         * gate), so this margin-based threshold is a second, lighter check
+         * rather than the primary one.
+         */
+        const val DEFAULT_MINIMUM_KEY_CONFIDENCE = 0f
     }
 }

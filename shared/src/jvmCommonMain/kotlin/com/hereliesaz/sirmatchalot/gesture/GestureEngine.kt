@@ -87,6 +87,9 @@ class GestureEngine {
          * drift on another axis accumulates without pause. Deciding intent on
          * the signed total therefore made the axis you were actually moving
          * look idle next to the one you were not.
+         *
+         * Measured in [magnitude]'s units, which is not always [delta]'s: see
+         * [observe].
          */
         var travelled = 0f
 
@@ -101,21 +104,46 @@ class GestureEngine {
             activity = 0f
         }
 
-        fun observe(frameDelta: Float) {
+        /**
+         * @param frameDelta the signed change this axis reports to callers —
+         *   [delta] and [total] are always in this axis's own reporting unit
+         *   (pixels for a drag, radians for a rotation), because that is what
+         *   a caller like "turn this many radians into a volume change" needs.
+         * @param magnitude how much of this axis's *physical* threshold budget
+         *   this frame spent, used for [travelled] and [activity] — and so for
+         *   [arbitrate]'s dominance comparison. Defaults to `abs(frameDelta)`,
+         *   which is correct whenever a delta already lives in the same units
+         *   as its enter/exit thresholds. A rotation does not: see
+         *   [GestureEngine.update]'s two-finger case for why its magnitude is
+         *   arc length, not radians.
+         */
+        fun observe(frameDelta: Float, magnitude: Float = abs(frameDelta)) {
             delta = frameDelta
             total += frameDelta
-            travelled += abs(frameDelta)
-            activity += (abs(frameDelta) - activity) * ACTIVITY_SMOOTHING
+            travelled += magnitude
+            activity += (magnitude - activity) * ACTIVITY_SMOOTHING
         }
     }
 
     private val oneFingerDrag = Axis(GestureKind.CLIP_DRAG, 6f, 0.15f)
     private val twoFingerHorizontal = Axis(GestureKind.CROSSFADE, 8f, 0.2f)
     private val twoFingerVertical = Axis(GestureKind.SCRATCH, 8f, 0.2f)
-    private val twoFingerRotate = Axis(GestureKind.VOLUME, 0.08f, 0.004f)
+
+    // Rotation's threshold lives in pixels, like every other two/three-finger
+    // axis, not radians — see the arc-length magnitude passed to observe() in
+    // update() below for why. This used to be a bare 0.08f rad / 0.004f rad,
+    // compared against translation's 8f px / 0.2f px through a shared
+    // `activity / enterThreshold` ratio in arbitrate(). That silently declared
+    // 1 radian of rotation equal to 100 px of centroid drift, with no physical
+    // basis: a real two-finger "twist the wrist" rotation pivots at the wrist,
+    // 1300-2000 px away in typical hand geometry, not at the fingers, so the
+    // centroid drifts far more than 100 px per radian turned. The result was
+    // that CROSSFADE/SCRATCH always out-competed VOLUME for any rotation with
+    // a wrist-scale pivot radius — reported as "rotate never registers".
+    private val twoFingerRotate = Axis(GestureKind.VOLUME, 4f, 0.1f)
     private val twoFingerSpan = Axis(GestureKind.BASS_BOOST, 14f, 0.3f)
     private val threeFingerScale = Axis(GestureKind.PLATTER_SCALE, 14f, 0.3f)
-    private val threeFingerRotate = Axis(GestureKind.PLATTER_ROTATE, 0.08f, 0.004f)
+    private val threeFingerRotate = Axis(GestureKind.PLATTER_ROTATE, 4f, 0.1f)
 
     private val twoFingerAxes = listOf(
         twoFingerHorizontal, twoFingerVertical, twoFingerRotate, twoFingerSpan,
@@ -187,7 +215,17 @@ class GestureEngine {
             2 -> {
                 twoFingerHorizontal.observe(dx)
                 twoFingerVertical.observe(dy)
-                twoFingerRotate.observe(dAngle)
+                // Reported delta stays in radians — that is what the volume
+                // mapping expects — but arbitration is decided on arc length:
+                // how far each finger actually swept, in pixels, which is
+                // `radius * angle` with the pointer-to-centroid span as the
+                // radius. That is the true physical displacement rotation
+                // causes at the fingers themselves, independent of how far the
+                // whole hand's pivot (the wrist) happens to sit from the
+                // centroid — the quantity translation's axes measure and the
+                // one rotation's threshold used to be silently compared
+                // against.
+                twoFingerRotate.observe(dAngle, magnitude = abs(dAngle) * span)
                 twoFingerSpan.observe(dSpan)
                 twoFingerAxes
             }
@@ -198,7 +236,7 @@ class GestureEngine {
                 // platter is a fixed circle centred on the screen, and being able
                 // to shove it off-centre only ever made it harder to find.
                 threeFingerScale.observe(dSpan)
-                threeFingerRotate.observe(dAngle)
+                threeFingerRotate.observe(dAngle, magnitude = abs(dAngle) * span)
                 threeFingerAxes
             }
         }
