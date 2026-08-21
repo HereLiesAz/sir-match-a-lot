@@ -30,6 +30,77 @@ class Clip(
 }
 
 /**
+ * Where a new or moved clip actually lands, once it is not allowed to sit on
+ * top of another clip already on the same deck.
+ *
+ * Nothing used to stop two clips sharing a stretch of the circle: a drop or a
+ * drag only ever picked a frame, snapped it to the beat grid, and wrote it
+ * down. Two clips at the same point overlapped in sound *and* on the ring —
+ * the waveforms painted over each other and the deck a performer was reading
+ * by eye stopped saying anything true.
+ */
+object ClipPlacement {
+
+    /**
+     * Adjusts [desiredStart] so a clip of [length] frames does not overlap any
+     * of [occupied] — the other clips already on the deck, as `start` to
+     * `endExclusive` frame pairs.
+     *
+     * A placement that does not overlap anything is returned unchanged. One
+     * that does is pulled to the nearest edge of a free gap — the gap's start
+     * if [desiredStart] fell before the clip it collided with, the gap's end
+     * if after — so a drop lands just outside whichever clip it landed on
+     * rather than jumping across the whole circle to some other free stretch.
+     * When no gap on the ring is big enough, the clip is appended after the
+     * last one instead, extending the revolution — the same fallback an empty
+     * deck already uses when a track is loaded without an explicit position.
+     */
+    fun nonOverlappingStart(
+        desiredStart: Int,
+        length: Int,
+        occupied: List<Pair<Int, Int>>,
+    ): Int {
+        val start = desiredStart.coerceAtLeast(0)
+        if (length <= 0) return start
+
+        val ranges = occupied.filter { it.second > it.first }.sortedBy { it.first }
+        if (ranges.isEmpty()) return start
+
+        fun overlaps(s: Int, e: Int) = ranges.any { (rangeStart, rangeEnd) -> s < rangeEnd && e > rangeStart }
+        if (!overlaps(start, start + length)) return start
+
+        // Every clip's own edges are candidate landing points: just after it
+        // ends, or just far enough before it starts to clear it.
+        val candidates = LinkedHashSet<Int>()
+        candidates.add(0)
+        for ((rangeStart, rangeEnd) in ranges) {
+            candidates.add(rangeEnd)
+            candidates.add((rangeStart - length).coerceAtLeast(0))
+        }
+
+        val free = candidates.filter { it >= 0 && !overlaps(it, it + length) }
+        if (free.isEmpty()) return ranges.maxOf { it.second }
+        return free.minBy { kotlin.math.abs(it - start) }
+    }
+
+    /**
+     * [nonOverlappingStart] against a deck's actual [Clip]s, excluding
+     * [excludingId] — the clip being placed, when it is already on the deck
+     * and would otherwise collide with itself.
+     */
+    fun nonOverlappingStart(
+        desiredStart: Int,
+        length: Int,
+        existingClips: List<Clip>,
+        excludingId: String? = null,
+    ): Int = nonOverlappingStart(
+        desiredStart = desiredStart,
+        length = length,
+        occupied = existingClips.filter { it.id != excludingId }.map { it.startFrame to it.endFrame },
+    )
+}
+
+/**
  * A deck: a circular timeline of clips read by a single signed-rate playhead,
  * then filtered and gained.
  *

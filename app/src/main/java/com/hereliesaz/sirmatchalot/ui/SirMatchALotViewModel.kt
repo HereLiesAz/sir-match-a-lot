@@ -10,6 +10,7 @@ import com.hereliesaz.sirmatchalot.audio.AudioDecoder
 import com.hereliesaz.sirmatchalot.audio.AudioEngine
 import com.hereliesaz.sirmatchalot.audio.AudioTrackOutput
 import com.hereliesaz.sirmatchalot.audio.Clip
+import com.hereliesaz.sirmatchalot.audio.ClipPlacement
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterState
@@ -668,15 +669,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             (atSeconds * playable.sampleRate).toInt().coerceAtLeast(0)
 
                         existing.isEmpty() -> 0
-                        atFraction != null && cycle > 0 ->
+                        atFraction != null && cycle > 0 -> {
                             // Snapped, exactly as a drag is. A drop that landed off the
                             // grid while a drag of the same clip snapped onto it would
                             // be two different answers to the same question.
-                            BeatSnap.snapFrame(
+                            val snapped = BeatSnap.snapFrame(
                                 frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
                                 framesPerBeat = sessionFramesPerBeat(),
                                 phaseFrames = sessionBeatPhaseFrames(),
                             ).coerceIn(0, cycle)
+                            // A drop that lands on top of what is already there
+                            // is pulled to the nearest clear stretch of the
+                            // ring instead — two clips sharing a span read as
+                            // one unreadable smear, both in sound and on screen.
+                            ClipPlacement.nonOverlappingStart(
+                                desiredStart = snapped,
+                                length = playable.frameCount,
+                                existingClips = existing,
+                            )
+                        }
                         else -> existing.maxOfOrNull { it.endFrame } ?: 0
                     }
                     engineDeck.clips = evictForCapacity(engineDeck, deck, playable) + Clip(
@@ -1569,10 +1580,19 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         // Land on a beat. A finger on a five-minute revolution is tens of
         // milliseconds out at best, which is audibly off and impossible to
         // correct by eye.
-        val startFrame = BeatSnap.snapFrame(
+        val snapped = BeatSnap.snapFrame(
             frame = raw,
             framesPerBeat = sessionFramesPerBeat(),
             phaseFrames = sessionBeatPhaseFrames(),
+        )
+        // Dragged on top of another clip already on the target deck, the move
+        // is pulled to the nearest clear stretch instead — a clip you can drag
+        // onto another must not be a clip you can drag over another.
+        val startFrame = ClipPlacement.nonOverlappingStart(
+            desiredStart = snapped,
+            length = existing.frameCount,
+            existingClips = target.clips,
+            excludingId = clipId,
         )
         if (existing.startFrame == startFrame && target.clips.any { it.id == clipId }) return
 

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -111,6 +112,78 @@ interface PlatterActions {
      *   faster. Pitch is held either way.
      */
     fun onScaleClip(clipId: String, deck: PlatterGeometry.Deck, ratio: Float)
+}
+
+/**
+ * A deck's clips, named, in a corner of the platter.
+ *
+ * The ring says what is loaded in colour and angle alone — a language nobody
+ * reads without having watched every drop happen. This says it in words,
+ * anchored to whichever corner sits nearest the ring it names, so a performer
+ * can find out what is on a deck by looking rather than by remembering.
+ *
+ * Nothing here is interactive. It is text over the platter, not a panel on
+ * it: no `clickable`, no `pointerInput`, so a finger meant for the ring below
+ * passes straight through the label naming it.
+ *
+ * @param growUpward Deck B's corner is the bottom, so its list has to build
+ *   away from the edge rather than into it. The label stays pinned to the
+ *   corner either way — it is the newest clip that ends up nearest the ring
+ *   for Deck A, and the anchor itself for Deck B — because a Column lays out
+ *   top to bottom regardless of which corner holds it; only which child sits
+ *   last, and therefore nearest that corner, changes.
+ */
+@Composable
+private fun DeckClipList(
+    clips: List<PlatterClip>,
+    label: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    growUpward: Boolean = false,
+) {
+    if (clips.isEmpty()) return
+
+    val heading: @Composable () -> Unit = {
+        Text(
+            text = label,
+            color = accent,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Black,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 1.sp,
+        )
+    }
+    val rows: @Composable () -> Unit = {
+        for (clip in clips) {
+            Text(
+                text = clip.title,
+                color = Color.White.copy(alpha = 0.88f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .background(Color(0xFF05050A).copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalAlignment = if (growUpward) Alignment.End else Alignment.Start,
+    ) {
+        if (growUpward) {
+            // The label ends up last, and a Column's last child sits nearest
+            // whichever corner it is anchored to — bottom-right here — so the
+            // heading stays pinned to the corner while the clips build upward
+            // above it as more land on the deck.
+            rows()
+            heading()
+        } else {
+            heading()
+            rows()
+        }
+    }
 }
 
 /**
@@ -765,6 +838,38 @@ fun PlatterScreen(
                 // the top and the waveform sweeps past it.
                 rotation = drawnRotation,
                 pulse = elapsedMillis % PULSE_PERIOD_MS / PULSE_PERIOD_MS.toFloat() * TWO_PI,
+            )
+
+            // What is actually on each deck, in words. The ring says it in
+            // colour and position — unlabelled arcs a performer has to have
+            // memorised — which is nothing to someone who was not watching the
+            // drop happen. Deck A's list sits where its ring's outer edge
+            // starts, top-left, and grows down; Deck B's sits at its ring's
+            // inner corner, bottom-right, and grows up toward the centre — so
+            // each list sits nearest the ring it describes.
+            //
+            // Text only, no `clickable` or `pointerInput` of its own: the
+            // platter beneath it is read by touch as much as by eye, and a
+            // label that intercepted a drag would take the gesture instead of
+            // the ring it is merely naming.
+            DeckClipList(
+                clips = state.clipsFor(PlatterGeometry.Deck.A),
+                label = "DECK A",
+                accent = Color(0xFF06B6D4),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 10.dp, top = 10.dp)
+                    .widthIn(max = 140.dp),
+            )
+            DeckClipList(
+                clips = state.clipsFor(PlatterGeometry.Deck.B),
+                label = "DECK B",
+                accent = Color(0xFFF59E0B),
+                growUpward = true,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = 10.dp)
+                    .widthIn(max = 140.dp),
             )
 
             // What the platter is waiting for, in the middle of the platter.
