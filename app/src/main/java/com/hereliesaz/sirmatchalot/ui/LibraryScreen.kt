@@ -6,6 +6,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -295,72 +297,52 @@ fun LibraryScreen(
         }
 
         item {
+            // Crate, mix, and session actions used to be five buttons stacked across
+            // three separate rows. They're independent actions, not a sequence, so
+            // there's no reason they can't share one scrollable row.
             Spacer(Modifier.height(8.dp))
-
-            // Shuffle Crate and the Automatchic Mix, both driven by measured values.
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
                     onClick = { viewModel.shuffleCrate() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("SHUFFLE CRATE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("SHUFFLE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
                 Button(
                     onClick = { viewModel.buildAutomatchicMix() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDB2777)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("AUTOMATCHIC MIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("AUTOMIX", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
-            }
-        }
-
-        item {
-            // Planning and performing are separate actions: the plan is worth seeing
-            // before it is committed to, and it was previously the only half that
-            // existed.
-            Spacer(Modifier.height(6.dp))
-            Button(
-                onClick = {
-                    if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    if (isAutoMixing) "STOP THE MIX" else "PLAY THE MIX",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 10.sp,
-                )
-            }
-        }
-
-        item {
-            // A session is the set as arranged — the lineup, where every clip sits on
-            // its deck, the pads and their takes. Saving it is the difference between
-            // an evening's work and an evening.
-            Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+                Button(
+                    onClick = {
+                        if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(
+                        if (isAutoMixing) "STOP" else "PLAY MIX",
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                    )
+                }
                 Button(
                     onClick = { saveSessionLauncher.launch("${viewModel.suggestedSessionName()}.sir") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("SAVE SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("SAVE", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
                 Button(
                     // Any type: a `.sir` has no registered MIME type, and filtering on
@@ -369,9 +351,8 @@ fun LibraryScreen(
                     onClick = { openSessionLauncher.launch(arrayOf("*/*")) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("OPEN SESSION", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    Text("OPEN", color = Color.White, fontWeight = FontWeight.Black, fontSize = 10.sp)
                 }
             }
         }
