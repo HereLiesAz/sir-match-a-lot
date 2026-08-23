@@ -1,18 +1,22 @@
 name: Publish to Google Play
 
-# Manual, safe-by-default publishing of a signed App Bundle to the Play Console.
-# Defaults: internal track, draft status, and publish OFF (build + upload the .aab as a CI
-# artifact only) so a dry run never touches Play.
+# Publishing of a signed App Bundle to the Play Console.
+#
+# A merge to main publishes automatically to the internal + alpha tracks, completed.
+# workflow_dispatch stays manual and safe-by-default: publish is OFF (build + upload the
+# .aab as a CI artifact only) and the status defaults to draft, so a dry run never touches
+# Play and a deliberate production push has to be opted into twice.
 on:
-  push: 
+  push:
     branches: main
   workflow_dispatch:
     inputs:
-      track:
-        description: "Play track to release to"
+      tracks:
+        description: "Play track(s) to release to"
         type: choice
-        default: internal
+        default: internal,alpha
         options:
+          - internal,alpha
           - internal
           - alpha
           - beta
@@ -28,6 +32,13 @@ on:
         description: "Publish to Play? (off = build + upload the .aab artifact only)"
         type: boolean
         default: false
+
+# Serialise Play uploads. Two merges landing close together would otherwise race to open
+# competing Play edits, and the loser fails the whole run. Unlike build-and-release.yml this
+# must NOT cancel in progress: aborting a run that is mid-upload to Play is worse than queuing.
+concurrency:
+  group: play-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -125,23 +136,43 @@ jobs:
           path: app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
 
-      # Publish only when the operator opts in. Service-account JSON + Play API access required
-      # (see docs/RELEASING.md). packageName must match the app's applicationId.
+      # A merge to main always publishes; a manual dispatch publishes only when opted in.
+      #
+      # The `inputs` context is populated ONLY for workflow_dispatch/workflow_call — on a push
+      # event it is empty, so every `inputs.*` reference below is blank and the `||` fallback
+      # supplies the automatic-path value. This is also why the old `if: ${{ inputs.publish }}`
+      # silently skipped on every push: null is falsy, and the job still went green.
+      #
+      # `tracks` (plural) assigns one uploaded bundle to several tracks within a single Play
+      # edit. Two sequential single-track steps would not work — Play rejects the second upload
+      # with "version code has already been used".
+      #
+      # Service-account JSON + Play API access required. packageName must match applicationId.
       - name: Publish to Google Play
-        if: ${{ inputs.publish }}
+        if: ${{ github.event_name == 'push' || inputs.publish }}
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.hereliesaz.sirmatchalot
           releaseFiles: app/build/outputs/bundle/release/*.aab
           mappingFile: app/build/outputs/mapping/release/mapping.txt
-          track: ${{ inputs.track }}
-          status: ${{ inputs.status }}
+          tracks: ${{ inputs.tracks || 'internal,alpha' }}
+          # Automatic pushes complete the release outright — a draft would just sit in the
+          # console waiting for a human, which defeats the point. Manual dispatch keeps its
+          # own, more cautious `draft` default for the production path.
+          status: ${{ inputs.status || 'completed' }}
 
-      # When (and only when) the bundle actually went to Play, also produce a signed, sideloadable
-      # APK and attach it to a GitHub Release pinned to this exact build. Extract a single universal
-      # APK from the same bundle: each dynamic feature declares <dist:fusing include="true">, so
-      # --mode=universal fuses them all into one APK (Play still delivers the modules on-demand).
+      # DELIBERATE MANUAL PUBLISHES ONLY — `inputs.publish` is empty on a push event, so these
+      # two steps skip on the automatic path. That is intended, not the skip bug fixed above:
+      # build-and-release.yml already attaches a universal APK to a rolling
+      # `latest-release-v<major>.<minor>` release on every push, so tagging each merge here too
+      # would mean a duplicate APK build and a new immutable tag per merge. The v<version> tag
+      # stays what it has always been — a marker of an intentional store release.
+      #
+      # Produces a signed, sideloadable APK and attaches it to a GitHub Release pinned to this
+      # exact build. Extract a single universal APK from the same bundle: each dynamic feature
+      # declares <dist:fusing include="true">, so --mode=universal fuses them all into one APK
+      # (Play still delivers the modules on-demand).
       # Runs before "Destroy Keystore" so the same signing key is available.
       - name: Build universal APK from bundle
         if: ${{ inputs.publish && success() }}
@@ -209,11 +240,11 @@ jobs:
           # A finished production rollout is a real release; everything else (internal/alpha/beta or
           # a draft) is a prerelease.
           PRERELEASE_FLAG="--prerelease"
-          if [ "${{ inputs.track }}" = "production" ] && [ "${{ inputs.status }}" = "completed" ]; then
+          if [ "${{ inputs.tracks }}" = "production" ] && [ "${{ inputs.status }}" = "completed" ]; then
             PRERELEASE_FLAG=""
           fi
 
-          NOTES="Signed APK for the build published to Google Play (track: ${{ inputs.track }}, status: ${{ inputs.status }}).
+          NOTES="Signed APK for the build published to Google Play (tracks: ${{ inputs.tracks }}, status: ${{ inputs.status }}).
 
           Built from commit ${GITHUB_SHA}."
 
