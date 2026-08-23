@@ -14,14 +14,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -64,9 +68,55 @@ private fun runApplication() = application {
         title = "Sir Match-a-Lot",
     ) {
         MaterialTheme {
-            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                PlaybackPanel(playback, library, window, modifier = Modifier.padding(24.dp))
-                RoomScreen(roomSession)
+            // Two tabs, not one long scroll. Decks, crossfader, sampler and
+            // library were previously stacked above the room/pairing panel
+            // in a single Column — on the window's default size that put
+            // "Sync" a full page-and-a-half below the fold, with nothing on
+            // screen to say it existed. A window this small already hides
+            // the mixing controls behind a scroll; hiding an entire second
+            // feature behind the *same* scroll, further down, made it
+            // effectively undiscoverable rather than merely inconvenient.
+            var selectedTab by remember { mutableIntStateOf(0) }
+            val isHosting by roomSession.isHosting.collectAsState()
+            val isConnected by roomSession.isConnected.collectAsState()
+            val peerCount by roomSession.peerCount.collectAsState()
+            val pendingPeers by roomSession.pendingPeers.collectAsState()
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                SecondaryTabRow(selectedTabIndex = selectedTab) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text("Mix") },
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = {
+                            // The tab itself carries the room's live state, so
+                            // "is anything happening on the other tab" is
+                            // answerable without switching to it — a hosted
+                            // or joined room, or a peer waiting on approval,
+                            // is exactly the kind of state a user must not
+                            // have to go looking for.
+                            val suffix = when {
+                                pendingPeers.isNotEmpty() -> " (${pendingPeers.size} waiting)"
+                                isHosting -> " ($peerCount joined)"
+                                isConnected -> " (connected)"
+                                else -> ""
+                            }
+                            Text("Sync$suffix")
+                        },
+                    )
+                }
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                ) {
+                    when (selectedTab) {
+                        0 -> PlaybackPanel(playback, library, window, modifier = Modifier.padding(24.dp))
+                        else -> RoomScreen(roomSession)
+                    }
+                }
             }
         }
     }
@@ -82,7 +132,25 @@ private fun PlaybackPanel(
     val outputErrorMessage by playback.outputErrorMessage.collectAsState()
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        outputErrorMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        // Unstyled body-small text read as debug output left over from
+        // development, not a condition the user needs to act on — the same
+        // sentence in the error container makes clear this is why neither
+        // deck's Play button will do anything.
+        outputErrorMessage?.let { message ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             DeckPanel("Deck A", playback.deckA, owner, modifier = Modifier.weight(1f))
             DeckPanel("Deck B", playback.deckB, owner, modifier = Modifier.weight(1f))
