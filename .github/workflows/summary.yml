@@ -4,6 +4,10 @@ on:
   issues:
     types: [opened]
 
+# Least-privilege default token; jobs needing more declare their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   summary:
     runs-on: ubuntu-latest
@@ -14,11 +18,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run AI inference
         id: inference
-        uses: actions/ai-inference@v1
+        uses: actions/ai-inference@v3
         with:
           prompt: |
             Summarize the following GitHub issue in one paragraph:
@@ -27,8 +31,8 @@ jobs:
 
       - name: Comment with AI summary
         run: |
-          gh issue comment $ISSUE_NUMBER --body '${{ steps.inference.outputs.response }}'
+          gh issue comment "$ISSUE_NUMBER" --body "$RESPONSE"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           RESPONSE: ${{ steps.inference.outputs.response }}
