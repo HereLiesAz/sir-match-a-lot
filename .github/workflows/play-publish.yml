@@ -1,11 +1,8 @@
-name: Publish to Google Play
-
-# Publishing of a signed App Bundle to the Play Console.
-#
-# A merge to main publishes automatically to the internal + alpha tracks, completed.
-# workflow_dispatch stays manual and safe-by-default: publish is OFF (build + upload the
-# .aab as a CI artifact only) and the status defaults to draft, so a dry run never touches
-# Play and a deliberate production push has to be opted into twice.
+# centralized-by: HereLiesAz/workflows
+# central-source-path: .github/workflows/play-publish.yml
+# central-source-sha256: d469abed7144cbed30feaf51455bdc0bc039b6bb9978968ff5a534d361e31828
+# This file intentionally contains no repository secrets.
+name: Publish to Google Play [central proxy]
 on:
   push:
     branches: main
@@ -36,238 +33,20 @@ on:
 # Serialise Play uploads. Two merges landing close together would otherwise race to open
 # competing Play edits, and the loser fails the whole run. Unlike build-and-release.yml this
 # must NOT cancel in progress: aborting a run that is mid-upload to Play is worse than queuing.
-concurrency:
-  group: play-publish
-  cancel-in-progress: false
-
+permissions:
+  contents: read
+  id-token: write
 jobs:
-  publish:
+  central-dispatch:
     runs-on: ubuntu-latest
-    permissions:
-      # write so the post-publish step can push a tag and create a GitHub Release for the APK.
-      contents: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          # Full history so the commit count (versionCode) is correct.
-          fetch-depth: 0
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      # Reconstruct the upload keystore from secrets — same scheme as build-and-release.yml.
-      # The Play upload path ran no test task at all. A store release is the
-      # least recoverable artifact this repository produces, so it gets the
-      # same gate the GitHub release now has, before the bundle is built.
-      - name: Unit tests
-        run: ./gradlew testDebugUnitTest --build-cache
-
-      - name: Prepare Keystore from Secrets
+      - name: Dispatch to HereLiesAz/workflows
         env:
-          KEYSTORE_PRIVATE: ${{ secrets.KEYSTORE_PRIVATE }}
-          KEYSTORE_RSA: ${{ secrets.KEYSTORE_RSA }}
-          KEYSTORE_CHAIN: ${{ secrets.KEYSTORE_CHAIN }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        run: |
-          set -e
-          PRIVATE_KEY="${KEYSTORE_PRIVATE:-$KEYSTORE_RSA}"
-
-          if [ -n "$PRIVATE_KEY" ] && [ -n "$KEYSTORE_CHAIN" ]; then
-             echo "Reconstructing Keystore from Secrets..."
-             echo "$PRIVATE_KEY" > private.key
-             echo "$KEYSTORE_CHAIN" > chain.crt
-
-             PASSIN_ARG=""
-             if [ -n "$KEY_PASSWORD" ]; then
-                PASSIN_ARG="-passin env:KEY_PASSWORD"
-             fi
-
-             openssl pkcs12 -export -in chain.crt -inkey private.key -out release.keystore \
-               -name "$KEY_ALIAS" -passout pass:"$KEYSTORE_PASSWORD" $PASSIN_ARG -legacy
-
-             rm -f private.key chain.crt
-
-             echo "Verifying generated keystore..."
-             keytool -list -keystore release.keystore -storepass "$KEYSTORE_PASSWORD" -v
-
-             echo "KEYSTORE_FILE=$(pwd)/release.keystore" >> $GITHUB_ENV
-             # Gradle's release signingConfig reads KEY_PASSWORD; OpenSSL uses the store password.
-             echo "KEY_PASSWORD<<EOF" >> $GITHUB_ENV
-             echo "$KEYSTORE_PASSWORD" >> $GITHUB_ENV
-             echo "EOF" >> $GITHUB_ENV
-          else
-             echo "::error::KEYSTORE_PRIVATE/KEYSTORE_RSA or KEYSTORE_CHAIN secret is missing — cannot sign the bundle."
-             exit 1
-          fi
-
-      - name: Build signed App Bundle
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          # The release key uses the store password (see keystore reconstruction above).
-          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          # KEYSTORE_FILE is exported to the env by the previous step.
-        run: |
-          set -e
-          # Strictly-increasing versionCode for Play: the commit count only ever grows.
-          VERSION_BUILD=$(git rev-list --count HEAD)
-          echo "versionBuild (versionCode source) = $VERSION_BUILD"
-          ./gradlew bundleRelease -PversionBuild="$VERSION_BUILD" --build-cache
-
-      - name: Upload .aab artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-aab
-          path: app/build/outputs/bundle/release/*.aab
-          if-no-files-found: error
-
-      # A merge to main always publishes; a manual dispatch publishes only when opted in.
-      #
-      # The `inputs` context is populated ONLY for workflow_dispatch/workflow_call — on a push
-      # event it is empty, so every `inputs.*` reference below is blank and the `||` fallback
-      # supplies the automatic-path value. This is also why the old `if: ${{ inputs.publish }}`
-      # silently skipped on every push: null is falsy, and the job still went green.
-      #
-      # `tracks` (plural) assigns one uploaded bundle to several tracks within a single Play
-      # edit. Two sequential single-track steps would not work — Play rejects the second upload
-      # with "version code has already been used".
-      #
-      # Service-account JSON + Play API access required. packageName must match applicationId.
-      - name: Publish to Google Play
-        if: ${{ github.event_name == 'push' || inputs.publish }}
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: com.hereliesaz.sirmatchalot
-          releaseFiles: app/build/outputs/bundle/release/*.aab
-          mappingFile: app/build/outputs/mapping/release/mapping.txt
-          tracks: ${{ inputs.tracks || 'internal,alpha' }}
-          # Automatic pushes complete the release outright — a draft would just sit in the
-          # console waiting for a human, which defeats the point. Manual dispatch keeps its
-          # own, more cautious `draft` default for the production path.
-          status: ${{ inputs.status || 'completed' }}
-
-      # DELIBERATE MANUAL PUBLISHES ONLY — `inputs.publish` is empty on a push event, so these
-      # two steps skip on the automatic path. That is intended, not the skip bug fixed above:
-      # build-and-release.yml already attaches a universal APK to a rolling
-      # `latest-release-v<major>.<minor>` release on every push, so tagging each merge here too
-      # would mean a duplicate APK build and a new immutable tag per merge. The v<version> tag
-      # stays what it has always been — a marker of an intentional store release.
-      #
-      # Produces a signed, sideloadable APK and attaches it to a GitHub Release pinned to this
-      # exact build. Extract a single universal APK from the same bundle: each dynamic feature
-      # declares <dist:fusing include="true">, so --mode=universal fuses them all into one APK
-      # (Play still delivers the modules on-demand).
-      # Runs before "Destroy Keystore" so the same signing key is available.
-      - name: Build universal APK from bundle
-        if: ${{ inputs.publish && success() }}
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: |
-          set -e
-          BT_VERSION=1.17.2
-          curl -fsSL -o bundletool.jar \
-            "https://github.com/google/bundletool/releases/download/${BT_VERSION}/bundletool-all-${BT_VERSION}.jar"
-
-          AAB=$(find app/build/outputs/bundle -name "*.aab" | head -n 1)
-          if [ -z "$AAB" ]; then echo "Error: no .aab produced!"; exit 1; fi
-          echo "Bundle: $AAB"
-
-          java -jar bundletool.jar build-apks --bundle="$AAB" --output=universal.apks \
-            --mode=universal --overwrite \
-            --ks="$KEYSTORE_FILE" --ks-pass=pass:"$KEYSTORE_PASSWORD" \
-            --ks-key-alias="$KEY_ALIAS" --key-pass=pass:"$KEY_PASSWORD"
-
-          unzip -o -p universal.apks universal.apk > app-universal.apk
-          ls -la app-universal.apk
-          echo "UNIVERSAL_APK=$(pwd)/app-universal.apk" >> $GITHUB_ENV
-
-      # Create/refresh an immutable, per-version GitHub Release for the build that shipped to Play.
-      # Tagged v<version> (distinct from build-and-release.yml's rolling latest-release-* prerelease).
-      # Marked as a full release only for a completed production rollout; otherwise a prerelease.
-      - name: Publish APK to GitHub Releases
-        if: ${{ inputs.publish && success() }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          BUILD_NUMBER=$(git rev-list --count HEAD)
-
-          MAJOR=$(grep 'major=' version.properties | cut -d'=' -f2)
-          MINOR=$(grep 'minor=' version.properties | cut -d'=' -f2)
-          # Patch = commits since the minor= line last changed (matches build-and-release.yml).
-          MINOR_COMMIT=$(git blame -L '/minor=/',+1 version.properties | awk '{print $1}' | tr -d '^')
-          if [ -n "$MINOR_COMMIT" ]; then
-            PATCH=$(git rev-list --count "$MINOR_COMMIT"..HEAD)
-          else
-            PATCH=$(grep 'patch=' version.properties | cut -d'=' -f2)
-          fi
-          VERSION_NAME="$MAJOR.$MINOR.$PATCH.$BUILD_NUMBER"
-          TAG_NAME="v${VERSION_NAME}"
-
-          # Dynamic app name from settings.gradle(.kts) — same derivation as build-and-release.yml.
-          if [ -f "settings.gradle.kts" ]; then
-            APP_NAME=$(grep 'rootProject.name' settings.gradle.kts | sed -E "s/.*=.*[\"'](.*)[\"']/\1/")
-          elif [ -f "settings.gradle" ]; then
-            APP_NAME=$(grep 'rootProject.name' settings.gradle | sed -E "s/.*=.*[\"'](.*)[\"']/\1/")
-          else
-            APP_NAME="App"
-          fi
-
-          if [ -z "$UNIVERSAL_APK" ] || [ ! -f "$UNIVERSAL_APK" ]; then
-            echo "Error: universal APK not found!"; exit 1
-          fi
-          APK_FILE="${APP_NAME}-${VERSION_NAME}.apk"
-          cp "$UNIVERSAL_APK" "$APK_FILE"
-
-          # A finished production rollout is a real release; everything else (internal/alpha/beta or
-          # a draft) is a prerelease.
-          PRERELEASE_FLAG="--prerelease"
-          if [ "${{ inputs.tracks }}" = "production" ] && [ "${{ inputs.status }}" = "completed" ]; then
-            PRERELEASE_FLAG=""
-          fi
-
-          NOTES="Signed APK for the build published to Google Play (tracks: ${{ inputs.tracks }}, status: ${{ inputs.status }}).
-
-          Built from commit ${GITHUB_SHA}."
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -fa "$TAG_NAME" -m "Play release $VERSION_NAME"
-          git push origin "$TAG_NAME" --force
-
-          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            echo "Updating existing release..."
-            gh release edit "$TAG_NAME" $PRERELEASE_FLAG \
-              --title "$APP_NAME ${VERSION_NAME}" \
-              --notes "$NOTES" \
-              --target "$GITHUB_SHA"
-            gh release upload "$TAG_NAME" "$APK_FILE" --clobber
-          else
-            echo "Creating new release..."
-            gh release create "$TAG_NAME" "$APK_FILE" $PRERELEASE_FLAG \
-              --title "$APP_NAME ${VERSION_NAME}" \
-              --notes "$NOTES" \
-              --target "$GITHUB_SHA"
-          fi
-
-      - name: Destroy Keystore
-        if: always()
-        run: rm -f release.keystore
+          WORKFLOWS_GATEWAY_URL: ${{ vars.WORKFLOWS_GATEWAY_URL }}
+          EVENT_JSON: ${{ toJSON(github.event) }}
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+          SOURCE_WORKFLOW_PATH: .github/workflows/play-publish.yml
+          SOURCE_SHA256: d469abed7144cbed30feaf51455bdc0bc039b6bb9978968ff5a534d361e31828
+        shell: bash
+        run: "set -euo pipefail\n[[ -n \"${WORKFLOWS_GATEWAY_URL:-}\" ]] || { echo \"Repository variable WORKFLOWS_GATEWAY_URL is not configured.\" >&2; exit 1; }\noidc_response=\"$(curl --fail-with-body --silent --show-error -H \"Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}\" \"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=hereliesaz-workflows\")\"\noidc_token=\"$(jq -r '.value // empty' <<<\"$oidc_response\")\"\n[[ -n \"$oidc_token\" ]] || { echo \"GitHub did not issue an OIDC token.\" >&2; exit 1; }\necho \"::add-mask::$oidc_token\"\npayload=\"$(jq -n   --arg repository \"$GITHUB_REPOSITORY\" --arg repository_id \"$GITHUB_REPOSITORY_ID\"   --arg repository_owner \"$GITHUB_REPOSITORY_OWNER\" --arg repository_owner_id \"$GITHUB_REPOSITORY_OWNER_ID\"   --arg sha \"$GITHUB_SHA\" --arg ref \"$GITHUB_REF\" --arg ref_name \"$GITHUB_REF_NAME\" --arg ref_type \"$GITHUB_REF_TYPE\"   --arg head_ref \"$GITHUB_HEAD_REF\" --arg base_ref \"$GITHUB_BASE_REF\" --arg actor \"$GITHUB_ACTOR\" --arg actor_id \"$GITHUB_ACTOR_ID\"   --arg event_name \"$GITHUB_EVENT_NAME\" --arg run_id \"$GITHUB_RUN_ID\" --arg run_number \"$GITHUB_RUN_NUMBER\" --arg run_attempt \"$GITHUB_RUN_ATTEMPT\"   --arg workflow_ref \"$GITHUB_WORKFLOW_REF\" --arg workflow_name \"$GITHUB_WORKFLOW\" --arg source_workflow_path \"$SOURCE_WORKFLOW_PATH\"   --arg source_sha256 \"$SOURCE_SHA256\" --argjson event \"$EVENT_JSON\" --argjson inputs \"$INPUTS_JSON\" --argjson vars \"$VARS_JSON\"   '{repository:$repository,repository_id:$repository_id,repository_owner:$repository_owner,repository_owner_id:$repository_owner_id,sha:$sha,check_sha:($event.pull_request.head.sha // $sha),ref:$ref,ref_name:$ref_name,ref_type:$ref_type,head_ref:$head_ref,base_ref:$base_ref,actor:$actor,actor_id:$actor_id,event_name:$event_name,event:$event,inputs:$inputs,vars:$vars,run_id:$run_id,run_number:$run_number,run_attempt:$run_attempt,workflow_ref:$workflow_ref,workflow_name:$workflow_name,source_workflow_path:$source_workflow_path,source_sha256:$source_sha256}')\"\ncurl --fail-with-body --silent --show-error -X POST \"${WORKFLOWS_GATEWAY_URL%/}/dispatch\" -H \"Authorization: Bearer ${oidc_token}\" -H \"Content-Type: application/json\" --data-binary \"$payload\""
