@@ -18,7 +18,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: dependency-graph-${{ github.ref }}
+  # One run per repository at a time, so this repo never crowds the account's shared
+  # concurrent-job limit for other repositories.
+  group: ${{ github.repository }}-dependency-submission
   cancel-in-progress: true
 
 jobs:
