@@ -15,16 +15,22 @@ if (versionPropsFile.exists()) {
     versionProps.load(FileInputStream(versionPropsFile))
 }
 
-val major = versionProps.getProperty("major")?.toIntOrNull() ?: 0
-val minor = versionProps.getProperty("minor")?.toIntOrNull() ?: 1
-val patch = versionProps.getProperty("patch")?.toIntOrNull() ?: 20
+// The central release workflows (HereLiesAz/workflows android-play-release /
+// android-github-release) rewrite versionMajor/Minor/Patch/Build in
+// version.properties; the older major/minor/patch keys are the fallback.
+fun versionProp(vararg keys: String): Int? =
+    keys.firstNotNullOfOrNull { versionProps.getProperty(it)?.trim()?.toIntOrNull() }
+
+val major = versionProp("versionMajor", "major") ?: 0
+val minor = versionProp("versionMinor", "minor") ?: 1
+val patch = versionProp("versionPatch", "patch") ?: 20
 
 // versionCode source. CI passes `-PversionBuild=$(git rev-list --count HEAD)` so every Play upload
 // gets a strictly-increasing code (commit count only ever grows). When the override is absent (local
 // builds, Android Studio) we keep the previous behavior: auto-increment a counter in
 // version.properties on each build task.
 val versionBuildOverride = project.findProperty("versionBuild")?.toString()?.toIntOrNull()
-var buildNumber = versionBuildOverride ?: (versionProps.getProperty("build")?.toIntOrNull() ?: 0)
+var buildNumber = versionBuildOverride ?: (versionProp("versionBuild", "build") ?: 0)
 
 val isBuildTask = gradle.startParameter.taskNames.any { taskName ->
     val name = taskName.substringAfterLast(':').lowercase()
@@ -34,7 +40,8 @@ val isBuildTask = gradle.startParameter.taskNames.any { taskName ->
 
 // Only auto-increment/persist locally; when an explicit -PversionBuild override is supplied (CI),
 // use it verbatim and leave version.properties untouched.
-if (versionBuildOverride == null && isBuildTask) {
+// Never on CI: the central workflows have already written the canonical build number.
+if (versionBuildOverride == null && isBuildTask && System.getenv("CI") == null) {
     buildNumber++
     versionProps.setProperty("build", buildNumber.toString())
     versionPropsFile.writer().use { versionProps.store(it, null) }
@@ -48,8 +55,12 @@ android {
         applicationId = "com.hereliesaz.sirmatchalot"
         minSdk = 24
         targetSdk = 37
-        versionCode = (major * 10000 + minor * 100 + patch) * 100000 + buildNumber
-        versionName = "$major.$minor.$patch.$buildNumber"
+        // The Play release passes the exact code/name it will upload as
+        // -PversionCodeOverride / -PversionName; those win over the local encoding.
+        versionCode = project.findProperty("versionCodeOverride")?.toString()?.toIntOrNull()
+            ?: ((major * 10000 + minor * 100 + patch) * 100000 + buildNumber)
+        versionName = project.findProperty("versionName")?.toString()?.takeIf { it.isNotBlank() }
+            ?: "$major.$minor.$patch.$buildNumber"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

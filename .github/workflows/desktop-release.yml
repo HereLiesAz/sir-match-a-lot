@@ -1,0 +1,120 @@
+name: Desktop Release
+
+# Desktop installers (.msi/.dmg/.deb) for Sir Match-a-Lot, attached to the
+# GitHub Release that the central android-github-release workflow publishes.
+# This used to be the second job of build-and-release.yml, chained off the
+# local Android release job; that job is now run centrally by
+# HereLiesAz/workflows, so the installers follow the published release instead
+# (or a manual dispatch naming the tag to attach to).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the installers to
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-package:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            task: packageMsi
+            dir: msi
+            ext: msi
+          - os: macos-latest
+            task: packageDmg
+            dir: dmg
+            ext: dmg
+          - os: ubuntu-latest
+            task: packageDeb
+            dir: deb
+            ext: deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      # jpackage's Linux deb backend shells out to fakeroot/dpkg-deb, which
+      # ubuntu-latest doesn't ship by default.
+      - name: Install Linux packaging tools
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+
+      # jpackage's Windows msi backend shells out to the WiX Toolset, which
+      # isn't preinstalled on windows-latest.
+      - name: Install WiX Toolset
+        if: matrix.os == 'windows-latest'
+        run: choco install wixtoolset --no-progress -y
+
+      - name: Grant execute permission for gradlew
+        shell: bash
+        run: chmod +x gradlew
+
+      # The Android SDK isn't needed to package :desktopApp, but Gradle still
+      # configures every project in the build (including :app) before running
+      # any task, and the Android Gradle plugin fails at configuration time
+      # without ANDROID_HOME set — even for a task that never touches :app.
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # `shell: bash` rather than the platform default (pwsh on windows-latest)
+      # — gradlew is a Unix shell script, and windows-latest ships Git Bash,
+      # so this is the one invocation that works unmodified on all three OSes.
+      - name: Package desktop installer (${{ matrix.ext }})
+        shell: bash
+        run: ./gradlew :desktopApp:${{ matrix.task }} --build-cache
+
+      # jpackage writes its actual error to a log file rather than stdout, so
+      # a failed run otherwise shows only "Exit code: 1" and a path nobody can
+      # reach once the runner is gone.
+      - name: Dump jpackage logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for f in desktopApp/build/compose/logs/*/*.txt; do
+            echo "----- $f -----"
+            cat "$f" || true
+          done
+
+      - name: Locate installer
+        id: locate
+        shell: bash
+        run: |
+          set -e
+          FILE=$(find desktopApp/build/compose/binaries/main/${{ matrix.dir }} -name "*.${{ matrix.ext }}" | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "Error: no .${{ matrix.ext }} produced!"
+            exit 1
+          fi
+          echo "Found: $FILE"
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload installer to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload "${{ github.event.release.tag_name || inputs.tag }}" "${{ steps.locate.outputs.file }}" --clobber
