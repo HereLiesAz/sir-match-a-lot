@@ -1,0 +1,22 @@
+# Sir Match-a-Lot (com.hereliesaz.sirmatchalot) is built, signed and published by
+# HereLiesAz/workflows (.github/workflows/android-github-release.yml): a GitHub Release with the signed APK.
+# Replaces the Android half of the old local build-and-release.yml, which released on every push.
+# This file is the trigger contract; the central sync replaces it with a tracker.
+name: Android GitHub Release
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "shared/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - "version.properties"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  hand-off:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Sir Match-a-Lot's GitHub release runs centrally in HereLiesAz/workflows."
