@@ -18,7 +18,7 @@ room = "2.8.4"
 okhttp = "5.4.0"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
 sqliteJdbc = "3.53.2.1"
-json = "20260719"
+json = "20260814"
 # Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
 composeMultiplatform = "1.11.1"
 # Compose Hot Reload's minimum supported Compose Multiplatform version is
