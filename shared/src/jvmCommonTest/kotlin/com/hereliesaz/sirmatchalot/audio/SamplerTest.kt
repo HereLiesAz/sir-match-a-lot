@@ -365,4 +365,27 @@ class SamplerTest {
         sampler.render(out, 128)
         for (v in out) assertTrue("expected replayed audio, got $v", abs(v - 0.6f) < 1e-2f)
     }
+
+    @Test
+    fun `a stop landing mid-block is not undone by the render's playhead write`() {
+        val pad = SamplerPad(0)
+        pad.load(toneBuffer(1_000), "t")
+        pad.trigger()
+        // What render() does: read generation and playhead, mix, write back.
+        val seen = pad.generation
+        val advanced = pad.playhead + 128
+        pad.stop() // UI thread, between the read and the write
+        assertTrue(!pad.advanceTo(advanced, seen))
+        assertTrue("stopped pad resumed", !pad.isPlaying)
+
+        pad.trigger()
+        val seenAgain = pad.generation
+        pad.trigger() // retrigger mid-block must restart from zero
+        assertTrue(!pad.advanceTo(500.0, seenAgain))
+        assertEquals(0.0, pad.playhead, 0.0)
+
+        // Without interference the write lands.
+        assertTrue(pad.advanceTo(64.0, pad.generation))
+        assertEquals(64.0, pad.playhead, 0.0)
+    }
 }

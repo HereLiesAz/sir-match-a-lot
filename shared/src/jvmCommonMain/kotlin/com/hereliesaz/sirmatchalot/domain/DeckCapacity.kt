@@ -10,8 +10,9 @@ package com.hereliesaz.sirmatchalot.domain
  * circle is also an unbounded heap.
  *
  * The bound is expressed in **beats**, not in songs, because that is what the
- * circle actually measures. Two songs is what it is sized for (see
- * [DEFAULT_MAX_BEATS] for why not three); a deck holding one long track and
+ * circle actually measures. Two songs is what it is sized for, and
+ * [maxBeatsFor] additionally caps it by duration so a slow tempo cannot turn
+ * the same beat count into more decoded audio than the heap holds; a deck holding one long track and
  * a couple of short ones should not be told it is full.
  *
  * Pure arithmetic over clip descriptions, so the eviction policy is tested
@@ -20,19 +21,47 @@ package com.hereliesaz.sirmatchalot.domain
 object DeckCapacity {
 
     /**
-     * Enough for roughly two songs.
+     * Enough for roughly two songs, in beats.
      *
      * A four-minute track at 128 BPM is 512 beats, so two of them is about 1024;
      * the figure below leaves a little headroom. Generous rather than exact —
      * the point is a ceiling, not a quota.
      *
-     * Two rather than three because of what a clip costs. Every clip on the
-     * circle is a fully decoded track: five minutes of 48 kHz stereo is about
-     * 58 MB, so three a deck is roughly 350 MB across both decks, which does not
-     * fit a 256 MB heap and is uncomfortable even with largeHeap. Two a deck is
-     * about 230 MB, which does.
+     * A beat count alone does **not** bound memory, because a beat's length
+     * depends on the tempo: 1,100 beats is 8.6 minutes at 128 BPM but 15.7
+     * minutes at 70. Callers that know the session tempo should use
+     * [maxBeatsFor], which also applies [DEFAULT_MAX_SECONDS].
      */
     const val DEFAULT_MAX_BEATS = 1_100
+
+    /**
+     * The memory ceiling, as audio duration per deck.
+     *
+     * Every clip on the circle is a fully decoded track held as 16-bit PCM: one
+     * minute of 48 kHz stereo is 48,000 x 2 x 2 x 60 = about 11.5 MB. Eight
+     * minutes a deck is about 92 MB, so both decks together are about 184 MB —
+     * inside a 256 MB heap with room left for everything else. Two
+     * five-minute tracks a deck (the old "two songs" figure taken literally)
+     * would be 230 MB across both decks, which does not leave that room.
+     */
+    const val DEFAULT_MAX_SECONDS = 480.0
+
+    /**
+     * The beat cap that keeps a deck within both [DEFAULT_MAX_BEATS] and
+     * [maxSeconds] at the given tempo.
+     *
+     * @param secondsPerBeat the session grid's beat length; non-positive or
+     *   non-finite values fall back to [DEFAULT_MAX_BEATS].
+     */
+    fun maxBeatsFor(
+        secondsPerBeat: Double,
+        maxSeconds: Double = DEFAULT_MAX_SECONDS,
+        maxBeats: Int = DEFAULT_MAX_BEATS,
+    ): Int {
+        if (!(secondsPerBeat > 0.0) || secondsPerBeat.isInfinite()) return maxBeats
+        val bySeconds = (maxSeconds / secondsPerBeat).toInt().coerceAtLeast(1)
+        return minOf(maxBeats, bySeconds)
+    }
 
     /**
      * What the deck knows about a clip for capacity purposes.

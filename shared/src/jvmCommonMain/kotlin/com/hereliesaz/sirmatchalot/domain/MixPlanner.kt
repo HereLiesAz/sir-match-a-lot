@@ -24,7 +24,8 @@ data class CratePick(
  * @param transition how this track relates to the one before it; null for the
  *   opening track.
  * @param alignment tempo, phase and pitch corrections relative to the previous
- *   track. Null when either lacks measured values.
+ *   track *as it is played* (its own tempo after its own correction), so the
+ *   corrections chain through the set. Null when either lacks measured values.
  */
 data class MixStep(
     val track: Track,
@@ -154,6 +155,12 @@ object MixPlanner {
         steps.add(MixStep(opening, transition = null, alignment = null))
 
         var current = opening
+        // The tempo the current track is actually *played* at. Each incoming
+        // track is stretched to the one before it, so aligning against the
+        // previous track's raw BPM would let the drift accumulate: with 120,
+        // 126 and 132 the third track would be matched to 126 while the second
+        // is really playing at 120, and the handover would not line up.
+        var currentPlayedBpm = opening.bpm
         while (remaining.isNotEmpty()) {
             val best = remaining.maxByOrNull { candidate ->
                 val match = HarmonicEngine.compareTracks(current, candidate)
@@ -168,13 +175,15 @@ object MixPlanner {
             } ?: break
 
             remaining.remove(best)
+            val alignment = BeatSync.align(best, current.copy(bpm = currentPlayedBpm))
             steps.add(
                 MixStep(
                     track = best,
                     transition = HarmonicEngine.compareTracks(current, best),
-                    alignment = BeatSync.align(best, current),
+                    alignment = alignment,
                 ),
             )
+            currentPlayedBpm = best.bpm?.let { bpm -> alignment?.let { bpm * it.tempoRatio } ?: bpm }
             current = best
         }
 

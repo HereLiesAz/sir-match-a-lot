@@ -113,6 +113,18 @@ class KeyDetectorTest {
         assertEquals("chroma should be normalised", 1.0, chroma.sum(), 1e-9)
     }
 
+    @Test
+    fun `bins too coarse to resolve a semitone are not given a pitch class`() {
+        // 44.1 kHz / 4096 is ~10.8 Hz a bin; a semitone is that wide at ~181 Hz.
+        val floor = KeyDetector().resolvableFloor(44_100)
+        assertEquals(181.0, floor, 1.0)
+        // Below the floor a bin spans more than a semitone.
+        val binWidth = 44_100.0 / 4096
+        assertTrue(binWidth > (floor * 0.99) * (Math.pow(2.0, 1.0 / 12.0) - 1.0))
+        // A configured minimum above the floor still wins.
+        assertEquals(300.0, KeyDetector(minFrequency = 300.0).resolvableFloor(44_100), 1e-9)
+    }
+
     private fun renderProgression(progression: List<Pair<List<Int>, Double>>): FloatArray {
         val chordSeconds = 1.0
         val parts = progression.map { (notes, beats) ->

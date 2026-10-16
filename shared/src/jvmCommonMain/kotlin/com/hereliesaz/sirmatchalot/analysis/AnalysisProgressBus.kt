@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.analysis
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * How far a background analysis run has got.
@@ -34,6 +35,10 @@ data class AnalysisState(
  * [requestPause] and [requestStop] are read by the service's loop between
  * tracks, so a pause takes effect at the next track boundary rather than
  * abandoning a half-measured one.
+ *
+ * Partial updates go through [MutableStateFlow.update], so a pause toggled
+ * from the UI thread cannot be lost to a progress write from the service's
+ * worker landing between its read and its write.
  */
 object AnalysisProgressBus {
 
@@ -55,12 +60,12 @@ object AnalysisProgressBus {
     }
 
     fun update(done: Int, current: String, failed: Int) {
-        _state.value = _state.value.copy(done = done, current = current, failed = failed)
+        _state.update { it.copy(done = done, current = current, failed = failed) }
     }
 
     fun setPaused(paused: Boolean) {
         pauseRequested = paused
-        _state.value = _state.value.copy(paused = paused)
+        _state.update { it.copy(paused = paused) }
     }
 
     fun requestStop() {

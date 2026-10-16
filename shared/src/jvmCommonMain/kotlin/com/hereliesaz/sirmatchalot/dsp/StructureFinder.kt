@@ -1,8 +1,6 @@
 package com.hereliesaz.sirmatchalot.dsp
 
-import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
@@ -208,18 +206,4 @@ class StructureFinder(
         if (aVariance < 1e-12 || bVariance < 1e-12) return 0f
         return (covariance / sqrt(aVariance * bVariance)).toFloat().coerceIn(0f, 1f)
     }
-
-    private fun smooth(values: FloatArray, radius: Int): FloatArray =
-        FloatArray(values.size) { i ->
-            var sum = 0f
-            var count = 0
-            for (j in max(0, i - radius)..min(values.size - 1, i + radius)) {
-                sum += values[j]
-                count++
-            }
-            sum / count
-        }
-
-    private fun strength(magnitude: Float, spread: Float): Float =
-        (abs(magnitude) / (spread * 3f)).coerceIn(0f, 1f)
 }
