@@ -17,7 +17,7 @@ lifecycleViewmodelNav3 = "2.11.0"
 room = "2.8.4"
 okhttp = "5.4.0"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
-sqliteJdbc = "3.53.2.1"
+sqliteJdbc = "3.53.4.0"
 json = "20260719"
 # Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
 composeMultiplatform = "1.11.1"
