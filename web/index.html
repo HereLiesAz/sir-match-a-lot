@@ -6,11 +6,7 @@
     <meta name="description" content="Sir Match-a-Lot: a gesture-driven DJ app for Android. Mix on one circular platter, with tempo and key measured from the audio itself.">
     <title>Sir Match-a-Lot | Revolutionary DJ App</title>
     
-    <!-- Google Fonts: Inter & Outfit -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700;900&display=swap" rel="stylesheet">
-    
+    <!-- No web fonts: the page uses the system font stack, so it makes no third-party requests. -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -162,7 +158,7 @@
                 <div class="touch-point tp-1"></div>
                 <div class="touch-point tp-2"></div>
                 <div class="touch-point tp-3"></div>
-                <div class="demo-label">Hover a gesture</div>
+                <div class="demo-label" aria-live="polite">Hover, focus or tap a gesture</div>
             </div>
         </div>
     </section>
@@ -171,7 +167,7 @@
         <div class="footer-content glass-panel">
             <h2>Ready to drop the beat?</h2>
             <p>Sir Match-a-Lot is an in-progress rebuild, developed in the open under the GPL. Build it from source, or read the design notes to see where it stands.</p>
-            <a href="#" class="btn-primary glow-btn large-btn">Download APK</a>
+            <a href="https://github.com/HereLiesAz/sir-match-a-lot/releases/latest" class="btn-primary glow-btn large-btn">Download APK</a>
         </div>
         <div class="footer-bottom">
             <p>&copy; 2026 Sir Match-a-Lot. Built with ❤️ for DJs.</p>

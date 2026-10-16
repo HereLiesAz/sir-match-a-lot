@@ -182,6 +182,10 @@ hear it on a piano or a held vocal where they would not hear it on a drum loop.
 
 **Decided: Rubber Band via NDK, under the GPL.**
 
+*Status: not implemented. No native code exists yet; the shipping stretcher is
+the in-tree WSOLA in `shared/.../dsp/TimeStretch.kt`. Everything below records
+the decision, not the build.*
+
 Rubber Band is the state of the art and it is C++. This is the strongest case for
 native code anywhere in this project — stronger than the latency argument, which
 is largely masked by touch and display latency, and stronger than the GC

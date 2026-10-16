@@ -31,6 +31,41 @@ scratch feedback is visual as well as audible, that is the right trade. The grap
 is written behind an interface so an Oboe backend can replace the output stage
 later without touching the DSP or the UI.
 
+## Current version
+
+**0.5.9.** `version.properties` is the single source of truth: the
+`versionMajor`/`versionMinor`/`versionPatch`/`versionBuild` keys. The release
+workflows write the build number; local builds increment `versionBuild`. Never
+revert that file (see `_AGENTS.md`).
+
+## Invariants
+
+Each line names where it is enforced; a line with no enforcer is a bug in this
+list.
+
+1. Audio is rendered by our own pull-based mixer on one dedicated thread — no
+   `ExoPlayer`/`MediaPlayer`. (`AudioEngine` in `shared/.../audio/AudioOutput.kt`)
+2. Platform-neutral logic lives in `:shared`; Android and desktop run the *same*
+   sync implementation, not two compatible ones. (`shared/.../sync/`)
+3. On the sync wire, only `hello{commit}`, `hello_ack`, `reveal` and
+   `join_refused` are plaintext; every other frame is AES-GCM sealed with a
+   per-direction, strictly increasing sequence number. (`RoomCrypto.Session`)
+4. A peer receives room traffic only once it has joined **and** been approved,
+   and a client sends nothing but its `identify` before its user approves.
+   (`SyncServer`, `SyncClient`)
+5. The device identity key and paired-device list live in their own prefs file,
+   `device_identity`, which never goes into Android backup or device transfer.
+   (`SettingsStore.keyValueFor`, `res/xml/backup_rules.xml`,
+   `res/xml/data_extraction_rules.xml`)
+6. Local audio copies are bounded by the user's `LocalCopyBudget` and, with
+   `peaks/` and `energy/`, excluded from backup. (`AudioFileCache.trim`, the same
+   two XML files)
+7. The app makes no network request the user did not initiate: playlist fetch,
+   store, local-network sync. (`AzphaltStoreRepository`,
+   `fetchPlaylistDocument`, `sync/`)
+8. Every Room schema change ships with a migration and an exported schema.
+   (`AppDatabase` `exportSchema = true`, `app/schemas/`, `MigrationSqlTest`)
+
 ## Module layout
 
 Three Gradle modules as of the desktop-linking work: **`:shared`**, a Kotlin
@@ -162,7 +197,8 @@ shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
     GestureLabels.kt      clock-position label placement, float-up + dissolve
 
 shared/src/androidMain/kotlin/.../sync/DebugLog.android.kt   Log actual
-shared/src/desktopMain/kotlin/.../sync/DebugLog.desktop.kt   println actual
+shared/src/desktopMain/kotlin/.../sync/DebugLog.desktop.kt   println actual, off
+                          unless -Dsirmatchalot.debug=true or SIRMATCHALOT_DEBUG=1
 
 app/src/main/java/com/hereliesaz/sirmatchalot/
   audio/
@@ -171,7 +207,6 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
                           implementing :shared's AudioOutput interface
 
   analysis/
-    AnalysisQueue.kt      bounded parallel, cancellable, resumable
     AnalysisService.kt    foreground service: notification, pause/resume
 
   data/
@@ -184,7 +219,8 @@ app/src/main/java/com/hereliesaz/sirmatchalot/
                           (SettingsStore reads/writes through :shared's
                           KeyValueStore)
     LinkParser.kt         playlist-link and pasted-tracklist parsing
-    PlaylistParser.kt     M3U/PLS/XSPF parsing
+    PlaylistParser.kt     M3U, XSPF, Atom/RSS feed and plain-text tracklist
+                          parsing (format sniffed from content; no PLS)
 
   crash/
     CrashReportingHandler.kt / CrashReportStore.kt / CrashReportPrompt.kt /
@@ -252,11 +288,15 @@ laptop from measuring and remembering the tracks a working DJ has loaded.
 `desktopApp/build.gradle.kts`'s `nativeDistributions` block produces a Msi
 (Windows), a Dmg (macOS), and a Deb (Linux) — `jpackage` only builds the
 installer for the OS it runs on, and cannot cross-package a Msi/Dmg from
-Linux. `.github/workflows/build-and-release.yml`'s `desktop-package` job is
-that matrix: one job per format, each on its native runner
-(`windows-latest`/`macos-latest`/`ubuntu-latest`), running after the Android
-job so it can upload into the same GitHub release rather than needing one of
-its own. The three icon files under `desktopApp/src/main/resources/`
+Linux. The installers are built by the central `HereLiesAz/workflows`
+pipeline: `.github/workflows/desktop-release.yml` in this repository is only a
+hand-off that fires on a push to `main` touching the desktop or shared code, and
+reports the central run's result back as a commit status. The central job is
+the matrix — one job per format, each on its native runner
+(`windows-latest`/`macos-latest`/`ubuntu-latest`). The Android counterparts are
+`android-github-release.yml` and `android-play-release.yml`, hand-offs of the
+same kind; `android-ci.yml` is the in-repo workflow that runs tests and lint on
+every push and PR and publishes the rolling debug APK from `main`. its own. The three icon files under `desktopApp/src/main/resources/`
 (`icon.ico`, `icon.icns`, `icon.png`) were generated once from the Android
 app's `xxxhdpi` launcher icon and are checked in rather than regenerated on
 every build; `packageVersion` is read from the same `version.properties`

@@ -19,7 +19,9 @@ in the same pull request.
 
 "Collect" in Play's definition means transmitting data off the device. This app
 transmits none. Everything it derives from your music — tempo, key, energy,
-waveform peaks — is written to app-private storage and never leaves.
+waveform peaks — is written to app-private storage and never leaves. The same is
+true of the local copies of imported audio it keeps (see "On Audio files"), and
+of the transition preferences the Automatchic Mix learns on the device.
 
 ## Every data type, and the answer
 
@@ -34,11 +36,11 @@ the ones a reviewer might expect to be ticked.
 | Health and fitness | No | No | — |
 | Messages | No | No | — |
 | Photos and videos | No | No | — |
-| **Audio files** | **No** | **No** | Read locally to decode and measure. Never uploaded, copied, or modified. See below |
-| Files and docs | No | No | Same: read in place, never transmitted |
+| **Audio files** | **No** | **No** | Read locally to decode and measure; by default copied into app-private storage (2 GB budget, can be turned off). Never uploaded or modified, and excluded from backup. See below |
+| Files and docs | No | No | Same: never transmitted |
 | Calendar | No | No | — |
 | Contacts | No | No | — |
-| App activity | No | No | No analytics of any kind |
+| App activity | No | No | No analytics of any kind. The learned transition model stays on the device — see below |
 | Web browsing | No | No | — |
 | App info and performance | No | No | **No automatic crash reporting.** A crash is written to private storage and shown to you on next launch; nothing leaves the device unless you tap through to file it. See below |
 | Device or other IDs | No | No | No advertising ID, no install ID, no device ID sent off-device — see note below on the sync identity key |
@@ -48,12 +50,27 @@ the ones a reviewer might expect to be ticked.
 Multi-device sync generates a long-term public/private identity keypair per
 install, so a device can prove to a host it is one that was paired with
 before rather than asking the user to compare a pairing code every time. The
-public half of that key — and a fingerprint of it — travels in the clear on
-the local-network sync handshake, to the other devices in the same room, and
-nowhere else: it is never sent to any server, so Play's *collection*
-definition (transmission off the device) does not apply to it. It is
-functionally a persistent identifier for the app install even so, which is
-why this row is worded as "not sent off-device" rather than "does not exist."
+public half of that key — and a fingerprint of it — travels only *encrypted*,
+inside the sealed local-network sync session, to the other device in the same
+room, and nowhere else: the plaintext handshake carries only one-time keys. It
+is never sent to any server, so Play's *collection* definition (transmission off
+the device) does not apply to it. It is functionally a persistent identifier for
+the app install even so, which is why this row is worded as "not sent
+off-device" rather than "does not exist."
+
+The private half never leaves the device. It is kept in its own preferences file
+(`device_identity`, together with the list of paired devices), which is excluded
+from Android backup and device-to-device transfer by `backup_rules.xml` and
+`data_extraction_rules.xml`; a restored install generates a new identity.
+
+### On "App activity"
+
+The Automatchic Mix learns, on the device, which kinds of transition the user
+lets run and which they cut short (`TransitionTaste`: a small logistic
+regression, a few dozen numbers in app preferences). It is not a usage log, it
+is never transmitted, and **Settings → Learned taste → Forget it all** erases it.
+Being in ordinary preferences, it can be part of the user's own Android backup
+like any other setting. Not collected.
 
 ### On "App info and performance"
 
@@ -85,10 +102,20 @@ record.
 The app reads audio files you choose, decodes them in memory, measures them, and
 holds the decoded audio only while it is loaded on a deck. What persists is
 measurements — a tempo, a key, a peak envelope — in the app's own private
-storage.
+storage, and, by default, a **local copy of each imported file** (`AudioFileCache`,
+`files/audio/`): the original encoded bytes, unchanged, so a track still plays
+when its cloud source is offline, its permission lapses, or the file moves.
+
+The copies are bounded by a budget the user sets in Settings → Local copies:
+2 GB by default, 8 GB, unlimited, or off. Least-recently-used copies are removed
+first; settings can remove them all at once; deleting a track removes its copy.
+They are excluded, with the derived `peaks/` and `energy/` files, from Android
+backup and device-to-device transfer, and are disclosed in
+[PRIVACY.md](PRIVACY.md#what-the-app-stores-and-where).
 
 Play's definition of *collection* is transmission off the device. No audio, no
-file, and no derived data is transmitted anywhere. So: **not collected.**
+file, and no derived data is transmitted anywhere — a copy kept in the app's own
+storage is not a transmission. So: **not collected.**
 
 If that ever changes — a cloud library, a backup of measurements, a crash
 reporter that could include a filename — this answer changes with it, and the
@@ -106,8 +133,8 @@ requests, all user-initiated, and none of them carry user data:
    pack download if the user installs one. Outbound content: none beyond the
    request.
 3. **Local-network sync** — UDP discovery on 8888 and a WebSocket on 8890,
-   between the user's own devices. Nothing leaves the local network; no server of
-   ours is involved.
+   between the user's own devices, end-to-end encrypted after a one-time-key
+   handshake. Nothing leaves the local network; no server of ours is involved.
 
 None of these send data *about* the user. Requests carry an IP address the way
 every network request does, which Play does not treat as collection by the app.
@@ -133,16 +160,19 @@ every network request does, which Play does not treat as collection by the app.
 ## Data deletion
 
 Play asks how users delete their data. All of it is app-private storage on the
-user's own device: the library database, the peak and energy files, and the
-settings. Uninstalling the app removes every one of them, and there is no copy
-anywhere else to request the deletion of.
+user's own device: the library database, the peak and energy files, the local
+audio copies, the settings (including the learned transition model), and the
+sync identity and paired-device list. Uninstalling the app removes every one of
+them, and there is no copy anywhere else to request the deletion of.
 
-Within the app, deleting a track from the library removes its row and its
-measurement files.
+Within the app, deleting a track from the library removes its row, its
+measurement files and its local audio copy. Settings can also remove all local
+copies, forget the learned transition model, and forget all paired devices.
 
-Note that Android's automatic backup is currently enabled
-(`allowBackup="true"`), so library metadata and settings may be included in the
-device backup Google makes to the *user's own* account. That is Google's copy
-under the user's control, not ours, and it is disclosed in
-[PRIVACY.md](PRIVACY.md#androids-own-backup). If that is not wanted, the manifest
-flag is the single place to change it.
+Note that Android's automatic backup is enabled (`allowBackup="true"`), so
+library metadata and settings may be included in the device backup Google makes
+to the *user's own* account. Local audio copies, the derived peak and energy
+files, the sync identity and the pending crash report are excluded. That backup
+is Google's copy under the user's control, not ours, and it is disclosed in
+[PRIVACY.md](PRIVACY.md#androids-own-backup). If backup is not wanted at all,
+the manifest flag is the single place to change it.

@@ -5,7 +5,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const tp3 = document.querySelector('.tp-3');
     const label = document.querySelector('.demo-label');
 
-    const points = [tp1, tp2, tp3];
+    // The demo is decoration: if its markup is missing, skip it rather than
+    // throw and take the shared-session reader down with it.
+    const points = [tp1, tp2, tp3].filter(Boolean);
+    if (!label || points.length === 0) return;
+    const IDLE_LABEL = 'Hover, focus or tap a gesture';
+    label.textContent = IDLE_LABEL;
+    label.setAttribute('aria-live', 'polite');
 
     const resetPoints = () => {
         points.forEach((p) => {
@@ -92,18 +98,45 @@ document.addEventListener('DOMContentLoaded', () => {
         pending.push(setTimeout(() => pose(gesture.to), 1900));
     };
 
-    gestureItems.forEach((item) => {
-        item.addEventListener('mouseenter', () => {
-            gestureItems.forEach((other) => other.classList.remove('active'));
-            item.classList.add('active');
-            animateGesture(item.dataset.gesture);
-        });
+    const deactivate = (item) => {
+        item.classList.remove('active');
+        item.setAttribute('aria-pressed', 'false');
+        clearPending();
+        resetPoints();
+        label.textContent = IDLE_LABEL;
+    };
 
-        item.addEventListener('mouseleave', () => {
-            item.classList.remove('active');
-            clearPending();
-            resetPoints();
-            label.textContent = 'Hover a gesture';
+    const activate = (item) => {
+        gestureItems.forEach((other) => {
+            other.classList.remove('active');
+            other.setAttribute('aria-pressed', 'false');
+        });
+        item.classList.add('active');
+        item.setAttribute('aria-pressed', 'true');
+        animateGesture(item.dataset.gesture);
+    };
+
+    gestureItems.forEach((item) => {
+        // Keyboard and screen-reader users reach the demo the same way a
+        // mouse does: each item is a focusable toggle.
+        item.setAttribute('tabindex', '0');
+        item.setAttribute('role', 'button');
+        item.setAttribute('aria-pressed', 'false');
+
+        item.addEventListener('mouseenter', () => activate(item));
+        item.addEventListener('mouseleave', () => deactivate(item));
+        item.addEventListener('focus', () => activate(item));
+        item.addEventListener('blur', () => deactivate(item));
+        // Touch screens have no hover: a tap plays the demo (and tapping
+        // elsewhere blurs the item, which stops it).
+        item.addEventListener('click', () => activate(item));
+        item.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activate(item);
+            } else if (event.key === 'Escape') {
+                deactivate(item);
+            }
         });
     });
 });
@@ -124,9 +157,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const section = document.getElementById('shared-session');
     if (!section) return;
 
+    // Bounds on what a link can make this page render. A link is untrusted
+    // input, so every value is capped before it reaches the DOM.
+    const MAX_TRACKS = 50;
+    const MAX_TEXT = 200;
+    const MAX_CUES = 4;
+    const clip = (text, max = MAX_TEXT) =>
+        text.length > max ? `${text.slice(0, max - 1)}…` : text;
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
     const params = new URLSearchParams(window.location.search);
-    const deckA = params.getAll('a');
-    const deckB = params.getAll('b');
+    const deckA = params.getAll('a').slice(0, MAX_TRACKS).map((t) => clip(t));
+    const deckB = params.getAll('b').slice(0, MAX_TRACKS).map((t) => clip(t));
     if (deckA.length === 0 && deckB.length === 0) return;
 
     const fill = (id, tracks) => {
@@ -155,7 +197,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const points = (value || '')
             .split(',')
             .map((cue) => cue.trim())
-            .filter((cue) => cue.length > 0 && !Number.isNaN(Number(cue)));
+            .filter((cue) => cue.length > 0 && cue.length <= 12 && Number.isFinite(Number(cue)))
+            .slice(0, MAX_CUES);
         node.textContent = points.length ? `Cues: ${points.join('s, ')}s` : '';
     };
 
@@ -168,17 +211,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (meta) {
         const parts = [];
         const bpm = params.get('bpm');
-        if (bpm && !Number.isNaN(Number(bpm))) parts.push(`${Number(bpm).toFixed(1)} BPM`);
+        // Same plausible-tempo range the app accepts; anything outside is dropped.
+        if (bpm && Number.isFinite(Number(bpm)) && Number(bpm) >= 20 && Number(bpm) <= 300) {
+            parts.push(`${Number(bpm).toFixed(1)} BPM`);
+        }
         const key = params.get('key');
-        if (key) parts.push(`Key ${key}`);
+        if (key) parts.push(`Key ${clip(key, 8)}`);
         const crossfade = params.get('x');
-        if (crossfade && !Number.isNaN(Number(crossfade))) {
-            const value = Number(crossfade);
+        if (crossfade && Number.isFinite(Number(crossfade))) {
+            // SessionLink writes the crossfader as an integer in -100..100.
+            const value = clamp(Math.round(Number(crossfade)), -100, 100);
             const towards = value === 0 ? 'centred' : value < 0 ? 'toward A' : 'toward B';
             parts.push(`Crossfader ${value} (${towards})`);
         }
         const room = params.get('room');
-        if (room) parts.push(`Room ${room.toUpperCase()}`);
+        if (room) parts.push(`Room ${clip(room, 12).toUpperCase()}`);
         meta.textContent = parts.join('  ·  ');
     }
 

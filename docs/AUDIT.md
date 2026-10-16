@@ -1,5 +1,14 @@
 # Audit of the pre-existing codebase
 
+> **Historical record.** This audit describes the codebase as it stood at commit
+> `a5508e5`, before the rebuild. Almost every finding below has since been fixed
+> or superseded, and statements about what exists are true of that commit only —
+> for example, `docs/PERMISSIONS.md` now exists, and KSP has since published
+> versions newer than 2.3.10 (the catalog now pins 2.3.12). For the current
+> design read [ARCHITECTURE.md](ARCHITECTURE.md); for current behaviour, the
+> code. It is kept, unedited below this note, as the record of where the
+> rebuild started.
+
 Audited at commit `a5508e5`. 24 Kotlin files, 4,654 LOC.
 
 Method: read every source file; installed the Android SDK (platform 37) and built.

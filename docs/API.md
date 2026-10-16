@@ -2,7 +2,7 @@
 
 Requirement H4 asks that the app's complete API be exposed. This is it.
 
-The app has exactly three externally-visible surfaces, and they are all open
+The app has exactly four externally-visible surfaces, and they are all open
 formats rather than an SDK:
 
 | Surface | Transport | What it is for |
@@ -10,6 +10,7 @@ formats rather than an SDK:
 | [Discovery](#1-discovery) | UDP broadcast, port 8888 | Finding the device that is hosting |
 | [Room protocol](#2-the-room-protocol) | WebSocket, port 8890 | Playing one instrument from several devices |
 | [Session links](#3-session-links) | HTTPS URL query parameters | Sending a loaded session to someone else |
+| [Session files](#4-session-files-sir) | A `.sir` file (zip) | Saving an evening's work and handing it over whole |
 
 Nothing here needs an account, a key, or a server. A room is a handful of
 devices on the same Wi-Fi and nothing else, and a session link is a string.
@@ -82,29 +83,49 @@ payload. Close ends the connection.
 
 ### Pairing, and what is in the clear
 
-Exactly three message types travel unencrypted, and only during pairing:
-`hello`, `hello_ack` and `join_refused`. Everything else — every message
-documented below — is carried inside a `sealed` envelope.
+Exactly four message types travel unencrypted, and only during pairing:
+`hello`, `hello_ack`, `reveal` and `join_refused`. None of the three pairing
+messages carries anything but an ephemeral public key or its hash — no device
+name and no long-term identity. Everything else, every message documented
+below, is carried inside a `sealed` envelope.
 
-```
-peer → host   { "type": "hello", "key": "<base64 ephemeral P-256 public key>",
-                "name": "Pixel 8", "identity": "<base64 long-term public key>" }
-host → peer   { "type": "hello_ack", "key": "<base64 ephemeral P-256 public key>",
-                "identity": "<base64 long-term public key>",
+~~~
+peer → host   { "type": "hello",     "commit": "<base64 SHA-256 of the peer's ephemeral public key>" }
+host → peer   { "type": "hello_ack", "key":    "<base64 host ephemeral P-256 public key>" }
+peer → host   { "type": "reveal",    "key":    "<base64 peer ephemeral P-256 public key>" }
+               — session agreed; everything below is sealed —
+host → peer   { "type": "identify", "identity": "<base64 long-term public key>",
                 "signature": "<base64 signature over the transcript>" }
-```
+peer → host   { "type": "identify", "name": "Pixel 8",
+                "identity": "<base64 long-term public key>" }
+peer → host   { "type": "join", …, "identity": "…", "signature": "…" }   (after approval)
+~~~
 
-`identity` is a device's long-term key, kept between sessions; `key` is
-ephemeral and made fresh for every connection. The peer's `signature` follows in
-its sealed `join` rather than in `hello`, because it cannot sign the transcript
-until `hello_ack` has given it the host's ephemeral key.
+**Commit, then reveal.** The joining device commits to its ephemeral key
+(`commit` = SHA-256 of the encoded key) before it has seen the host's, and
+reveals the key only after `hello_ack`. The host checks the revealed key against
+the commitment before deriving anything, and closes the connection if it does
+not match. Six digits are only about twenty bits; without the commitment a
+device in the middle could see both honest keys and grind its own offline until
+the two screens agreed. With it, the middle has to fix its key on each leg
+before learning the honest one, so it gets one guess at the digits rather than a
+million.
+
+**Identities travel sealed.** `identity` is a device's long-term key, kept
+between sessions; `key` is ephemeral and made fresh for every connection. The
+host sends its identity and its signature over the transcript in a sealed
+`identify` as soon as the session exists — always, with the identity fields
+omitted if it has none, because the peer waits for it before showing its own
+user the digits. The peer sends its name and claimed identity in its own sealed
+`identify`, and its signature follows in its sealed `join`. A passive listener
+therefore learns neither device's name nor its long-term key.
 
 A device that has been paired with before — and whose signature verifies against
 the remembered key, over this exchange's transcript — is admitted without either
 user being asked. A claimed identity that does not verify gets the ordinary
 prompt.
 
-Both sides then derive, by ECDH over P-256 and HKDF-SHA256:
+Both sides derive, by ECDH over P-256 and HKDF-SHA256:
 
 - a session key, used for AES-256-GCM;
 - **six decimal digits**, from the same derivation, which both devices display.
@@ -112,19 +133,35 @@ Both sides then derive, by ECDH over P-256 and HKDF-SHA256:
 The digits are the authentication. A bare key exchange is agreed just as happily
 with a device in the middle, which is why one is not enough on its own: the
 middle device holds two separate exchanges and cannot make the two screens
-match. Both users compare and approve. The joining device sends `join` only
-after its own user approves; the host honours it only after its own user does.
+match. Both users compare and approve. The joining device sends `join`, or
+anything else beyond its `identify`, only after its own user approves; the host
+honours it only after its own user does.
 
-Every message after `hello_ack` is:
+Every message after `reveal` is:
 
-```json
-{ "type": "sealed", "data": "<base64 nonce ‖ AES-256-GCM ciphertext>" }
-```
+~~~json
+{ "type": "sealed", "data": "<base64 seq ‖ nonce ‖ AES-256-GCM ciphertext and tag>" }
+~~~
+
+- `seq` is an 8-byte big-endian sequence number, starting at 1 and increasing
+  by one per frame **in each direction**. It is in the clear but authenticated:
+  it and a direction byte are the GCM associated data. A receiver drops any frame
+  whose `seq` is not greater than the last one it accepted, so a recorded frame
+  cannot be replayed, and the direction byte means a frame cannot be reflected
+  back to the device that sealed it.
+- `nonce` is 12 fresh random bytes per frame.
 
 The plaintext inside is the JSON documented below, unchanged. A frame that does
-not authenticate is dropped without a reply. The room code is mixed into the
-key derivation, so two devices holding different codes never reach the same
-session.
+not authenticate, or is out of sequence, is dropped without a reply. The room
+code is mixed into the key derivation, so two devices holding different codes
+never reach the same session.
+
+The host sends room traffic — `init_state`, `state_synced`, `event_triggered` —
+only to connections that have both joined and been approved. A connection that
+is still pairing, or that was never approved, receives nothing from the room.
+
+The handshake has to finish within ten seconds of connecting, and a host admits
+at most sixteen connections at once; beyond that, new connections are closed.
 
 ### The room state
 
@@ -301,8 +338,8 @@ Stated plainly, because a documented limit is worth more than a surprise:
   shaped like this one.
 - **Transport is still `ws://`, not `wss://`.** Confidentiality is at the
   application layer instead — see docs/SECURITY.md for why, and for what a
-  listener on the network can still see (two public keys, and the size and
-  timing of everything after).
+  listener on the network can still see (a commitment, two ephemeral public
+  keys, and the size, timing and sequence numbers of everything after).
 - **No audio.** Only control messages travel. Every device renders its own
   audio from its own library, which is why `load_track_direct` needs a shared
   library and a session link does not.
@@ -370,6 +407,16 @@ ignores them.
 
 ---
 
+## 4. Session files (`.sir`)
+
+A saved session is a zip archive with the `.sir` extension: a `session.json`
+manifest (running order, clip placement, pads) plus `takes/pad-N.wav` for any
+sampler pad that holds a recording. The full specification is in
+[SESSION_FORMAT.md](SESSION_FORMAT.md). On import, only direct children of
+`takes/` are read; nested paths and path-traversal entries are rejected.
+
+---
+
 ## Versioning
 
 There is no version field, and adding one would not help: a version number only
@@ -380,3 +427,10 @@ parameters all degrade to something usable rather than to an error.
 Two things are therefore commitments, and will not change meaning without a new
 name: the wire spellings above, and the ranges in the tables. A field may be
 added at any time.
+
+The pairing handshake is the one exception, because security cannot degrade
+gracefully. The commit/reveal handshake and sequence-numbered frames described
+above (protocol v2) are not compatible with the earlier one, in which `hello`
+carried the key, name and identity in the clear and sealed frames had no
+sequence number: a v1 peer and a v2 host never agree a session. Both apps ship
+the same `shared` implementation, so updating both devices is the fix.

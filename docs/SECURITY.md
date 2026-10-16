@@ -39,23 +39,43 @@ themselves.
 
 Joining a room takes three things, and no two of them are enough:
 
-1. **A key exchange.** The joining device and the host each generate an
-   ephemeral P-256 key pair, exchange public keys, and derive a session key by
-   ECDH. Nothing else in the conversation travels in the clear.
+1. **A key exchange, committed before it is revealed.** The joining device and
+   the host each generate an ephemeral P-256 key pair and derive a session key
+   by ECDH. The joining device goes first with only a SHA-256 *commitment* to
+   its key; the host answers with its own key; only then does the joiner reveal
+   the key it committed to, and the host refuses one that does not match.
+   Nothing but those ephemeral keys and the commitment travels in the clear.
 2. **Six digits, compared by two people.** Both devices derive the same six
    digits from the exchange and show them. A key exchange on its own stops a
    passive listener and *nothing else* — anyone in the middle can run one
    exchange with each side and read everything — so the exchange has to be
    authenticated by a channel the attacker is not on. The two people looking at
    each other's screens are that channel. A device in the middle holds two
-   different exchanges and cannot make both screens agree.
+   different exchanges and cannot make both screens agree. Six digits are about
+   twenty bits, which a middle device that could see both honest keys first
+   could grind offline in seconds; the commitment is what stops that, by making
+   it fix its key on each leg before it learns the honest one. It gets one guess
+   in a million, not a million guesses.
 3. **Both users pressing approve.** The host's approval says "this is the device
    I meant to admit". The joining device's approval says "this is the host I
-   meant to join". Either alone leaves the middle open.
+   meant to join". Either alone leaves the middle open. The joining device sends
+   nothing but its sealed `identify` until its own user approves, and the host
+   sends room traffic — state, events — only to connections that have joined
+   *and* been approved: a device that is still pairing, or was refused, receives
+   nothing from the room.
 
-Everything after that is AES-256-GCM, with a fresh nonce per frame: a listener
-on the network sees two public keys and then frames that do not open. Tampering
-fails to authenticate rather than decrypting to something plausible.
+Everything after that is AES-256-GCM, with a fresh nonce per frame and a
+per-direction sequence number authenticated with it: a listener on the network
+sees a commitment, two ephemeral public keys, and then frames that do not open.
+Tampering fails to authenticate rather than decrypting to something plausible.
+A frame whose sequence number is not greater than the last one accepted is
+dropped, so a recorded "load this track" or "play pad 3" cannot be replayed by
+somebody who watched it go past, and because the direction is authenticated too,
+a frame cannot be reflected back to the device that sent it.
+
+The host also bounds what an unpaired connection can cost it: the handshake must
+finish within ten seconds, at most sixteen connections are held at once, and key
+generation happens off the thread that accepts connections.
 
 The room code is still not a credential — it is broadcast in the clear by
 discovery — but it is no longer only a label either: it is mixed into the key
@@ -76,8 +96,17 @@ encrypts nothing; its only job is to sign the exchange. A device that has been
 approved before is written down by the fingerprint of that key, and rejoins
 without either user being asked again.
 
-The signature is what makes that safe. A fingerprint is public — it is on the
-wire every time that device connects — so if remembering one meant trusting
+The identity key, and the device name, travel only inside sealed frames, after
+the session exists — never in the clear `hello`, so a passive listener does not
+learn them. On Android the private key lives in its own app-private preferences
+file (`device_identity`), separate from the app's settings, and that file is
+excluded from Android backup and device-to-device transfer: a restored or cloned
+install generates a new identity rather than inheriting one, so a backup is
+never a way to impersonate a paired device. On the desktop it is
+`identity.properties` in the app's config folder, written owner-only.
+
+The signature is what makes remembering safe. A fingerprint is not a secret —
+any device you have paired with has seen it — so if remembering one meant trusting
 whoever claims it, the memory would be worse than no memory. What is checked is
 a signature over *this* exchange's transcript, verified against the key the
 fingerprint names: claiming somebody else's fingerprint proves nothing, and
@@ -102,8 +131,9 @@ compromise is that discovery is still automatic — a device finds the room by
 itself — and the only thing added is one screen on each side with the same six
 digits on it. No accounts, no server, and no typing.
 
-**What it means in practice:** an attacker on your network can do nothing until
-somebody approves them on the host's screen. Once approved — which is to say,
+**What it means in practice:** an attacker on your network can do nothing, and
+receives nothing from the room, until somebody approves them on the host's
+screen. Once approved — which is to say,
 once you have let them in — they can move the crossfader, trigger pads, load
 tracks that are already in your library, and seek the decks.
 
@@ -136,11 +166,15 @@ By design — that is the feature. The fetch is plain `HttpURLConnection` with a
 executed. XML parsing has `disallow-doctype-decl` set, which closes off external
 entity expansion.
 
-### Android backup is enabled
+### Android backup is enabled, with exclusions
 
 `allowBackup="true"`, so library metadata and settings can be included in the
-user's own Google backup. Disclosed in [PRIVACY.md](PRIVACY.md#androids-own-backup).
-The single manifest flag is where to change it if that is unwanted.
+user's own Google backup. Excluded from both cloud backup and device-to-device
+transfer (`backup_rules.xml`, `data_extraction_rules.xml`): the sync identity key
+(`device_identity.xml`), the pending crash report, local copies of audio
+(`files/audio/`), and the derived waveform and energy files (`files/peaks/`,
+`files/energy/`). Disclosed in [PRIVACY.md](PRIVACY.md#androids-own-backup). The
+single manifest flag is where to turn backup off entirely if that is wanted.
 
 ## Out of scope
 

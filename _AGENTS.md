@@ -108,11 +108,11 @@ Fresh context is the fix for drift. An agent has no sunk investment in the code 
 
 ## Companion File
 
-`ARCHITECTURE.md` lives in-repo and holds what shouldn't live in a prompt:
+`docs/ARCHITECTURE.md` lives in-repo and holds what shouldn't live in a prompt:
 
 - Module boundaries
-- Invariants (5–10 lines)
-- Current version
+- Invariants (its "Invariants" section, 5–10 lines)
+- Current version (its "Current version" section)
 - Decisions, each with its reason
 
 Re-read at thread start. Never recalled.
