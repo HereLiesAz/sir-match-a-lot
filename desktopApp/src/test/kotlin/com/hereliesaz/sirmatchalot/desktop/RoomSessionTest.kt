@@ -28,7 +28,15 @@ class RoomSessionTest {
     private val sessions = ArrayList<RoomSession>()
 
     private fun session(name: String): RoomSession =
-        RoomSession(MemoryStore(), deviceName = name).also { sessions.add(it) }
+        RoomSession(
+            MemoryStore(),
+            deviceName = name,
+            serverPort = freePort(),
+            discoveryPort = freePort(),
+        ).also { sessions.add(it) }
+
+    /** Fixed ports may be held by anything on a shared CI runner. */
+    private fun freePort(): Int = java.net.ServerSocket(0).use { it.localPort }
 
     @After
     fun tearDown() {

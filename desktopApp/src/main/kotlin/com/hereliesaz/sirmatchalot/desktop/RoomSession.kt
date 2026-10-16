@@ -30,6 +30,9 @@ import org.json.JSONObject
 class RoomSession(
     identityStore: KeyValueStore,
     private val deviceName: String = defaultDeviceName(),
+    // Overridable so tests don't depend on the fixed ports being free.
+    serverPort: Int = SyncServer.DEFAULT_PORT,
+    discoveryPort: Int = SyncServer.DISCOVERY_PORT,
 ) : SyncClient.SyncListener {
 
     private val deviceIdentity = DeviceIdentity.load(identityStore)
@@ -45,7 +48,12 @@ class RoomSession(
      */
     val knownDevices = KnownDevices(identityStore)
 
-    private val syncServer = SyncServer(identity = deviceIdentity, known = knownDevices)
+    private val syncServer = SyncServer(
+        port = serverPort,
+        discoveryPort = discoveryPort,
+        identity = deviceIdentity,
+        known = knownDevices,
+    )
     private val syncClient = SyncClient(this, deviceIdentity, knownDevices)
 
     private val _isHosting = MutableStateFlow(false)
