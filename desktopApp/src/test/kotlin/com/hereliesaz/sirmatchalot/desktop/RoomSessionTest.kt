@@ -98,4 +98,34 @@ class RoomSessionTest {
         )
         assertEquals(0, host.knownDevices.all().size)
     }
+
+    @Test
+    fun `stopping hosting clears the room code and status`() {
+        val host = session("Host Desktop")
+        assertTrue(host.startHosting("WXYZ"))
+        host.stopHosting()
+
+        assertEquals("", host.roomCode.value)
+        assertEquals("", host.statusMessage.value)
+        assertEquals(false, host.isHosting.value)
+    }
+
+    @Test
+    fun `leaving or losing the connection clears a pending host pairing prompt`() {
+        val guest = session("Guest Desktop")
+        guest.onPairingCode("123456")
+        guest.leaveRoom()
+        assertEquals(null, guest.pendingHostPairing.value)
+
+        guest.onPairingCode("654321")
+        guest.onDisconnected()
+        assertEquals(null, guest.pendingHostPairing.value)
+    }
+
+    @Test
+    fun `a busy port is detected`() {
+        java.net.ServerSocket(0).use { taken ->
+            assertTrue(RoomSession.isPortInUse(taken.localPort))
+        }
+    }
 }

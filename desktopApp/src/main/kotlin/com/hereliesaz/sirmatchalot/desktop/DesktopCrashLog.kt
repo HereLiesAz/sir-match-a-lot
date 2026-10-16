@@ -22,8 +22,14 @@ import java.time.Instant
 class DesktopCrashLog(
     private val file: File = defaultFile(),
 ) {
-    /** Writes [throwable], from [thread], to [file], replacing whatever was there. */
-    fun record(thread: Thread, throwable: Throwable) {
+    /**
+     * Writes [throwable], from [thread], to [file], replacing whatever was
+     * there. The write is atomic (temp file, then rename), so a second crash
+     * or a kill mid-write leaves the previous log intact rather than a
+     * truncated one. Returns false, instead of throwing, when the log could
+     * not be written — a crash handler must not itself crash.
+     */
+    fun record(thread: Thread, throwable: Throwable): Boolean {
         val trace = StringWriter().also { throwable.printStackTrace(PrintWriter(it)) }.toString()
         val text = buildString {
             appendLine("Sir Match-a-Lot (desktop) crashed at ${Instant.now()}")
@@ -31,12 +37,17 @@ class DesktopCrashLog(
             appendLine()
             append(trace)
         }
-        file.parentFile?.mkdirs()
-        file.writeText(text)
+        return try {
+            AtomicFiles.write(file, text.toByteArray(Charsets.UTF_8))
+            true
+        } catch (e: Exception) {
+            System.err.println("Sir Match-a-Lot: could not write crash log to $file: ${e.message}")
+            false
+        }
     }
 
     /** The last recorded crash's text, or null if there is none. */
-    fun read(): String? = file.takeIf { it.exists() }?.readText()
+    fun read(): String? = runCatching { file.takeIf { it.exists() }?.readText() }.getOrNull()
 
     /**
      * Installs this as the JVM's default uncaught-exception handler.
@@ -45,9 +56,10 @@ class DesktopCrashLog(
      * the JVM's own default of printing to stderr) after recording — this
      * adds capture, it does not change how an uncaught exception is
      * otherwise handled or whether the process still dies from it.
-     * [record] is wrapped in `runCatching` so a failure to write the log
-     * itself (a read-only disk, say) cannot suppress or replace the crash it
-     * was trying to describe.
+     * [record] reports its own write failures rather than throwing, and is
+     * additionally wrapped in `runCatching`, so a failure to write the log
+     * (a read-only disk, say) cannot suppress or replace the crash it was
+     * trying to describe.
      */
     fun installAsUncaughtExceptionHandler() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()

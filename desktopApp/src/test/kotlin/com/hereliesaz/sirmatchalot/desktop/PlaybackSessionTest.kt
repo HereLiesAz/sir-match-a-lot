@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.io.File
 import javax.sound.sampled.AudioFileFormat
@@ -56,8 +57,8 @@ class PlaybackSessionTest {
             toneWav(fileA, frequencyHz = 440.0)
             toneWav(fileB, frequencyHz = 880.0)
 
-            session.deckA.load(fileA.path)
-            session.deckB.load(fileB.path)
+            runBlocking { session.deckA.load(fileA.path).join() }
+            runBlocking { session.deckB.load(fileB.path).join() }
 
             assertEquals(fileA.name, session.deckA.loadedFileName.value)
             assertEquals(fileB.name, session.deckB.loadedFileName.value)
@@ -103,7 +104,7 @@ class PlaybackSessionTest {
             val pad = session.samplerPads.first()
             assertNull(pad.label.value)
 
-            pad.load(file.path)
+            runBlocking { pad.load(file.path).join() }
             assertEquals(file.name, pad.label.value)
 
             pad.trigger()
@@ -125,10 +126,37 @@ class PlaybackSessionTest {
                 writeText("not a wav file")
             }
 
-            session.deckA.load(file.path)
+            runBlocking { session.deckA.load(file.path).join() }
 
             assertNull(session.deckA.loadedFileName.value)
             assertTrue(session.deckA.loadErrorMessage.value!!.contains("Could not decode"))
+        } finally {
+            session.release()
+        }
+    }
+
+    @Test
+    fun `a missing file fails to load with a decode message instead of throwing`() {
+        val missing = File.createTempFile("gone", ".wav").apply { delete() }
+        val result = decodeForLoad(missing.path)
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("Could not decode"))
+    }
+
+    @Test
+    fun `a later load wins over an earlier one still decoding`() {
+        val session = PlaybackSession()
+        try {
+            val first = File.createTempFile("first", ".wav").apply { deleteOnExit() }
+            val second = File.createTempFile("second", ".wav").apply { deleteOnExit() }
+            toneWav(first)
+            toneWav(second)
+
+            val a = session.deckA.load(first.path)
+            val b = session.deckA.load(second.path)
+            runBlocking { a.join(); b.join() }
+
+            assertEquals(second.name, session.deckA.loadedFileName.value)
         } finally {
             session.release()
         }

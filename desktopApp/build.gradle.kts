@@ -51,14 +51,20 @@ dependencies {
 // Only major.minor.patch — the installer formats below (MSI in particular)
 // require a strict X.Y.Z and reject the trailing build number :app's own
 // versionName carries.
+// A missing or malformed file fails the build rather than silently packaging
+// 0.0.0, which would also break Windows upgrade ordering for the MSI.
 val versionProps = Properties()
 val versionPropsFile = rootProject.file("version.properties")
-if (versionPropsFile.exists()) {
-    versionProps.load(FileInputStream(versionPropsFile))
+if (!versionPropsFile.exists()) {
+    throw GradleException("version.properties not found at ${versionPropsFile.path}")
 }
-val versionMajor = versionProps.getProperty("major")?.toIntOrNull() ?: 0
-val versionMinor = versionProps.getProperty("minor")?.toIntOrNull() ?: 0
-val versionPatch = versionProps.getProperty("patch")?.toIntOrNull() ?: 0
+FileInputStream(versionPropsFile).use { versionProps.load(it) }
+fun versionPart(name: String): Int =
+    versionProps.getProperty(name)?.trim()?.toIntOrNull()
+        ?: throw GradleException("version.properties has no integer '$name'")
+val versionMajor = versionPart("major")
+val versionMinor = versionPart("minor")
+val versionPatch = versionPart("patch")
 val desktopPackageVersion = "$versionMajor.$versionMinor.$versionPatch"
 
 // jpackage's macOS app-image bundler rejects a leading 0 ("The first number
@@ -88,6 +94,16 @@ compose.desktop {
             targetFormats(TargetFormat.Msi, TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "SirMatchALot"
             packageVersion = if (isMacOs) macDesktopPackageVersion else desktopPackageVersion
+
+            // jlink only bundles the JDK modules listed here on top of the
+            // plugin's defaults (java.desktop, which also carries
+            // javax.sound). `./gradlew :desktopApp:suggestRuntimeModules`
+            // reports java.instrument and jdk.unsupported; jdk.crypto.ec is
+            // added by hand because the sync pairing's EC key agreement
+            // (secp256r1 via KeyAgreement/KeyPairGenerator) is looked up
+            // through a security provider, which that static scan cannot
+            // see — without it the packaged app fails to pair at runtime.
+            modules("java.instrument", "jdk.unsupported", "jdk.crypto.ec")
 
             // One source image, three platform icon formats generated from it
             // (see desktopApp/src/main/resources) — java.awt.FileDialog and
@@ -125,6 +141,10 @@ compose.desktop {
             }
             macOS {
                 iconFile.set(project.file("src/main/resources/icon.icns"))
+                // A stable reverse-DNS identity, so macOS treats each release
+                // as the same app (keychain, permissions, Launch Services)
+                // rather than deriving one from the main class name.
+                bundleID = "com.hereliesaz.sirmatchalot.desktop"
                 dmgPackageVersion = macDesktopPackageVersion
             }
             linux {
