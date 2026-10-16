@@ -53,6 +53,71 @@ interface TrackDao {
     @Update
     suspend fun updateTrack(track: Track)
 
+    /**
+     * Writes the measured columns of one row, and nothing else.
+     *
+     * Analysis takes seconds to minutes per track, and the row it started from
+     * is a snapshot. Writing `track.copy(...)` back through [updateTrack]
+     * replaced every column with that snapshot, so an edit made meanwhile — a
+     * cue point, a rename, the local copy recorded by playback — was silently
+     * reverted when the analysis landed. A targeted update touches only what
+     * the analyser owns.
+     */
+    @Query(
+        "UPDATE tracks SET bpm = :bpm, tempoConfidence = :tempoConfidence, " +
+            "firstBeatSeconds = :firstBeatSeconds, downbeatOffset = :downbeatOffset, " +
+            "camelotKey = :camelotKey, keyName = :keyName, keyConfidence = :keyConfidence, " +
+            "energyLevel = :energyLevel, durationMs = :durationMs, sampleRate = :sampleRate, " +
+            "trimStartMs = :trimStartMs, trimEndMs = :trimEndMs, peaksPath = :peaksPath, " +
+            "energyPath = :energyPath, analysisVersion = :analysisVersion WHERE id = :id",
+    )
+    suspend fun updateAnalysis(
+        id: String,
+        bpm: Double?,
+        tempoConfidence: Float,
+        firstBeatSeconds: Double?,
+        downbeatOffset: Int,
+        camelotKey: String?,
+        keyName: String?,
+        keyConfidence: Float,
+        energyLevel: Int?,
+        durationMs: Long,
+        sampleRate: Int,
+        trimStartMs: Long,
+        trimEndMs: Long,
+        peaksPath: String?,
+        energyPath: String?,
+        analysisVersion: Int,
+    )
+
+    /** Applies [columns] to row [id]; see [updateAnalysis]. */
+    suspend fun updateAnalysis(id: String, columns: AnalysisColumns) = updateAnalysis(
+        id = id,
+        bpm = columns.bpm,
+        tempoConfidence = columns.tempoConfidence,
+        firstBeatSeconds = columns.firstBeatSeconds,
+        downbeatOffset = columns.downbeatOffset,
+        camelotKey = columns.camelotKey,
+        keyName = columns.keyName,
+        keyConfidence = columns.keyConfidence,
+        energyLevel = columns.energyLevel,
+        durationMs = columns.durationMs,
+        sampleRate = columns.sampleRate,
+        trimStartMs = columns.trimStartMs,
+        trimEndMs = columns.trimEndMs,
+        peaksPath = columns.peaksPath,
+        energyPath = columns.energyPath,
+        analysisVersion = columns.analysisVersion,
+    )
+
+    /** Records (or, with null, forgets) the local copy of one row's audio, touching nothing else. */
+    @Query("UPDATE tracks SET cachedPath = :cachedPath WHERE id = :id")
+    suspend fun updateCachedPath(id: String, cachedPath: String?)
+
+    /** Forgets every local copy at once, for "clear local copies". */
+    @Query("UPDATE tracks SET cachedPath = NULL WHERE cachedPath IS NOT NULL")
+    suspend fun clearCachedPaths()
+
     @Delete
     suspend fun deleteTrack(track: Track)
 

@@ -269,7 +269,7 @@ class SyncServer(
         // distinguished that from any other failure — `running.get()` was
         // the only check, so a persistent accept() failure while still
         // "running" (fd exhaustion from an attacker holding many open
-        // connections, since nothing here caps `clients`) spun this loop at
+        // connections) spun this loop at
         // 100% CPU on a daemon thread. A short backoff between failures
         // keeps a genuine shutdown just as fast — it still exits on the
         // next `running.get()` check — while giving a real failure room to
@@ -280,6 +280,18 @@ class SyncServer(
                 if (running.get()) runCatching { Thread.sleep(ACCEPT_FAILURE_BACKOFF_MS) }
                 continue
             }
+            // A room is a handful of devices. Without a cap anyone on the
+            // network could open sockets until this process ran out of file
+            // descriptors; a full room turns newcomers away at the door.
+            if (clients.size >= MAX_CLIENTS) {
+                runCatching { accepted.close() }
+                continue
+            }
+            // Bounded until the key exchange completes, so a socket that
+            // connects and then says nothing gives its slot back instead of
+            // holding it forever. Cleared once a session is agreed — a paired
+            // device may sit quietly for as long as its user likes.
+            runCatching { accepted.soTimeout = HANDSHAKE_TIMEOUT_MS }
             val connection = ClientConnection(accepted)
             clients.add(connection)
             // Not yet counted in onPeersChanged: an accepted socket has not
@@ -336,8 +348,14 @@ class SyncServer(
         )
     }
 
+    /**
+     * Sends [text] to every peer in the room — which means joined, and so
+     * approved. A device that has agreed a key but not been approved holds a
+     * session it could open frames with, and used to be sent every broadcast
+     * on the strength of that alone.
+     */
     private fun send(text: String) {
-        for (client in clients) client.send(text)
+        for (client in clients) if (client.isJoined) client.send(text)
     }
 
     private inner class ClientConnection(private val socket: Socket) {
@@ -358,8 +376,18 @@ class SyncServer(
         /** Whether this peer has completed a `join` — see [joined]. */
         val isJoined: Boolean get() = joined
 
-        /** This connection's own ephemeral keys, never reused. */
-        private val keys = RoomCrypto.newKeyPair()
+        /**
+         * This connection's own ephemeral keys, never reused.
+         *
+         * Lazy, so they are made on this connection's own thread when `hello`
+         * arrives rather than on the accept thread, where a burst of
+         * connections would otherwise queue behind key generation.
+         */
+        private val keys by lazy { RoomCrypto.newKeyPair() }
+
+        /** The joiner's commitment from `hello`, checked when it reveals. */
+        @Volatile
+        private var peerCommitment: ByteArray? = null
 
         /** Agreed once `hello` arrives. Null before that, and after a failure. */
         @Volatile
@@ -467,10 +495,9 @@ class SyncServer(
         /**
          * Unencrypted, for the handshake and for refusals.
          *
-         * Exactly three messages travel this way — `hello_ack`, `join_refused`
-         * and nothing else — and none of them says anything a listener does not
-         * already know: the host's ephemeral public key, and that somebody was
-         * turned away.
+         * Exactly two messages travel this way — `hello_ack` and `join_refused`
+         * — and neither says anything a listener does not already know: the
+         * host's ephemeral public key, and that somebody was turned away.
          */
         private fun sendPlain(text: String) {
             runCatching { synchronized(output) { WebSocketProtocol.sendText(output, text) } }
@@ -537,15 +564,17 @@ class SyncServer(
         /**
          * Everything arriving on this connection.
          *
-         * Exactly one message is accepted in the clear — `hello`, which carries
-         * the peer's ephemeral public key. After that the only thing this reads
-         * is `sealed`, and what is inside a sealed frame is the protocol as it
+         * Two messages are accepted in the clear — `hello`, which carries a
+         * commitment to the peer's ephemeral public key, and `reveal`, which
+         * carries the key itself. After that the only thing this reads is
+         * `sealed`, and what is inside a sealed frame is the protocol as it
          * always was.
          */
         private fun handle(text: String) {
             val message = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (message.optString("type")) {
-                "hello" -> beginPairing(message)
+                "hello" -> acceptCommitment(message)
+                "reveal" -> beginPairing(message)
                 "sealed" -> {
                     val current = session ?: return
                     val bytes = runCatching {
@@ -558,11 +587,36 @@ class SyncServer(
         }
 
         /**
-         * Answers `hello`: agrees a key, and hands back this host's own.
+         * Answers `hello`: records the peer's commitment and hands back this
+         * host's key.
          *
-         * `hello` carries nothing but an ephemeral public key nobody can do
-         * anything with alone — no name, no identity. Those used to ride here
-         * and on `hello_ack` in the clear, which meant a passive listener on
+         * The peer has fixed its key before seeing this one — see
+         * [RoomCrypto]'s note on why the joining device commits first.
+         */
+        private fun acceptCommitment(message: JSONObject) {
+            if (peerCommitment != null) return
+            val commitment = WebSocketProtocol.decodeBase64(message.optString("commit")) ?: return
+            if (commitment.size != COMMITMENT_BYTES) return
+            peerCommitment = commitment
+            sendPlain(
+                JSONObject().apply {
+                    put("type", "hello_ack")
+                    put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
+                }.toString(),
+            )
+        }
+
+        /**
+         * Answers `reveal`: checks the key against the commitment, agrees a
+         * session, and sends this host's sealed identity.
+         *
+         * A key that does not match what was committed to is the one thing a
+         * device in the middle grinding for matching digits would have to send,
+         * so it ends the connection rather than being ignored.
+         *
+         * Neither `hello` nor `reveal` carries anything but an ephemeral public
+         * key (or its hash) nobody can do anything with alone — no name, no
+         * identity. Those used to ride `hello` and `hello_ack` in the clear, which meant a passive listener on
          * the same network learned this device's human-readable name and its
          * long-term identity key on every connection attempt, whether or not
          * anybody ever approved it. Both now travel sealed, once a session
@@ -571,11 +625,17 @@ class SyncServer(
          */
         private fun beginPairing(message: JSONObject) {
             if (session != null) return
+            val commitment = peerCommitment ?: return
             val peerKeyBytes = WebSocketProtocol.decodeBase64(message.optString("key")) ?: return
+            if (!RoomCrypto.verifyCommitment(commitment, peerKeyBytes)) {
+                close()
+                return
+            }
             val peerKey = RoomCrypto.decodePublicKey(peerKeyBytes) ?: return
             val agreed = RoomCrypto.agree(keys, peerKey, roomCode) ?: return
 
             session = agreed
+            runCatching { socket.soTimeout = 0 }
 
             val transcript = RoomCrypto.transcriptOf(
                 RoomCrypto.encodePublicKey(keys.public),
@@ -584,16 +644,9 @@ class SyncServer(
             )
             signedTranscript = transcript
 
-            sendPlain(
-                JSONObject().apply {
-                    put("type", "hello_ack")
-                    put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public)))
-                }.toString(),
-            )
-
             // This host's identity and its signature over the transcript used
-            // to ride the plaintext `hello_ack` above. Sealed now: the session
-            // exists as of the line above, so a passive listener without the
+            // to ride the plaintext `hello_ack`. Sealed now: the session
+            // exists as of the lines above, so a passive listener without the
             // peer's ephemeral private key cannot read it, while the peer —
             // who agreed the very same session a moment earlier — can.
             //
@@ -665,10 +718,9 @@ class SyncServer(
         /**
          * Checks the proof in a `join`, and says whether it is one we know.
          *
-         * Recognition happens here rather than at `hello` for a plain reason:
-         * the peer cannot sign the transcript until it has this host's
-         * ephemeral key, which `hello_ack` is what gives it. So the identity
-         * arrives with the hello and the signature with the join.
+         * Recognition happens here rather than at `identify` for a plain
+         * reason: the claimed identity arrives there unsigned, and the
+         * signature over the transcript comes with the join.
          *
          * The signature is verified *first*, and the fingerprint is only
          * recorded once it has. Recording a fingerprint the peer merely claimed
@@ -770,6 +822,15 @@ class SyncServer(
         const val DISCOVERY_PORT = 8888
         const val DISCOVERY_REQUEST = "SIR_MATCH_A_LOT_DISCOVER"
         private const val MAX_REQUEST_BYTES = 8 * 1024
+
+        /** Connections held at once, joined or not. A room is a handful of devices. */
+        const val MAX_CLIENTS = 16
+
+        /** How long a connection may take to upgrade and complete the key exchange. */
+        const val HANDSHAKE_TIMEOUT_MS = 10_000
+
+        /** A SHA-256, which is what `hello` commits with. */
+        private const val COMMITMENT_BYTES = 32
 
         /** How long [acceptLoop] waits before retrying after a failed accept(). */
         private const val ACCEPT_FAILURE_BACKOFF_MS = 200L

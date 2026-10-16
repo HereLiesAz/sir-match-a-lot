@@ -129,6 +129,11 @@ shows only that screen, so several people play one instrument rather than three
 copies of the same app. A loaded session can also be copied out as an ordinary
 link with readable query parameters and opened anywhere.
 
+Joining is paired, not just discovered: the two devices agree a key, both
+screens show the same six digits, and both people approve. After that every
+message is encrypted and numbered against replay, and a device nobody approved
+receives nothing from the room.
+
 Both are open formats rather than an SDK, specified in
 [`docs/API.md`](docs/API.md), so anything can speak them.
 
@@ -203,7 +208,9 @@ is no platter UI on desktop by design.
 ## 🔒 Privacy, permissions, terms
 
 No accounts, no analytics, no advertising, and no server of its own. Your music
-and everything measured from it stay on your device; the app makes a network
+and everything measured from it stay on your device — including the local
+copies of imported audio the app keeps by default (2 GB budget, adjustable or
+off in Settings, never backed up); the app makes a network
 request only when you ask it to import a link or fetch a store pack. A crash is
 logged to private storage and offered to you as a prefilled GitHub issue on the
 next launch — it goes nowhere unless you send it.
@@ -223,11 +230,13 @@ next launch — it goes nowhere unless you send it.
 Sir Match-a-Lot is licensed under the **GNU General Public License v3.0** — see
 [`LICENSE`](LICENSE).
 
-This is a deliberate choice, made to allow linking the
-[Rubber Band Library](https://breakfastquay.com/rubberband/) for high-quality
-time-stretching under its GPL terms. The consequence is that anyone who receives
-a build of this app may study, modify, and redistribute it, and any derivative
-work must also be GPL.
+This is a deliberate choice: the app is built in the open, and the GPL keeps it
+that way. Anyone who receives a build of this app may study, modify, and
+redistribute it, and any derivative work must also be GPL. (All audio
+processing, time-stretching included, is the project's own Kotlin code; no
+third-party GPL library is linked today. The license would, however, permit
+linking one such as Rubber Band later — see
+[`docs/AUDIO_QUALITY.md`](docs/AUDIO_QUALITY.md).)
 
 Note that this covers the *application*. Sample packs, sound effects, and other
 content distributed through the [Azphalt Store](https://azphalt.org) are separate

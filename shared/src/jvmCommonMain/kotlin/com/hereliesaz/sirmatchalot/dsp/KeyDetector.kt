@@ -85,9 +85,10 @@ class KeyDetector(
         // A4 = 440 Hz, and MIDI 60 is C, so pitch class is `midi mod 12` with
         // 0 = C. Bins outside the tonal range are marked -1 and skipped.
         val binPitchClass = IntArray(bins) { -1 }
+        val floor = resolvableFloor(sampleRate)
         for (k in 1 until bins) {
             val frequency = stft.binFrequency(k, sampleRate)
-            if (frequency < minFrequency || frequency > maxFrequency) continue
+            if (frequency < floor || frequency > maxFrequency) continue
             val midi = 69.0 + 12.0 * ln(frequency / 440.0) / ln(2.0)
             binPitchClass[k] = ((midi.roundToInt() % 12) + 12) % 12
         }
@@ -107,6 +108,28 @@ class KeyDetector(
         if (total <= 0.0) return null
         for (i in 0 until 12) chroma[i] /= total
         return chroma
+    }
+
+    /**
+     * The lowest frequency whose bins can be given a pitch class honestly.
+     *
+     * Bins are evenly spaced in Hz but semitones are not: at 44.1 kHz with a
+     * 4096-point frame a bin is ~10.8 Hz wide, while near C2 (65 Hz) a
+     * semitone is ~3.9 Hz. Down there one bin spans several semitones, and
+     * rounding its centre to the nearest note assigns all that energy to
+     * whichever pitch class the centre happens to land on — consistently
+     * mis-mapping bass. So bins are used only where one bin is no wider than
+     * the semitone it is attributed to (bin width < f x (2^(1/12) - 1)),
+     * about 181 Hz at the default frame; [minFrequency] still applies when it
+     * is higher. A stricter half-semitone criterion was considered and
+     * rejected: it would move the floor to ~362 Hz and discard the
+     * fundamentals of the octave around middle C, which carry most of a
+     * chord's identity. Bass notes still contribute through their harmonics.
+     */
+    internal fun resolvableFloor(sampleRate: Int): Double {
+        val binWidth = stft.binFrequency(1, sampleRate) - stft.binFrequency(0, sampleRate)
+        val semitoneRatio = Math.pow(2.0, 1.0 / 12.0) - 1.0
+        return maxOf(minFrequency, binWidth / semitoneRatio)
     }
 
     /** Picks the best of the 24 keys for a [chroma] profile. */

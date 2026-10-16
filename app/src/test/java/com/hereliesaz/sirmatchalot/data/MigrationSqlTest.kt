@@ -214,6 +214,95 @@ class MigrationSqlTest {
         }
     }
 
+    // --- The registered chain, run through the real Migration objects ---
+
+    /**
+     * A [androidx.sqlite.db.SupportSQLiteDatabase] that forwards `execSQL` to
+     * [connection] and refuses everything else, so the very objects handed to
+     * Room run here — not only the statement lists they are built from.
+     */
+    private fun supportDatabase(connection: Connection): androidx.sqlite.db.SupportSQLiteDatabase =
+        java.lang.reflect.Proxy.newProxyInstance(
+            javaClass.classLoader,
+            arrayOf(androidx.sqlite.db.SupportSQLiteDatabase::class.java),
+        ) { _, method, args ->
+            when (method.name) {
+                "execSQL" -> {
+                    connection.createStatement().use { it.executeUpdate(args!![0] as String) }
+                    null
+                }
+                "toString" -> "SupportSQLiteDatabase(jdbc)"
+                else -> throw UnsupportedOperationException("migration called ${method.name}")
+            }
+        } as androidx.sqlite.db.SupportSQLiteDatabase
+
+    /**
+     * The newest schema Room exported. `@Database(version)` is not retained at
+     * runtime, and the exported files are what Room validates against anyway.
+     */
+    private val currentVersion: Int by lazy {
+        val relative = "schemas/com.hereliesaz.sirmatchalot.data.AppDatabase"
+        val dir = listOf(java.io.File(relative), java.io.File("app/$relative")).first { it.isDirectory }
+        dir.listFiles()!!.mapNotNull { it.nameWithoutExtension.toIntOrNull() }.max()
+    }
+
+    @Test
+    fun `the registered migrations form one contiguous chain from 1 to the current version`() {
+        val chain = AppDatabase.ALL_MIGRATIONS.map { it.startVersion to it.endVersion }
+        assertEquals((1 until currentVersion).map { it to it + 1 }, chain)
+    }
+
+    private fun Connection.runRegisteredMigrations(from: Int, to: Int = currentVersion) {
+        val database = supportDatabase(this)
+        AppDatabase.ALL_MIGRATIONS
+            .filter { it.startVersion >= from && it.endVersion <= to }
+            .forEach { it.migrate(database) }
+    }
+
+    private fun Connection.indexNames(): Set<String> =
+        createStatement().use { statement ->
+            statement.executeQuery("PRAGMA index_list(`tracks`)").use { rows ->
+                buildSet {
+                    while (rows.next()) {
+                        val name = rows.getString("name")
+                        // SQLite's own index behind a TEXT primary key is not
+                        // something Room declares or validates.
+                        if (!name.startsWith("sqlite_autoindex_")) add(name)
+                    }
+                }
+            }
+        }
+
+    private fun exportedIndexNames(version: Int): Set<String> {
+        val relative = "schemas/com.hereliesaz.sirmatchalot.data.AppDatabase/$version.json"
+        val file = listOf(java.io.File(relative), java.io.File("app/$relative")).first { it.isFile }
+        val text = file.readText()
+        if (!text.contains("\"indices\"")) return emptySet()
+        return Regex("\"name\"\\s*:\\s*\"(index_[^\"]+)\"").findAll(text).map { it.groupValues[1] }.toSet()
+    }
+
+    @Test
+    fun `the registered Migration objects take version 1 to the exported current schema`() {
+        openVersion1Database().use { connection ->
+            connection.insertVersion1Row("a", title = "Blue Monday")
+            connection.runRegisteredMigrations(from = 1)
+            assertEquals(exportedColumnDefinitions(currentVersion), connection.columnDefinitions())
+            assertEquals(exportedIndexNames(currentVersion), connection.indexNames())
+        }
+    }
+
+    @Test
+    fun `version 2 migrated to 3 matches the exported version 3 schema`() {
+        val expected = exportedColumnDefinitions(version = 3)
+        assertTrue("no exported schema found for version 3", expected.isNotEmpty())
+        openVersion2Database().use { connection ->
+            connection.insertVersion2Row("a")
+            connection.runRegisteredMigrations(from = 2, to = 3)
+            assertEquals(expected, connection.columnDefinitions())
+            assertEquals(exportedIndexNames(3), connection.indexNames())
+        }
+    }
+
     // --- Version 3 to 4: the local copy ---
 
     @Test
@@ -363,7 +452,7 @@ class MigrationSqlTest {
     }
 
     @Test
-    fun `nothing is lost — every row carries over`() {
+    fun `nothing is lost, every row carries over`() {
         openVersion2Database().use { connection ->
             repeat(25) { connection.insertVersion2Row("track$it") }
             connection.migrate()

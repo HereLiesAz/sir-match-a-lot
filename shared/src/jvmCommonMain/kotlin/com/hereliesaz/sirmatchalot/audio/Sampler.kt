@@ -47,17 +47,47 @@ class SamplerPad(val index: Int) {
 
     fun clear() = load(null, null)
 
+    /**
+     * Bumped by every [trigger] and [stop]. The audio thread reads the playhead
+     * at the start of a block and writes the advanced one back at the end; a
+     * trigger or stop from the UI in between would otherwise be overwritten by
+     * that stale write — a stopped pad carrying on, a retrigger ignored.
+     */
+    @Volatile
+    var generation: Int = 0
+        private set
+
     fun trigger() {
-        if (buffer != null) playhead = 0.0
+        synchronized(this) {
+            if (buffer != null) {
+                playhead = 0.0
+                generation++
+            }
+        }
     }
 
     fun stop() {
-        playhead = IDLE
+        synchronized(this) {
+            playhead = IDLE
+            generation++
+        }
     }
 
-    internal fun advanceTo(position: Double) {
-        playhead = position
-    }
+    /**
+     * Writes the audio thread's advanced playhead, unless [trigger] or [stop]
+     * ran since [seenGeneration] was read — then theirs stands.
+     *
+     * The monitor is held for a compare and a store; it is uncontended in
+     * practice and allocates nothing.
+     *
+     * @return false when the write was discarded.
+     */
+    internal fun advanceTo(position: Double, seenGeneration: Int): Boolean =
+        synchronized(this) {
+            if (generation != seenGeneration) return false
+            playhead = position
+            true
+        }
 
     companion object {
         const val IDLE = -1.0
@@ -190,6 +220,9 @@ class Sampler(
         for (padIndex in pads.indices) {
             val pad = pads[padIndex]
             val buffer = pad.buffer ?: continue
+            // Generation before playhead: a trigger between the two reads then
+            // shows up as a changed generation and the write below is dropped.
+            val generation = pad.generation
             var position = pad.playhead
             if (position < 0.0) continue
 
@@ -226,7 +259,7 @@ class Sampler(
                     position += 1.0
                 }
             }
-            pad.advanceTo(position)
+            pad.advanceTo(position, generation)
         }
     }
 

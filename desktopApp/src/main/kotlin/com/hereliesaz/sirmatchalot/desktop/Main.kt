@@ -62,6 +62,11 @@ private fun runApplication() = application {
     val library = remember { DesktopLibrary() }
     Window(
         onCloseRequest = {
+            // Tear down everything holding a socket or a thread, so the
+            // process actually exits and peers see this device leave rather
+            // than time out. leaveRoom also stops any LAN discovery broadcast.
+            runCatching { roomSession.close() }
+            library.close()
             playback.release()
             exitApplication()
         },

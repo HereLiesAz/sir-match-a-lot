@@ -44,6 +44,15 @@ data class SessionLink(
     /** One track, named the way another library can look it up. */
     data class TrackRef(val title: String, val artist: String) {
         override fun toString(): String = if (artist.isBlank()) title else "$artist - $title"
+
+        /**
+         * How this track is written into a link: [toString], except that a
+         * title with no artist but a " - " of its own is written with an empty
+         * artist in front (" - Eple - Remix"), so [parseTrack] does not split
+         * the title in two on the way back.
+         */
+        internal fun toWire(): String =
+            if (artist.isBlank() && title.contains(SEPARATOR)) SEPARATOR + title else toString()
     }
 
     /** True when there is nothing worth sharing. */
@@ -57,8 +66,8 @@ data class SessionLink(
      */
     fun toUrl(base: String = DEFAULT_BASE): String {
         val parameters = ArrayList<Pair<String, String>>()
-        deckA.forEach { parameters.add("a" to it.toString()) }
-        deckB.forEach { parameters.add("b" to it.toString()) }
+        deckA.forEach { parameters.add("a" to it.toWire()) }
+        deckB.forEach { parameters.add("b" to it.toWire()) }
         // An unset slot is an empty segment, not omitted — "60,,,90" says
         // slots 1 and 4 are set and 2 and 3 are not, where dropping the
         // empty slots would read back as "the first two slots are set".
@@ -86,6 +95,8 @@ data class SessionLink(
     companion object {
         const val DEFAULT_BASE = "https://hereliesaz.github.io/sir-match-a-lot/"
 
+        private const val SEPARATOR = " - "
+
         /** Far more than a deck's own [com.hereliesaz.sirmatchalot.domain.DeckCapacity] admits. */
         private const val MAX_TRACKS_PER_DECK = 200
 
@@ -101,7 +112,9 @@ data class SessionLink(
          * whole link — losing one cue point is better than losing the session.
          */
         fun fromUrl(url: String): SessionLink {
-            val query = url.substringAfter('?', "")
+            // A fragment is not part of the query: "...&room=ABCD#top" must
+            // not read back as room "ABCD#TOP".
+            val query = url.substringBefore('#').substringAfter('?', "")
             if (query.isBlank()) return SessionLink()
 
             val deckA = ArrayList<TrackRef>()
@@ -146,10 +159,13 @@ data class SessionLink(
          * Splits "Artist - Title", on the first separator only.
          *
          * Same rule as the playlist parser, for the same reason: "Röyksopp -
-         * Eple - Remix" is Röyksopp playing "Eple - Remix".
+         * Eple - Remix" is Röyksopp playing "Eple - Remix". A value that
+         * starts with the separator has an empty artist and is all title —
+         * how [TrackRef.toWire] writes such a title so it survives.
          */
         internal fun parseTrack(value: String): TrackRef {
-            val separator = value.indexOf(" - ")
+            if (value.startsWith(SEPARATOR)) return TrackRef(value.substring(SEPARATOR.length).trim(), "")
+            val separator = value.indexOf(SEPARATOR)
             if (separator <= 0) return TrackRef(value.trim(), "")
             val artist = value.substring(0, separator).trim()
             val title = value.substring(separator + 3).trim()

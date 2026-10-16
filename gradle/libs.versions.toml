@@ -26,10 +26,10 @@ composeMultiplatform = "1.11.1"
 # the MCP server (reload/screenshot/semantic-tree/click tools for an agent
 # driving the running desktop app) rather than only the IDE hot-reload path.
 composeHotReload = "1.2.0"
-# KSP releases track the Kotlin version they were built against. 2.3.10 is the
+# KSP releases track the Kotlin version they were built against. 2.3.12 is the
 # newest published build; KSP2 accepts the 2.4.x compiler, so this is correct
 # rather than a mismatch. Revisit when a 2.4.x KSP ships.
-ksp = "2.3.10"
+ksp = "2.3.12"
 # Pinned explicitly rather than left to transitive resolution. The pin was added
 # because play-services-basement — which arrived with firebase-analytics — asked
 # for fragment 1.1.0, the version lint's InvalidFragmentVersionForActivityResult

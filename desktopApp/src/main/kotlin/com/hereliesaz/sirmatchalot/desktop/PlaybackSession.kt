@@ -3,33 +3,45 @@ package com.hereliesaz.sirmatchalot.desktop
 import com.hereliesaz.sirmatchalot.audio.AudioEngine
 import com.hereliesaz.sirmatchalot.audio.Clip
 import com.hereliesaz.sirmatchalot.audio.Deck
+import com.hereliesaz.sirmatchalot.audio.PcmBuffer
 import com.hereliesaz.sirmatchalot.audio.Sampler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The desktop half of local mixing: two decks, a crossfader, and an eight-pad
  * sampler, all driven from local files and played through [DesktopAudioOutput].
  *
- * Everything here is UI wiring on top of [AudioEngine]'s already-portable
- * render graph — `deckA`/`deckB`, `mixer.crossfade`, and `sampler` all existed
- * before this session touched anything; Phase 3 only needed one deck to prove
- * the graph makes sound at all.
+ * Everything here is UI-facing state on top of [AudioEngine]'s portable
+ * render graph (`deckA`/`deckB`, `mixer.crossfade`, `sampler`). Loading a
+ * file decodes it on [Dispatchers.IO] — a whole track is read into memory,
+ * which must not freeze the window — and the result is applied when the
+ * decode finishes.
  */
 class PlaybackSession {
+
+    /** Decode jobs; cancelled by [release]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val output = DesktopAudioOutput()
     val engine = AudioEngine(output)
 
-    val deckA = DeckControl(engine, engine.deckA)
-    val deckB = DeckControl(engine, engine.deckB)
+    val deckA = DeckControl(engine, engine.deckA, scope)
+    val deckB = DeckControl(engine, engine.deckB, scope)
 
     private val _crossfade = MutableStateFlow(engine.mixer.crossfade)
     val crossfade: StateFlow<Float> = _crossfade
 
     val samplerPads: List<SamplerPadControl> =
-        engine.sampler.pads.indices.map { SamplerPadControl(engine, engine.sampler, it) }
+        engine.sampler.pads.indices.map { SamplerPadControl(engine, engine.sampler, it, scope) }
 
     /**
      * Set once, from [DesktopAudioOutput.onError] — never cleared by a deck's
@@ -55,12 +67,17 @@ class PlaybackSession {
     }
 
     fun release() {
+        scope.cancel()
         engine.release()
     }
 }
 
 /** One deck's load/play/stop state, backed by a live [Deck] in the shared engine. */
-class DeckControl(private val engine: AudioEngine, private val deck: Deck) {
+class DeckControl(
+    private val engine: AudioEngine,
+    private val deck: Deck,
+    private val scope: CoroutineScope,
+) {
 
     private val _loadedFileName = MutableStateFlow<String?>(null)
     val loadedFileName: StateFlow<String?> = _loadedFileName
@@ -71,14 +88,25 @@ class DeckControl(private val engine: AudioEngine, private val deck: Deck) {
     private val _loadErrorMessage = MutableStateFlow<String?>(null)
     val loadErrorMessage: StateFlow<String?> = _loadErrorMessage
 
-    /** Decodes [path] and puts it on this deck, stopped, ready to play. */
-    fun load(path: String) {
-        val file = File(path)
-        val buffer = runCatching { DesktopAudioDecoder.decode(file) }.getOrNull()
-        if (buffer == null) {
-            _loadErrorMessage.value = "Could not decode $path — only WAV/AIFF/AU are supported so far"
-            return
+    /** Bumped per [load]; only the newest load's result is applied. */
+    private val loadGeneration = AtomicInteger()
+
+    /**
+     * Decodes [path] in the background and then puts it on this deck,
+     * stopped, ready to play. Returns the decode job, so a caller (a test)
+     * can wait for it; the UI just observes the state flows.
+     */
+    fun load(path: String): Job {
+        val generation = loadGeneration.incrementAndGet()
+        return scope.launch {
+            val result = decodeForLoad(path)
+            if (generation != loadGeneration.get()) return@launch
+            result.onSuccess { apply(File(path), it) }
+                .onFailure { _loadErrorMessage.value = it.message }
         }
+    }
+
+    private fun apply(file: File, buffer: PcmBuffer) {
         deck.playing = false
         deck.clips = listOf(Clip(id = file.path, buffer = buffer, loop = true))
         deck.playhead = 0.0
@@ -109,7 +137,12 @@ class DeckControl(private val engine: AudioEngine, private val deck: Deck) {
 }
 
 /** One sampler pad's load/trigger/stop state, backed by a live pad in [Sampler]. */
-class SamplerPadControl(private val engine: AudioEngine, private val sampler: Sampler, val index: Int) {
+class SamplerPadControl(
+    private val engine: AudioEngine,
+    private val sampler: Sampler,
+    val index: Int,
+    private val scope: CoroutineScope,
+) {
 
     private val _label = MutableStateFlow<String?>(null)
     val label: StateFlow<String?> = _label
@@ -117,17 +150,21 @@ class SamplerPadControl(private val engine: AudioEngine, private val sampler: Sa
     private val _loadErrorMessage = MutableStateFlow<String?>(null)
     val loadErrorMessage: StateFlow<String?> = _loadErrorMessage
 
-    /** Decodes [path] and drops it onto this pad, ready to trigger. */
-    fun load(path: String) {
-        val file = File(path)
-        val buffer = runCatching { DesktopAudioDecoder.decode(file) }.getOrNull()
-        if (buffer == null) {
-            _loadErrorMessage.value = "Could not decode $path — only WAV/AIFF/AU are supported so far"
-            return
+    private val loadGeneration = AtomicInteger()
+
+    /** Decodes [path] in the background, then drops it onto this pad, ready to trigger. */
+    fun load(path: String): Job {
+        val generation = loadGeneration.incrementAndGet()
+        return scope.launch {
+            val result = decodeForLoad(path)
+            if (generation != loadGeneration.get()) return@launch
+            result.onSuccess { buffer ->
+                val file = File(path)
+                sampler.pads[index].load(buffer, file.name)
+                _label.value = file.name
+                _loadErrorMessage.value = null
+            }.onFailure { _loadErrorMessage.value = it.message }
         }
-        sampler.pads[index].load(buffer, file.name)
-        _label.value = file.name
-        _loadErrorMessage.value = null
     }
 
     fun trigger() {
@@ -139,4 +176,26 @@ class SamplerPadControl(private val engine: AudioEngine, private val sampler: Sa
     fun stop() {
         sampler.stop(index)
     }
+}
+
+/**
+ * Decodes [path] for a deck or pad, turning every failure into a message a
+ * user can act on. Out-of-memory is reported on its own: the decoder holds
+ * the whole file as 16-bit PCM, so a long track can exceed the heap, and
+ * "could not decode" would wrongly suggest the format is the problem.
+ */
+internal fun decodeForLoad(path: String): Result<PcmBuffer> {
+    val buffer = try {
+        DesktopAudioDecoder.decode(File(path))
+    } catch (e: OutOfMemoryError) {
+        return Result.failure(
+            IllegalStateException("$path is too large to load into memory — try a shorter file"),
+        )
+    } catch (e: Exception) {
+        null
+    }
+    return buffer?.let { Result.success(it) }
+        ?: Result.failure(
+            IllegalArgumentException("Could not decode $path — only WAV/AIFF/AU are supported so far"),
+        )
 }

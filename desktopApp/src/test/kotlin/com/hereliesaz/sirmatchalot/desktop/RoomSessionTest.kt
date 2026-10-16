@@ -28,7 +28,15 @@ class RoomSessionTest {
     private val sessions = ArrayList<RoomSession>()
 
     private fun session(name: String): RoomSession =
-        RoomSession(MemoryStore(), deviceName = name).also { sessions.add(it) }
+        RoomSession(
+            MemoryStore(),
+            deviceName = name,
+            serverPort = freePort(),
+            discoveryPort = freePort(),
+        ).also { sessions.add(it) }
+
+    /** Fixed ports may be held by anything on a shared CI runner. */
+    private fun freePort(): Int = java.net.ServerSocket(0).use { it.localPort }
 
     @After
     fun tearDown() {
@@ -97,5 +105,35 @@ class RoomSessionTest {
             awaitValue { host.pendingPeers.value.firstOrNull() },
         )
         assertEquals(0, host.knownDevices.all().size)
+    }
+
+    @Test
+    fun `stopping hosting clears the room code and status`() {
+        val host = session("Host Desktop")
+        assertTrue(host.startHosting("WXYZ"))
+        host.stopHosting()
+
+        assertEquals("", host.roomCode.value)
+        assertEquals("", host.statusMessage.value)
+        assertEquals(false, host.isHosting.value)
+    }
+
+    @Test
+    fun `leaving or losing the connection clears a pending host pairing prompt`() {
+        val guest = session("Guest Desktop")
+        guest.onPairingCode("123456")
+        guest.leaveRoom()
+        assertEquals(null, guest.pendingHostPairing.value)
+
+        guest.onPairingCode("654321")
+        guest.onDisconnected()
+        assertEquals(null, guest.pendingHostPairing.value)
+    }
+
+    @Test
+    fun `a busy port is detected`() {
+        java.net.ServerSocket(0).use { taken ->
+            assertTrue(RoomSession.isPortInUse(taken.localPort))
+        }
     }
 }

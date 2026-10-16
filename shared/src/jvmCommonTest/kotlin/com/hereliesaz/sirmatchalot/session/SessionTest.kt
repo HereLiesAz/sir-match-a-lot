@@ -161,6 +161,25 @@ class SessionTest {
         assertTrue("an escaping entry was kept", read!!.takes.isEmpty())
     }
 
+    @Test
+    fun `only direct children of the takes directory are kept, by their own name`() {
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(java.util.zip.ZipEntry(SessionDocument.MANIFEST))
+            zip.write(documentOf(track()).encode().toByteArray())
+            zip.closeEntry()
+            for (name in listOf("nested/x.wav", "..", "mix..final.wav", "a\\b.wav")) {
+                zip.putNextEntry(java.util.zip.ZipEntry("${SessionDocument.TAKES}/$name"))
+                zip.write(ByteArray(4))
+                zip.closeEntry()
+            }
+        }
+        val read = requireNotNull(SessionArchive.read(out.toByteArray().inputStream()))
+        // Two dots inside a name are not traversal; a nested path, a ".."
+        // segment and a backslash separator are refused.
+        assertEquals(setOf("mix..final.wav"), read.takes.keys)
+    }
+
     // --- Finding the tracks again ---
 
     @Test

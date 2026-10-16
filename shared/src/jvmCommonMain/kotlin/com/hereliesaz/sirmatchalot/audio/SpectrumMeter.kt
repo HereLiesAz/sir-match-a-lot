@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.audio
 
 import com.hereliesaz.sirmatchalot.dsp.Biquad
 import com.hereliesaz.sirmatchalot.dsp.BiquadCoefficients
+import kotlin.math.exp
 import kotlin.math.sqrt
 
 /**
@@ -26,10 +27,16 @@ import kotlin.math.sqrt
  * either a jittery flicker or a sluggish smear, and no setting of it gives both
  * a sharp hit and a smooth decay.
  *
+ * The smoothing is defined by time constants ([ATTACK_SECONDS],
+ * [RELEASE_SECONDS]) and converted per block from the block's length, so the
+ * lights behave the same whatever buffer size or sample rate the output runs
+ * at. A fixed per-block coefficient would make a device with half the buffer
+ * size decay twice as fast.
+ *
  * Every method is allocation-free and called from the audio thread. Readers get
  * the values through volatile fields, so the UI never blocks the renderer.
  */
-class SpectrumMeter(sampleRate: Int = 44_100) {
+class SpectrumMeter(private val sampleRate: Int = 44_100) {
 
     /** Bass energy, 0..1, smoothed. */
     @Volatile
@@ -78,9 +85,11 @@ class SpectrumMeter(sampleRate: Int = 44_100) {
             highSum += h.toDouble() * h
         }
 
-        low = follow(low, normalise(sqrt(lowSum / frames).toFloat(), LOW_REFERENCE))
-        mid = follow(mid, normalise(sqrt(midSum / frames).toFloat(), MID_REFERENCE))
-        high = follow(high, normalise(sqrt(highSum / frames).toFloat(), HIGH_REFERENCE))
+        val attack = coefficientFor(frames, ATTACK_SECONDS)
+        val release = coefficientFor(frames, RELEASE_SECONDS)
+        low = follow(low, normalise(sqrt(lowSum / frames).toFloat(), LOW_REFERENCE), attack, release)
+        mid = follow(mid, normalise(sqrt(midSum / frames).toFloat(), MID_REFERENCE), attack, release)
+        high = follow(high, normalise(sqrt(highSum / frames).toFloat(), HIGH_REFERENCE), attack, release)
     }
 
     /** Drops everything to dark. */
@@ -99,10 +108,17 @@ class SpectrumMeter(sampleRate: Int = 44_100) {
      * The asymmetry is the whole point: a kick has to land on the frame it
      * happens, and then fade rather than snap off.
      */
-    private fun follow(current: Float, target: Float): Float {
-        val coefficient = if (target > current) ATTACK else RELEASE
+    private fun follow(current: Float, target: Float, attack: Float, release: Float): Float {
+        val coefficient = if (target > current) attack else release
         return current + (target - current) * coefficient
     }
+
+    /**
+     * The one-pole coefficient that covers [frames] of a smoother with time
+     * constant [seconds]: `1 - e^(-t/tau)`.
+     */
+    private fun coefficientFor(frames: Int, seconds: Double): Float =
+        (1.0 - exp(-frames / (sampleRate * seconds))).toFloat()
 
     /**
      * Scales a band's RMS to 0..1 against a reference level.
@@ -130,8 +146,16 @@ class SpectrumMeter(sampleRate: Int = 44_100) {
         const val MID_REFERENCE = 0.18f
         const val HIGH_REFERENCE = 0.06f
 
-        /** Per-block coefficients, at roughly 90 blocks a second. */
-        const val ATTACK = 0.55f
-        const val RELEASE = 0.06f
+        /**
+         * Rise time constant. Equivalent to the old per-block coefficient of
+         * 0.55 at ~90 blocks a second: a kick lands within a frame or two.
+         */
+        const val ATTACK_SECONDS = 0.014
+
+        /**
+         * Fall time constant. Equivalent to the old per-block 0.06 at ~90
+         * blocks a second: the bloom fades over a few tenths of a second.
+         */
+        const val RELEASE_SECONDS = 0.18
     }
 }

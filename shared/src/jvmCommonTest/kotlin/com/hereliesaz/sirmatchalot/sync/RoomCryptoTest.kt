@@ -1,6 +1,7 @@
 package com.hereliesaz.sirmatchalot.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -59,6 +60,80 @@ class RoomCryptoTest {
             hostToAttacker.sas,
             peerToAttacker.sas,
         )
+        assertNotEquals(
+            "nor hold the same key",
+            hostToAttacker.keyBytes().toList(),
+            peerToAttacker.keyBytes().toList(),
+        )
+    }
+
+    @Test
+    fun `a commitment holds only for the key it was made to`() {
+        val committed = RoomCrypto.encodePublicKey(RoomCrypto.newKeyPair().public)
+        val other = RoomCrypto.encodePublicKey(RoomCrypto.newKeyPair().public)
+        val commitment = RoomCrypto.commitmentOf(committed)
+
+        assertTrue(RoomCrypto.verifyCommitment(commitment, committed))
+        assertFalse("a swapped key must not pass", RoomCrypto.verifyCommitment(commitment, other))
+        assertFalse(
+            "the commitment must not be the key itself",
+            commitment.toList() == committed.toList(),
+        )
+    }
+
+    @Test
+    fun `a replayed frame does not open twice`() {
+        val host = RoomCrypto.newKeyPair()
+        val peer = RoomCrypto.newKeyPair()
+        val hostSide = session(host, peer)!!
+        val peerSide = session(peer, host)!!
+
+        val first = hostSide.seal("play pad 3".toByteArray())
+        val second = hostSide.seal("play pad 4".toByteArray())
+
+        assertNotNull(peerSide.open(first))
+        assertNull("the same frame again must be refused", peerSide.open(first))
+        assertNotNull("the next frame still opens", peerSide.open(second))
+        assertNull("and an older one after it is refused", peerSide.open(first))
+    }
+
+    @Test
+    fun `a frame cannot be reflected back at its sender`() {
+        val host = RoomCrypto.newKeyPair()
+        val peer = RoomCrypto.newKeyPair()
+        val hostSide = session(host, peer)!!
+        session(peer, host)!!
+
+        assertNull(hostSide.open(hostSide.seal("load track".toByteArray())))
+    }
+
+    @Test
+    fun `a rejected frame does not move the replay window`() {
+        val host = RoomCrypto.newKeyPair()
+        val peer = RoomCrypto.newKeyPair()
+        val hostSide = session(host, peer)!!
+        val peerSide = session(peer, host)!!
+
+        val genuine = hostSide.seal("x".toByteArray())
+        // A forged header claiming a huge sequence number, with a bad tag.
+        val forged = genuine.copyOf().also {
+            for (i in 0 until RoomCrypto.SEQUENCE_BYTES) it[i] = 0x7F
+            it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte()
+        }
+        assertNull(peerSide.open(forged))
+        assertNotNull("the genuine frame must still open", peerSide.open(genuine))
+    }
+
+    @Test
+    fun `changing the sequence number breaks the frame`() {
+        val host = RoomCrypto.newKeyPair()
+        val peer = RoomCrypto.newKeyPair()
+        val hostSide = session(host, peer)!!
+        val peerSide = session(peer, host)!!
+
+        val sealed = hostSide.seal("x".toByteArray())
+        sealed[RoomCrypto.SEQUENCE_BYTES - 1] = (sealed[RoomCrypto.SEQUENCE_BYTES - 1] + 5).toByte()
+        assertNull(peerSide.open(sealed))
     }
 
     @Test
@@ -111,6 +186,15 @@ class RoomCryptoTest {
         assertNull(peerSide.open(ByteArray(0)))
         assertNull(peerSide.open(ByteArray(RoomCrypto.NONCE_BYTES)))
         assertNull(peerSide.open(ByteArray(RoomCrypto.NONCE_BYTES - 1)))
+
+        // A genuine frame cut back to its header and nonce, and to part of its
+        // tag: nothing to authenticate, so nothing opens.
+        val hostSide = session(host, peer)!!
+        val sealed = hostSide.seal("x".toByteArray())
+        val headerAndNonce = RoomCrypto.SEQUENCE_BYTES + RoomCrypto.NONCE_BYTES
+        assertNull(peerSide.open(sealed.copyOf(headerAndNonce)))
+        assertNull(peerSide.open(sealed.copyOf(headerAndNonce + 8)))
+        assertNotNull("the whole frame still opens", peerSide.open(sealed))
     }
 
     @Test

@@ -12,7 +12,8 @@ import java.util.concurrent.Executors
 /**
  * One remembered local audio file, with whatever [TrackAnalyzer] has measured
  * about it so far — null fields mean "not analysed yet", not "silent" or
- * "unknown key found".
+ * "unknown key found". [analysisFailed] marks a file that could not be
+ * decoded or measured at all, so it stops reading as "Analysing…" forever.
  */
 data class LibraryTrack(
     val path: String,
@@ -20,11 +21,16 @@ data class LibraryTrack(
     val bpm: Double? = null,
     val camelotKey: String? = null,
     val energyLevel: Int? = null,
+    val analysisFailed: Boolean = false,
 ) {
     val isAnalysed: Boolean get() = bpm != null || camelotKey != null || energyLevel != null
 
-    /** "128 BPM · 8A", a partial version of that, or "Analysing…" before anything is measured. */
+    /**
+     * "128 BPM · 8A", a partial version of that, "Could not analyse" for a
+     * failed file, or "Analysing…" before anything is measured.
+     */
     fun analysisLabel(): String {
+        if (analysisFailed && !isAnalysed) return "Could not analyse"
         if (!isAnalysed) return "Analysing…"
         val parts = listOfNotNull(
             bpm?.let { "%.0f BPM".format(it) },
@@ -37,10 +43,10 @@ data class LibraryTrack(
 /**
  * A desktop-side track library: local files the user has pointed the app at
  * before, remembered across launches so they don't have to re-browse for
- * them every time — now with the same BPM/key/energy measurements the
- * Android library shows, since [TrackAnalyzer] and the `dsp` pipeline behind
- * it were already fully portable (Phase 1 moved them to `:shared` with zero
- * Android dependency).
+ * them every time — with the same BPM/key/energy measurements the Android
+ * library shows, using the portable [TrackAnalyzer] from `:shared`. Tracks
+ * left unanalysed by a previous run (the app closed mid-batch) are queued
+ * again when the library is opened.
  *
  * What this still isn't is the Android app's `Track` entity — no cached-copy
  * bookkeeping, no cue points, and nothing backed by Room. Room's
@@ -85,6 +91,14 @@ class DesktopLibrary(
         Thread(runnable, "SirMatchALot-DesktopAnalysis").apply { isDaemon = true }
     }
 
+    init {
+        // Anything still neither measured nor marked failed was cut off by the
+        // app closing mid-batch; without this it would read "Analysing…"
+        // forever, since nothing else would ever queue it again.
+        val pending = _tracks.value.filter { !it.isAnalysed && !it.analysisFailed }.map { File(it.path) }
+        if (pending.isNotEmpty()) analysisExecutor.execute { analyse(pending) }
+    }
+
     /**
      * Adds [files] not already present (by path), then measures each of them
      * on a background thread — analysis is real DSP work (FFTs over the
@@ -98,7 +112,7 @@ class DesktopLibrary(
             val toAdd = files.filter { it.path !in existingPaths }
             if (toAdd.isNotEmpty()) {
                 _tracks.value = _tracks.value + toAdd.map { LibraryTrack(path = it.path, displayName = it.name) }
-                persistLocked()
+                persistOrLog()
             }
             toAdd
         }
@@ -111,7 +125,7 @@ class DesktopLibrary(
             val next = _tracks.value.filterNot { it.path == path }
             if (next.size == _tracks.value.size) return
             _tracks.value = next
-            persistLocked()
+            persistOrLog()
         }
     }
 
@@ -132,6 +146,7 @@ class DesktopLibrary(
                     val analysis = pcm?.let { runCatching { analyzer.analyse(it) }.getOrNull() }
                     if (analysis == null) {
                         failed++
+                        markFailed(sourceFile)
                     } else {
                         synchronized(lock) {
                             _tracks.value = _tracks.value.map { track ->
@@ -145,11 +160,12 @@ class DesktopLibrary(
                                     track
                                 }
                             }
-                            runCatching { persistLocked() }
+                            persistOrLog()
                         }
                     }
                 } catch (e: Exception) {
                     failed++
+                    runCatching { markFailed(sourceFile) }
                 } finally {
                     AnalysisProgressBus.update(done = index + 1, current = sourceFile.name, failed = failed)
                 }
@@ -160,6 +176,31 @@ class DesktopLibrary(
             // showing a run that has actually stopped.
             AnalysisProgressBus.finish()
         }
+    }
+
+    private fun markFailed(sourceFile: File) {
+        synchronized(lock) {
+            _tracks.value = _tracks.value.map { track ->
+                if (track.path == sourceFile.path) track.copy(analysisFailed = true) else track
+            }
+            persistOrLog()
+        }
+    }
+
+    /**
+     * Blocks until every analysis batch queued so far has finished, or
+     * [timeoutMs] passes. Returns false on timeout. For tests and shutdown —
+     * never call this from the UI thread.
+     */
+    fun awaitIdle(timeoutMs: Long): Boolean =
+        runCatching {
+            analysisExecutor.submit { }.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            true
+        }.getOrDefault(false)
+
+    /** Stops accepting new analysis work; a batch already running is abandoned. */
+    fun close() {
+        analysisExecutor.shutdownNow()
     }
 
     private fun load(): List<LibraryTrack> {
@@ -175,12 +216,27 @@ class DesktopLibrary(
                     bpm = entry.optDouble("bpm").takeUnless { it.isNaN() },
                     camelotKey = entry.optString("camelotKey", "").takeIf { it.isNotBlank() },
                     energyLevel = if (entry.has("energyLevel")) entry.optInt("energyLevel") else null,
+                    analysisFailed = entry.optBoolean("analysisFailed", false),
                 )
             }
         }.getOrDefault(emptyList())
     }
 
-    /** Writes [_tracks] to disk. Caller must hold [lock]. */
+    /**
+     * [persistLocked], but a write failure (full disk, read-only config dir)
+     * is reported to stderr instead of thrown — the in-memory list stays
+     * correct for this session, and a click handler must not crash over it.
+     * Caller must hold [lock].
+     */
+    private fun persistOrLog() {
+        try {
+            persistLocked()
+        } catch (e: java.io.IOException) {
+            System.err.println("Sir Match-a-Lot: could not save the library to $file: ${e.message}")
+        }
+    }
+
+    /** Writes [_tracks] to disk atomically. Caller must hold [lock]. */
     private fun persistLocked() {
         val array = JSONArray()
         _tracks.value.forEach { track ->
@@ -191,10 +247,10 @@ class DesktopLibrary(
                     track.bpm?.let { put("bpm", it) }
                     track.camelotKey?.let { put("camelotKey", it) }
                     track.energyLevel?.let { put("energyLevel", it) }
+                    if (track.analysisFailed) put("analysisFailed", true)
                 },
             )
         }
-        file.parentFile?.mkdirs()
-        file.writeText(array.toString())
+        AtomicFiles.write(file, array.toString().toByteArray(Charsets.UTF_8))
     }
 }

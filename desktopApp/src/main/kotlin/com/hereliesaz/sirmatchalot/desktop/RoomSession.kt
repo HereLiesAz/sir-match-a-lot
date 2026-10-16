@@ -22,16 +22,17 @@ import org.json.JSONObject
  * thin state holder over code shared between the two platforms, which is
  * the whole point of the module split.
  *
- * Local mixing (`PlaybackSession`) and the library (`DesktopLibrary`) do have
- * a desktop backend now — see `docs/ARCHITECTURE.md` — but neither is wired
- * to *this* class: `RoomSession` only carries what a room needs to exist —
- * hosting, joining, pairing, and the raw room state as JSON. Acting on that
- * state (driving `PlaybackSession` from a room's `roomState` updates) is a
- * later phase.
+ * `RoomSession` only carries what a room needs to exist — hosting, joining,
+ * pairing, and the raw room state as JSON. It is not wired to local mixing
+ * (`PlaybackSession`) or the library (`DesktopLibrary`); nothing on desktop
+ * acts on a room's `roomState` updates.
  */
 class RoomSession(
     identityStore: KeyValueStore,
     private val deviceName: String = defaultDeviceName(),
+    // Overridable so tests don't depend on the fixed ports being free.
+    serverPort: Int = SyncServer.DEFAULT_PORT,
+    discoveryPort: Int = SyncServer.DISCOVERY_PORT,
 ) : SyncClient.SyncListener {
 
     private val deviceIdentity = DeviceIdentity.load(identityStore)
@@ -47,7 +48,12 @@ class RoomSession(
      */
     val knownDevices = KnownDevices(identityStore)
 
-    private val syncServer = SyncServer(identity = deviceIdentity, known = knownDevices)
+    private val syncServer = SyncServer(
+        port = serverPort,
+        discoveryPort = discoveryPort,
+        identity = deviceIdentity,
+        known = knownDevices,
+    )
     private val syncClient = SyncClient(this, deviceIdentity, knownDevices)
 
     private val _isHosting = MutableStateFlow(false)
@@ -108,7 +114,15 @@ class RoomSession(
         syncServer.onStateChanged = { state -> _roomState.value = state }
 
         if (!syncServer.start(roomCode)) {
-            _statusMessage.value = "Could not host — port ${syncServer.port} is in use"
+            // SyncServer.start only reports false, not why. Probing the port
+            // ourselves tells "another instance holds it" apart from every
+            // other failure, so the message doesn't blame the port when the
+            // real cause is something else.
+            _statusMessage.value = if (isPortInUse(syncServer.port)) {
+                "Could not host — port ${syncServer.port} is in use"
+            } else {
+                "Could not host — the room server failed to start"
+            }
             return false
         }
         _roomCode.value = roomCode
@@ -130,6 +144,8 @@ class RoomSession(
         _hostUrl.value = null
         _peerCount.value = 0
         _pendingPeers.value = emptyList()
+        _roomCode.value = ""
+        _statusMessage.value = ""
     }
 
     /** The host's user confirms a joining device's digits. */
@@ -165,6 +181,14 @@ class RoomSession(
         syncClient.stopLanDiscovery()
         syncClient.disconnect()
         _isConnected.value = false
+        _pendingHostPairing.value = null
+    }
+
+    /** Final teardown: stops hosting, leaves any room, and releases the client's threads. Not reusable after. */
+    fun close() {
+        runCatching { stopHosting() }
+        runCatching { leaveRoom() }
+        syncClient.close()
     }
 
     /** This machine's user confirms the digits match the host's screen. */
@@ -195,6 +219,9 @@ class RoomSession(
 
     override fun onDisconnected() {
         _isConnected.value = false
+        // A pairing prompt for a connection that no longer exists has nothing
+        // behind its buttons.
+        _pendingHostPairing.value = null
         _statusMessage.value = "Disconnected"
     }
 
@@ -225,6 +252,17 @@ class RoomSession(
     override fun onNudgeEvent(deck: String, direction: String) = Unit
 
     companion object {
+        /** True when something already holds TCP [port] on this machine. */
+        internal fun isPortInUse(port: Int): Boolean =
+            try {
+                java.net.ServerSocket(port).close()
+                false
+            } catch (e: java.net.BindException) {
+                true
+            } catch (e: java.io.IOException) {
+                false
+            }
+
         /** What this machine calls itself on another device's approval prompt. */
         fun defaultDeviceName(): String {
             val host = runCatching { java.net.InetAddress.getLocalHost().hostName }.getOrNull()

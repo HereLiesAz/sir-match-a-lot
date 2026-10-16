@@ -167,6 +167,16 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * Every migration, in order, exactly as handed to Room in [getDatabase].
+         *
+         * A value rather than an inline list so the test can check the chain
+         * Room actually receives is contiguous from 1 to the current version —
+         * a migration written and tested but never registered would otherwise
+         * pass every test and still crash upgrading users.
+         */
+        val ALL_MIGRATIONS: Array<Migration> by lazy { arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4) }
+
+        /**
          * The version 2 `tracks` table, as shipped.
          *
          * Kept beside the migration so the test can build the database the
@@ -218,7 +228,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // publishes an installable APK on every push — hit "a
                     // migration from 1 to 4 was required but not found" at first
                     // query, and could not open the app again.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(*ALL_MIGRATIONS)
                     .build()
                     .also { INSTANCE = it }
             }

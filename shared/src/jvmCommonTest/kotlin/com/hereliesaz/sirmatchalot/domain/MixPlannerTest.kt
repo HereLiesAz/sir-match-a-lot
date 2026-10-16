@@ -203,6 +203,26 @@ class MixPlannerTest {
         )
     }
 
+    @Test
+    fun `automatchic mix chains alignment through the played tempo`() {
+        // Every track is stretched to the one before it, so each handover must
+        // land on the tempo the previous track is actually playing at (the
+        // opener's 120), not on the previous track's raw BPM.
+        val library = listOf(
+            track("a", bpm = 120.0, camelot = "8A", energy = 1),
+            track("b", bpm = 126.0, camelot = "8A", energy = 2),
+            track("c", bpm = 132.0, camelot = "8A", energy = 3),
+        )
+        val plan = MixPlanner.automatchicMix(library, startWith = library[0])
+        assertEquals(listOf("a", "b", "c"), plan.steps.map { it.track.id })
+        var played = 120.0
+        for (step in plan.steps.drop(1)) {
+            val ratio = requireNotNull(step.alignment).tempoRatio
+            val incoming = requireNotNull(step.track.bpm) * ratio
+            assertEquals("${step.track.id} should match the played tempo", played, incoming, 1e-9)
+            played = incoming
+        }
+    }
 }
 
 class BeatSyncTest {

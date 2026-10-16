@@ -50,21 +50,54 @@ object PlaylistParser {
     /**
      * Parses [document], detecting its format.
      *
+     * @param remote true when [document] was fetched from the network rather
+     *   than pasted or picked on this device. Locations in it are then limited
+     *   to `http`/`https`: a downloaded playlist naming `content://` or `file:`
+     *   locations would have this app open whatever on-device URI a stranger
+     *   chose. Locally supplied text may also name `content://` URIs. Relative
+     *   paths and `file:` locations are never kept, from anywhere — they
+     *   resolve against nothing meaningful and the app cannot read them anyway.
+     *   An entry whose location is dropped is kept, by name, with no audio.
      * @return the songs, in playlist order. Empty when nothing recognisable is
      *   present — never a single entry standing for the whole playlist, which is
      *   the failure being fixed.
      */
-    fun parse(document: String): List<PlaylistEntry> = when (detect(document)) {
-        Format.M3U -> parseM3u(document)
-        Format.XSPF -> parseXspf(document)
-        Format.XML_FEED -> parseFeed(document)
-        Format.PLAIN -> parsePlain(document)
-        Format.UNKNOWN -> emptyList()
+    fun parse(document: String, remote: Boolean = false): List<PlaylistEntry> =
+        parse(document, remote, DocumentBuilderFactory::newInstance)
+
+    /** [parse] with the XML parser factory supplied, so its hardening can be tested. */
+    internal fun parse(
+        document: String,
+        remote: Boolean,
+        newFactory: () -> DocumentBuilderFactory,
+    ): List<PlaylistEntry> {
+        val entries = when (detect(document)) {
+            Format.M3U -> parseM3u(document)
+            Format.XSPF -> parseXspf(document, newFactory)
+            Format.XML_FEED -> parseFeed(document, newFactory)
+            Format.PLAIN -> parsePlain(document)
+            Format.UNKNOWN -> emptyList()
+        }
+        return entries.map { entry ->
+            val source = entry.sourceUri ?: return@map entry
+            if (isAllowedSource(source, remote)) entry else entry.copy(sourceUri = null)
+        }
+    }
+
+    /** Whether [location] may be kept as an entry's audio source; see [parse]. */
+    internal fun isAllowedSource(location: String, remote: Boolean): Boolean {
+        val scheme = location.substringBefore(':', missingDelimiterValue = "").lowercase()
+        return when (scheme) {
+            "http", "https" -> location.length > scheme.length + 3 &&
+                location.regionMatches(scheme.length, "://", 0, 3)
+            "content" -> !remote && location.startsWith("content://", ignoreCase = true)
+            else -> false
+        }
     }
 
     /** Best guess at [document]'s format, from its content. */
     fun detect(document: String): Format {
-        val trimmed = document.trimStart().trimStart('﻿')
+        val trimmed = document.trimStart().trimStart('\uFEFF')
         if (trimmed.isEmpty()) return Format.UNKNOWN
         if (trimmed.startsWith("#EXTM3U", ignoreCase = true)) return Format.M3U
         if (trimmed.startsWith("<")) {
@@ -94,7 +127,7 @@ object PlaylistParser {
         var pendingDuration: Double? = null
 
         for (raw in document.lineSequence()) {
-            val line = raw.trim().trimStart('﻿')
+            val line = raw.trim().trimStart('\uFEFF')
             if (line.isEmpty()) continue
 
             if (line.startsWith("#")) {
@@ -127,8 +160,8 @@ object PlaylistParser {
 
     // --- XSPF ---
 
-    private fun parseXspf(document: String): List<PlaylistEntry> {
-        val root = parseXml(document) ?: return emptyList()
+    private fun parseXspf(document: String, newFactory: () -> DocumentBuilderFactory): List<PlaylistEntry> {
+        val root = parseXml(document, newFactory) ?: return emptyList()
         return root.elementsNamed("track").map { track ->
             val creator = track.childText("creator")
             val title = track.childText("title") ?: track.childText("location")?.let(::titleFromLocation)
@@ -154,8 +187,8 @@ object PlaylistParser {
      * It also covers podcast feeds, where the enclosure is real audio and the
      * entry therefore arrives with a playable [PlaylistEntry.sourceUri].
      */
-    private fun parseFeed(document: String): List<PlaylistEntry> {
-        val root = parseXml(document) ?: return emptyList()
+    private fun parseFeed(document: String, newFactory: () -> DocumentBuilderFactory): List<PlaylistEntry> {
+        val root = parseXml(document, newFactory) ?: return emptyList()
         val items = root.elementsNamed("entry") + root.elementsNamed("item")
         return items.map { item ->
             // A podcast enclosure points at real audio; a YouTube entry does not.
@@ -177,7 +210,7 @@ object PlaylistParser {
 
     private fun parsePlain(document: String): List<PlaylistEntry> =
         document.lineSequence()
-            .map { it.trim().trimStart('﻿') }
+            .map { it.trim().trimStart('\uFEFF') }
             .filter { it.isNotEmpty() && !it.startsWith("#") }
             .map { line ->
                 if (looksLikeLocation(line)) {
@@ -225,18 +258,41 @@ object PlaylistParser {
         return stem.ifEmpty { decoded.ifEmpty { location } }
     }
 
-    private fun parseXml(document: String): Element? = runCatching {
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = false
-            // A playlist is untrusted input from the network. Without these, an
-            // external entity reference in it can read local files.
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            isExpandEntityReferences = false
+    /**
+     * Parses untrusted XML with entity expansion and external access shut off.
+     *
+     * A playlist is untrusted input from the network; an external entity in it
+     * could read local files, and an internal one can expand into gigabytes.
+     * Each hardening feature is set on its own, because parsers differ in what
+     * they support — Android's does not recognise every Xerces feature — and
+     * setting them all inside the same `runCatching` as the parse meant one
+     * unsupported feature failed every XML playlist, not just hostile ones.
+     * The one that matters most is refusing DOCTYPE outright; where the parser
+     * cannot be told to, any document that declares one is refused here
+     * instead, before the parser sees it.
+     */
+    private fun parseXml(document: String, newFactory: () -> DocumentBuilderFactory): Element? {
+        val factory = runCatching { newFactory() }.getOrNull() ?: return null
+        factory.isNamespaceAware = false
+        val doctypeRefused = runCatching {
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        }.isSuccess
+        runCatching { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) }
+        runCatching { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        runCatching {
+            factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
         }
-        factory.newDocumentBuilder()
-            .parse(ByteArrayInputStream(document.toByteArray(Charsets.UTF_8)))
-            .documentElement
-    }.getOrNull()
+        runCatching { factory.isXIncludeAware = false }
+        runCatching { factory.isExpandEntityReferences = false }
+
+        if (!doctypeRefused && document.contains("<!DOCTYPE", ignoreCase = true)) return null
+
+        return runCatching {
+            factory.newDocumentBuilder()
+                .parse(ByteArrayInputStream(document.toByteArray(Charsets.UTF_8)))
+                .documentElement
+        }.getOrNull()
+    }
 
     /**
      * Descendant elements whose local name is [name], namespace prefixes

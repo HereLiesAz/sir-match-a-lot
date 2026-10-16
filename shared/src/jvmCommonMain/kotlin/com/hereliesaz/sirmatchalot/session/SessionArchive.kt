@@ -110,13 +110,15 @@ object SessionArchive {
 
                         // Only files directly inside the takes directory, and only
                         // by their bare name. A zip entry is free to say
-                        // "../../etc/passwd", and this one never writes to disk —
-                        // but a name that escapes its directory is malformed
-                        // whatever it is used for, so it is refused here rather
-                        // than trusted to stay harmless downstream.
+                        // "takes/../../etc/passwd", and this one never writes to
+                        // disk — but a name that escapes its directory is
+                        // malformed whatever it is used for, so it is refused
+                        // here rather than trusted to stay harmless downstream.
+                        // Nested paths are refused too: keying by leaf would let
+                        // "takes/a/x.wav" and "takes/b/x.wav" overwrite each other.
                         name.startsWith("${SessionDocument.TAKES}/") && !entry.isDirectory -> {
-                            val leaf = name.substringAfterLast('/')
-                            if (leaf.isNotBlank() && !name.contains("..")) {
+                            val leaf = name.removePrefix("${SessionDocument.TAKES}/")
+                            if (isSafeTakeName(leaf)) {
                                 val bytes = readBounded(zip, MAX_ENTRY_BYTES, budget)
                                 if (bytes == null) { oversized = true; break }
                                 takes[leaf] = bytes
@@ -132,6 +134,17 @@ object SessionArchive {
         val document = SessionDocument.decode(manifest ?: return null) ?: return null
         return Archive(document, takes)
     }
+
+    /**
+     * A take's name as stored under the takes directory: one plain path
+     * segment. Names merely *containing* ".." ("mix..final.wav") are fine;
+     * "." and ".." as a whole segment, separators of either kind, and NUL
+     * are not.
+     */
+    internal fun isSafeTakeName(leaf: String): Boolean =
+        leaf.isNotBlank() &&
+            leaf != "." && leaf != ".." &&
+            '/' !in leaf && '\\' !in leaf && '\u0000' !in leaf
 
     /** In-memory form, for tests and for anything that already has the bytes. */
     fun writeToBytes(document: SessionDocument, takes: Map<String, ByteArray>): ByteArray {

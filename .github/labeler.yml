@@ -1,0 +1,22 @@
+# Path-based PR labels for actions/labeler@v5+ (called via label.yml).
+android:
+  - changed-files:
+      - any-glob-to-any-file: 'app/**'
+desktop:
+  - changed-files:
+      - any-glob-to-any-file: 'desktopApp/**'
+shared:
+  - changed-files:
+      - any-glob-to-any-file: 'shared/**'
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', '**/*.md']
+web:
+  - changed-files:
+      - any-glob-to-any-file: 'web/**'
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+build:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.gradle.kts', 'gradle/**', 'version.properties']

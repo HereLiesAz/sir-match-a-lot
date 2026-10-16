@@ -28,12 +28,22 @@ import java.util.UUID
  *
  * Bounded, because a library can be larger than the device. When the budget is
  * exceeded the least recently used copies go first, and a copy that is missing
- * simply means falling back to the original URI — losing the benefit, never the
- * track.
+ * means falling back to the original URI. That costs only the benefit while the
+ * original is still reachable; if its grant has lapsed or the file has moved,
+ * an evicted copy was the only way left to the audio, so a budget trades disk
+ * for exactly that risk.
+ *
+ * Copies are made only while the "local copies" setting is on, live under
+ * `files/audio/`, and are excluded from cloud backup and device transfer (see
+ * `res/xml/data_extraction_rules.xml`). Lookups and deletion go by track id
+ * against this directory; [Track.cachedPath] is a record of the copy, not the
+ * way to it.
  */
 class AudioFileCache(
     /** Where copies live. App-private, so uninstalling removes them. */
     private val directory: File,
+    /** Wall-clock source, injectable so the age of a partial write can be tested. */
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
 
     /**
@@ -143,26 +153,35 @@ class AudioFileCache(
      * @param keep ids never to evict — what is on a deck right now.
      * @return how many copies were removed.
      */
-    fun trim(budgetBytes: Long, keep: Set<String> = emptySet()): Int {
-        if (budgetBytes < 0) return 0
-        // Partials are swept regardless of budget: a copy interrupted by a kill
-        // leaves one behind, and nothing else would ever remove it.
+    fun trim(budgetBytes: Long, keep: Set<String> = emptySet()): Int =
+        trimIds(budgetBytes, keep).size
+
+    /** [trim], returning the ids whose copies were evicted, so their rows can forget them. */
+    fun trimIds(budgetBytes: Long, keep: Set<String> = emptySet()): List<String> {
+        if (budgetBytes < 0) return emptyList()
+        // Abandoned partials are swept regardless of budget: a copy interrupted
+        // by a kill leaves one behind, and nothing else would ever remove it.
+        // Only abandoned ones, though — trim runs right after a store() and on
+        // every settings change, while another store() may be mid-copy, and
+        // deleting its partial out from under it failed that copy for no
+        // reason. A partial untouched for [STALE_PARTIAL_MILLIS] is not in flight.
+        val cutoff = now() - STALE_PARTIAL_MILLIS
         directory.listFiles()
-            ?.filter { it.isFile && it.extension == PARTIAL_EXTENSION }
+            ?.filter { it.isFile && it.extension == PARTIAL_EXTENSION && it.lastModified() < cutoff }
             ?.forEach { it.delete() }
 
         val files = completeFiles()
         var total = files.sumOf { it.length() }
-        if (total <= budgetBytes) return 0
+        if (total <= budgetBytes) return emptyList()
 
-        var removed = 0
+        val removed = mutableListOf<String>()
         for (file in files.sortedBy { it.lastModified() }) {
             if (total <= budgetBytes) break
             if (file.nameWithoutExtension in keep) continue
             val size = file.length()
             if (file.delete()) {
                 total -= size
-                removed++
+                removed += file.nameWithoutExtension
             }
         }
         return removed
@@ -189,6 +208,13 @@ class AudioFileCache(
          * early, which reads as a corrupt source rather than as a failed copy.
          */
         const val PARTIAL_EXTENSION = "partial"
+
+        /**
+         * How long a partial write must sit untouched before [trim] treats it as
+         * abandoned. A copy in flight rewrites its partial continuously; an hour
+         * of silence means the process that owned it is gone.
+         */
+        const val STALE_PARTIAL_MILLIS: Long = 60L * 60 * 1000
 
         /** The cache directory inside the app's own private storage. */
         fun directoryFor(context: Context): File = File(context.filesDir, "audio")

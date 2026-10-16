@@ -222,4 +222,29 @@ class AudioFileCacheTest {
         val ceilings = LocalCopyBudget.entries.map { it.ceiling() }
         assertEquals(ceilings.sorted(), ceilings)
     }
+
+    @Test
+    fun `trimming leaves a partial write that is still in flight`() {
+        // trim() runs straight after a store() and on every settings change,
+        // while another store() may be mid-copy; deleting its partial failed
+        // that copy for nothing.
+        val live = File(directory, "track-1-live.partial").apply { writeBytes(ByteArray(50)) }
+        cache.trim(budgetBytes = 0)
+        assertTrue("an in-flight partial was deleted", live.exists())
+    }
+
+    @Test
+    fun `trimming sweeps a partial write abandoned long ago`() {
+        val stale = File(directory, "track-1-dead.partial").apply { writeBytes(ByteArray(50)) }
+        stale.setLastModified(System.currentTimeMillis() - AudioFileCache.STALE_PARTIAL_MILLIS - 60_000)
+        cache.trim(budgetBytes = 1_000)
+        assertFalse("an abandoned partial survived", stale.exists())
+    }
+
+    @Test
+    fun `trimIds names what it evicted so rows can forget it`() {
+        copy("old", 100, ageMillis = 60_000)
+        copy("new", 100)
+        assertEquals(listOf("old"), cache.trimIds(budgetBytes = 100))
+    }
 }

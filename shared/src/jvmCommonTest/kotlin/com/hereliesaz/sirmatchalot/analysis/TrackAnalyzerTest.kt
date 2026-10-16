@@ -185,4 +185,38 @@ class TrackAnalyzerTest {
         val stereo = PcmBuffer.fromFloat(arrayOf(left, left.copyOf()), sampleRate)
         assertEquals(120.0, requireNotNull(analyzer.analyse(stereo).bpm), 3.0)
     }
+
+    @Test
+    fun `the default tempo gate rejects noise, tone and chord but accepts dance-tempo clicks`() {
+        // Pins both sides of the gap DEFAULT_MINIMUM_TEMPO_CONFIDENCE sits in.
+        val noise = kotlin.random.Random(21)
+        val rejected = mapOf(
+            "white noise" to FloatArray(sampleRate * 8) { (noise.nextFloat() * 2f - 1f) * 0.5f },
+            "sustained tone" to SignalFixtures.sine(440.0, 8.0),
+            "static chord" to SignalFixtures.chord(listOf(60, 64, 67).map { SignalFixtures.midiToHz(it) }, 8.0),
+        )
+        for ((name, audio) in rejected) {
+            assertNull("$name has no tempo", analyzer.analyse(pcmOf(audio)).bpm)
+        }
+        for (bpm in listOf(90.0, 100.0, 120.0, 128.0, 140.0, 174.0)) {
+            val analysis = analyzer.analyse(pcmOf(SignalFixtures.clickTrack(bpm, 20.0)))
+            assertNotNull("$bpm BPM clicks (confidence ${analysis.tempoConfidence}) must pass", analysis.bpm)
+        }
+    }
+
+    @Test
+    fun `one analyzer can be shared across threads`() {
+        // The detectors reuse FFT buffers; unsynchronised concurrent calls
+        // corrupted each other's spectra.
+        val audio = SignalFixtures.clickTrack(120.0, 10.0)
+        val expected = analyzer.analyse(pcmOf(audio)).bpm
+        val results = java.util.concurrent.ConcurrentLinkedQueue<Double?>()
+        val threads = (1..4).map {
+            Thread { repeat(3) { results.add(analyzer.analyse(pcmOf(audio.copyOf())).bpm) } }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        assertEquals(12, results.size)
+        for (bpm in results) assertEquals(expected!!, bpm!!, 1e-9)
+    }
 }

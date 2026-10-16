@@ -159,7 +159,6 @@ object HarmonicEngine {
     }
 
     fun calculateTempoCompatibility(bpmA: Double, bpmB: Double): Map<String, Any> {
-        val ratio = bpmB / bpmA
         val diffStandard = abs(bpmB - bpmA) / bpmA
         val diffHalf = abs(bpmB - bpmA * 0.5) / (bpmA * 0.5)
         val diffDouble = abs(bpmB - bpmA * 2.0) / (bpmA * 2.0)

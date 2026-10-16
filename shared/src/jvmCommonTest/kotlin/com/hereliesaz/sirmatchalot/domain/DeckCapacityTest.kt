@@ -121,4 +121,22 @@ class DeckCapacityTest {
         assertTrue(DeckCapacity.DEFAULT_MAX_BEATS >= fourMinutesAt128 * 2)
         assertTrue(DeckCapacity.DEFAULT_MAX_BEATS < fourMinutesAt128 * 3)
     }
+
+    @Test
+    fun `the beat cap also bounds decoded duration`() {
+        // At 128 BPM it still holds two four-minute tracks (512 beats each).
+        assertTrue(DeckCapacity.maxBeatsFor(60.0 / 128.0) >= 1_024)
+        // At a fast tempo the beat cap is the binding one.
+        assertEquals(DeckCapacity.DEFAULT_MAX_BEATS, DeckCapacity.maxBeatsFor(60.0 / 174.0))
+        // At 70 BPM the same beats would be 15.7 minutes; the seconds cap binds.
+        val slow = DeckCapacity.maxBeatsFor(60.0 / 70.0)
+        assertTrue(slow < DeckCapacity.DEFAULT_MAX_BEATS)
+        assertTrue(slow * (60.0 / 70.0) <= DeckCapacity.DEFAULT_MAX_SECONDS)
+        // Both decks at the cap, 48 kHz stereo 16-bit, stay under 200 MB.
+        val bytesBothDecks = 2 * DeckCapacity.DEFAULT_MAX_SECONDS * 48_000 * 2 * 2
+        assertTrue(bytesBothDecks < 200_000_000)
+        // A nonsense grid falls back to the beat cap rather than dividing by zero.
+        assertEquals(DeckCapacity.DEFAULT_MAX_BEATS, DeckCapacity.maxBeatsFor(0.0))
+        assertEquals(DeckCapacity.DEFAULT_MAX_BEATS, DeckCapacity.maxBeatsFor(Double.NaN))
+    }
 }

@@ -58,6 +58,10 @@ data class TrackAnalysis(
  * Pure with respect to Android: takes a [PcmBuffer], returns a [TrackAnalysis].
  * That is what makes it testable against synthetic signals with known tempo and
  * key.
+ *
+ * Thread-safe: the detectors hold reusable FFT state, so [analyse] is
+ * serialised on an internal lock. One instance can be shared by concurrent
+ * callers; they simply take turns.
  */
 class TrackAnalyzer(
     private val onsetDetector: OnsetDetector = OnsetDetector(),
@@ -89,7 +93,7 @@ class TrackAnalyzer(
         pcm: PcmBuffer,
         minimumTempoConfidence: Float = DEFAULT_MINIMUM_TEMPO_CONFIDENCE,
         minimumKeyConfidence: Float = DEFAULT_MINIMUM_KEY_CONFIDENCE,
-    ): TrackAnalysis {
+    ): TrackAnalysis = synchronized(lock) {
         val mono = pcm.toMonoFloat()
         val sampleRate = pcm.sampleRate
 
@@ -108,7 +112,7 @@ class TrackAnalyzer(
         val key = keyDetector.detect(mono, sampleRate)
             ?.takeIf { it.confidence >= minimumKeyConfidence }
 
-        return TrackAnalysis(
+        TrackAnalysis(
             durationSeconds = pcm.durationSeconds,
             sampleRate = sampleRate,
             bpm = tempo?.bpm,
@@ -122,15 +126,20 @@ class TrackAnalyzer(
         )
     }
 
+    /** Guards the detectors' shared FFT buffers; see the class doc. */
+    private val lock = Any()
+
     companion object {
         /**
          * Measured against [TempoDetector]'s own fixtures after its confidence
          * formula was fixed: white noise, a sustained tone and a static chord
          * all measured 0.53..0.68, while every tempo in the detector's dance-
-         * tempo click-track test (90..174 BPM) measured 0.71..0.78. 0.65 sits
-         * with margin on both sides of that gap.
+         * tempo click-track test (90..174 BPM) measured 0.71..0.78. The gate
+         * sits at the midpoint of that gap, so it is above every noise
+         * measurement rather than inside their range. TrackAnalyzerTest pins
+         * both sides.
          */
-        const val DEFAULT_MINIMUM_TEMPO_CONFIDENCE = 0.65f
+        const val DEFAULT_MINIMUM_TEMPO_CONFIDENCE = 0.695f
 
         /**
          * [KeyDetector.detect] already declines to return an estimate at all

@@ -132,11 +132,54 @@ class DesktopLibraryTest {
         val library = DesktopLibrary(storeFile)
         library.add(listOf(file))
 
-        // Give the background thread time to try and fail; it should leave the
-        // placeholder alone rather than fabricate an analysis.
-        Thread.sleep(500)
+        // Wait for the background batch to actually finish, then check it left
+        // no fabricated analysis behind — only a "could not analyse" mark.
+        assertTrue("analysis should finish", library.awaitIdle(10_000))
         val track = library.tracks.value.first { it.path == file.path }
         assertTrue(!track.isAnalysed)
+        assertTrue(track.analysisFailed)
+        assertEquals("Could not analyse", track.analysisLabel())
+
+        // The failure is persisted, so a relaunch doesn't retry it forever.
+        val reopened = DesktopLibrary(storeFile)
+        assertTrue(reopened.tracks.value.first { it.path == file.path }.analysisFailed)
+        reopened.close()
+    }
+
+    @Test
+    fun `tracks left unanalysed by a previous run are analysed again on startup`() {
+        val storeFile = tempStoreFile()
+        val file = File.createTempFile("tone", ".wav").apply { deleteOnExit() }
+        toneWav(file)
+        // As if the app closed mid-batch: present, neither measured nor failed.
+        storeFile.writeText("""[{"path":${org.json.JSONObject.quote(file.path)},"displayName":"tone"}]""")
+
+        val library = DesktopLibrary(storeFile)
+        assertTrue(library.awaitIdle(10_000))
+        assertTrue(library.tracks.value.single().isAnalysed)
+    }
+
+    @Test
+    fun `saving leaves no temp files behind and keeps valid JSON`() {
+        val dir = java.nio.file.Files.createTempDirectory("library-test").toFile()
+        val storeFile = File(dir, "library.json")
+        val library = DesktopLibrary(storeFile)
+        library.add(listOf(File(dir, "a.wav"), File(dir, "b.wav")))
+        assertTrue(library.awaitIdle(10_000))
+
+        assertEquals(listOf("library.json"), dir.list()!!.sorted())
+        assertEquals(2, org.json.JSONArray(storeFile.readText()).length())
+    }
+
+    @Test
+    fun `an unwritable store does not make add throw`() {
+        val dir = java.nio.file.Files.createTempDirectory("library-test").toFile()
+        // A directory where the file should be: every write fails.
+        val storeFile = File(dir, "library.json").apply { mkdirs(); File(this, "occupied").writeText("x") }
+        val library = DesktopLibrary(storeFile)
+        library.add(listOf(File(dir, "a.wav")))
+        assertEquals(1, library.tracks.value.size)
+        library.close()
     }
 
     @Test

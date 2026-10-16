@@ -1,13 +1,15 @@
 # Privacy Policy
 
 **Sir Match-a-Lot**
-Last updated: 27 July 2026
+Last updated: 16 October 2026
 
 ## The short version
 
 Sir Match-a-Lot has no accounts, no analytics, no advertising, and no server of
 its own. Your music, your library, and everything measured from it stay on your
-device.
+device — including the local copies of your audio the app keeps so tracks keep
+playing when the original moves or goes offline (see below; you can turn them
+off).
 
 It does keep a crash log. When the app crashes it writes the stack trace to its
 own private storage and offers, on the next launch, to file it as a GitHub
@@ -34,21 +36,42 @@ transmitted, and uninstalling the app deletes it.
 | Track titles, artists, file locations | Local database | The library list |
 | Measured tempo, key, energy, beat grid | Local database | Matching and beat sync |
 | Waveform peaks and energy curves | App-private files | Drawing the platter |
+| **Local copies of imported audio** | App-private files (`files/audio/`) | Playing a track whose original is in the cloud, has moved, or lost its permission |
 | Your settings | App-private preferences | Sample rate, memory budget, visuals |
+| Learned transition taste | App-private preferences | How the Automatchic Mix adapts to the transitions you let run or cut short |
+| Sync identity key and paired devices | Their own app-private preferences file (`device_identity`) | Proving to a paired device that this is the one it paired with, and recognising devices you have approved (by key fingerprint and name) |
 
-**Your audio files are never copied, uploaded, or modified.** The app reads them
-to decode and measure them, holds the decoded audio in memory while it is loaded
-on a deck, and releases it. What it keeps afterwards is the *measurements* —
-numbers describing the music, not the music.
+**Local copies of your audio.** By default the app copies each audio file you
+import into its own private storage — the original, encoded file, unchanged —
+and plays from that copy. Without one, a file from a cloud provider is fetched
+over the network every time it is read, and any file can be moved, renamed or
+have its permission withdrawn while its library entry stays. The copies are
+bounded: **up to 2 GB by default** (roughly 30 hours of music), oldest-used first
+out when the budget is reached. In **Settings → Local copies** you can choose
+2 GB, 8 GB, no limit, or **Off** (play from the original every time), see how
+much is held, and remove every copy at once. Deleting a track removes its copy.
+The copies are never uploaded, modified, or included in Android backup (see
+below), and uninstalling the app deletes them.
+
+**Learned transition taste.** The Automatchic Mix notices which of its
+transitions you let run and which you cut short, and leans that way next time.
+What it learns is a few dozen numbers in the app's preferences — not a record of
+what you played. It never leaves the device. **Settings → Learned taste →
+Forget it all** erases it.
 
 **On the desktop app**, the equivalent library and identity data live in plain
-files under `~/.sirmatchalot/` — `library.json` (each track's file path, display
+files in a per-user config folder — `%APPDATA%\SirMatchALot` on Windows,
+`~/Library/Application Support/SirMatchALot` on macOS, and
+`$XDG_CONFIG_HOME/sirmatchalot` (normally `~/.config/sirmatchalot`) on Linux;
+older versions used `~/.sirmatchalot/`, which is moved there on first run. The
+files are `library.json` (each track's file path, display
 name, and measured tempo/key/energy) and `identity.properties` (the pairing
 identity described under "Multi-device sync" below) — rather than in a
 database, since a desktop process has no Android-style private storage or
-`SharedPreferences`. The same rule applies: no audio, only measurements and a
-file path. Unlike the Android app, removing the desktop app's binary does not
-remove this folder — delete `~/.sirmatchalot/` yourself if you want it gone.
+`SharedPreferences`; they are written readable by your user account only. The
+desktop app keeps no audio copies: only measurements and a file path. Unlike the
+Android app, removing the desktop app's binary does not remove this folder —
+delete it yourself if you want it gone.
 
 ## Permissions
 
@@ -109,17 +132,25 @@ passes through any server operated by this project.**
 
 What travels between the devices while linked: the room code, a device role and
 name (your device's manufacturer and model, e.g. "Google Pixel 9" — not an
-account name or anything else identifying you), a long-term identity key used
-to recognise a device you have paired with before, transport state, crossfader
-position, cue points, track ids, pad triggers, and filter positions. No audio
-and no files are sent. See [SECURITY.md](SECURITY.md) for the full detail of
-what that identity key is and how it is used.
+account name or anything else identifying you), the public half of a long-term
+identity key used to recognise a device you have paired with before, transport
+state, crossfader position, cue points, track ids, pad triggers, and filter
+positions. No audio and no files are sent. All of it — the name and identity key
+included — is sent encrypted, after pairing has begun; the only things sent in
+the clear are one-time keys that identify nothing. A device that has not been
+approved receives nothing from the room. See [SECURITY.md](SECURITY.md) for the
+full detail of what that identity key is and how it is used.
+
+The private half of the identity key stays on the device that made it, in its own
+preferences file, and is never sent anywhere — not to the other devices, and not
+into Android backup.
 
 Two things worth knowing before you host:
 
 - Every connection is paired and encrypted: the two devices agree a key by
   Diffie-Hellman, the people at both ends compare a six-digit code before
-  anything is admitted, and every frame after that is sealed with AES-256-GCM.
+  anything is admitted, and every frame after that is sealed with AES-256-GCM
+  and numbered, so a recorded frame cannot be replayed.
   The raw TCP/WebSocket transport itself has to be reachable to be paired with
   at all, so it is still worth hosting only on a network you control — a booth,
   a rehearsal space, a house — not a public Wi-Fi network, but nothing sent on
@@ -142,15 +173,26 @@ only produces one when you ask it to.
 
 ## Android's own backup
 
-The app currently allows Android's automatic backup (`allowBackup="true"`), so
-your library metadata and settings may be included in the device backup Google
-makes to your own Google account, under Google's terms rather than ours. Your
-audio files are not in the app's storage and so are not part of this. The
-pending crash report (see above) is explicitly excluded from both this backup
-and Android's device-to-device transfer, since it is meant to leave the device
-only when you choose to file it — not through a channel neither of us is
-watching. You can turn Android backup off for the app entirely in your
-device's system settings.
+The app allows Android's automatic backup (`allowBackup="true"`), so your
+library metadata, settings and learned transition taste may be included in the device backup Google makes to your own Google account, under
+Google's terms rather than ours.
+
+Explicitly excluded from both that backup and Android's device-to-device
+transfer:
+
+- **Local copies of your audio** (`files/audio/`), and the waveform and energy
+  files derived from your music (`files/peaks/`, `files/energy/`). They are
+  large, rebuildable from the originals, and the copies are your music files.
+- **The sync identity key and paired-device list** (`device_identity`). A copy
+  of the key restored onto another phone could pretend to be this one to every
+  device it has paired with, so a restored install makes a new identity, and
+  pairs afresh, instead.
+- **The pending crash report** (see above), since it is meant to leave the device
+  only when you choose to file it — not through a channel neither of us is
+  watching.
+
+You can turn Android backup off for the app entirely in your device's system
+settings.
 
 ## Children
 

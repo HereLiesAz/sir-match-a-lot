@@ -68,6 +68,11 @@ class OnsetDetector(
             }
             flux[frame] = sum
         }
+        // Frame 0 was differenced against an all-zero "previous" spectrum, so its
+        // flux is the whole spectrum's energy — a spurious onset that would
+        // become the envelope's maximum and squash every real one in normalise().
+        // There is no change to measure at the first frame, so it has none.
+        flux[0] = 0f
 
         return OnsetEnvelope(normalise(subtractMovingAverage(flux, frameRate)), frameRate)
     }

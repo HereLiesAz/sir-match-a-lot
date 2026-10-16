@@ -66,4 +66,15 @@ class DesktopCrashLogTest {
             Thread.setDefaultUncaughtExceptionHandler(previous)
         }
     }
+
+    @Test
+    fun `a log that cannot be written reports false instead of throwing`() {
+        val dir = java.nio.file.Files.createTempDirectory("crash-test").toFile()
+        // A non-empty directory where the log file should be: the write fails.
+        val target = File(dir, "last-crash.log").apply { mkdirs(); File(this, "x").writeText("x") }
+        val log = DesktopCrashLog(target)
+
+        assertTrue(!log.record(Thread.currentThread(), RuntimeException("boom")))
+        assertTrue(File(target, "x").exists())
+    }
 }

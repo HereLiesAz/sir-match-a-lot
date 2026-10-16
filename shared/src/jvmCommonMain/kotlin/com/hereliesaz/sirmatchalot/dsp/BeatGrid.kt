@@ -87,6 +87,9 @@ data class BeatGrid(
         /** Four four, unless something measured says otherwise. */
         const val DEFAULT_BEATS_PER_BAR = 4
 
+        /** Frames either side of a beat searched for its onset (~23 ms at a 512 hop). */
+        private const val BEAT_SEARCH_FRAMES = 2
+
         /**
          * A stored [downbeatOffset] brought into range.
          *
@@ -105,6 +108,14 @@ data class BeatGrid(
         /**
          * Infers which beat of the bar is the downbeat by asking which residue
          * class collects the most onset strength — kick drums land on beat one.
+         *
+         * Each beat takes the strongest envelope value within a couple of
+         * frames of its nominal frame, not the value at that exact frame. An
+         * onset registers in the STFT frames whose windows straddle it, which
+         * are not the frame that merely *starts* at the beat time, so sampling
+         * the single frame read near-zero flux for every beat. (It looked fine
+         * only because the very first frame used to carry a spurious full-
+         * spectrum flux spike, which handed beat one the win.)
          */
         fun inferDownbeat(
             envelope: OnsetEnvelope,
@@ -122,7 +133,12 @@ data class BeatGrid(
                 if (time < 0) { index++; continue }
                 val frame = envelope.frameOf(time)
                 if (frame >= envelope.size) break
-                sums[index % beatsPerBar] += envelope.values[frame].toDouble()
+                var strongest = 0f
+                for (f in (frame - BEAT_SEARCH_FRAMES).coerceAtLeast(0)..
+                    (frame + BEAT_SEARCH_FRAMES).coerceAtMost(envelope.size - 1)) {
+                    if (envelope.values[f] > strongest) strongest = envelope.values[f]
+                }
+                sums[index % beatsPerBar] += strongest.toDouble()
                 index++
             }
 

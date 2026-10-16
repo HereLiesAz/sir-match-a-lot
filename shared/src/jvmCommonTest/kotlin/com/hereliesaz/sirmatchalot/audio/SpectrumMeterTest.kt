@@ -145,4 +145,31 @@ class SpectrumMeterTest {
 
         assertEquals(before, meter.low, 0f)
     }
+
+    @Test
+    fun `release is defined in time, not in blocks`() {
+        // The same half second of silence must fade the light equally whether
+        // the output delivers it in small blocks or large ones.
+        fun fadedAfterHalfSecond(frames: Int): Float {
+            val meter = SpectrumMeter(sampleRate)
+            var frame = 0
+            while (frame < sampleRate) { // one second of bass to settle
+                val block = FloatArray(frames * Deck.CHANNELS)
+                for (i in 0 until frames) {
+                    val v = (sin(2 * PI * 60.0 * (frame + i) / sampleRate) * 0.5).toFloat()
+                    block[i * Deck.CHANNELS] = v
+                    block[i * Deck.CHANNELS + 1] = v
+                }
+                meter.measure(block, frames)
+                frame += frames
+            }
+            val settled = meter.low
+            repeat(sampleRate / 2 / frames) { meter.measure(FloatArray(frames * Deck.CHANNELS), frames) }
+            return meter.low / settled
+        }
+        val small = fadedAfterHalfSecond(256)
+        val large = fadedAfterHalfSecond(1024)
+        assertTrue("should have faded, kept $small", small < 0.5f)
+        assertEquals("block size changed the decay", small, large, 0.05f)
+    }
 }
