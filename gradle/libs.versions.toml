@@ -20,7 +20,7 @@ okhttp = "5.4.0"
 sqliteJdbc = "3.53.2.1"
 json = "20260719"
 # Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
-composeMultiplatform = "1.11.1"
+composeMultiplatform = "1.12.1"
 # Compose Hot Reload's minimum supported Compose Multiplatform version is
 # 1.10.0, so 1.11.1 above qualifies. 1.2.0 is the first stable release with
 # the MCP server (reload/screenshot/semantic-tree/click tools for an agent
