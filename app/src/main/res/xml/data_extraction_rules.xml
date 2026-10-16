@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
+   Backup and device-transfer rules for API 31+; backup_rules.xml covers older
+   devices. Keep the two in step.
    See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
 -->
 <data-extraction-rules>
     <!--
@@ -9,11 +9,24 @@
         the device model. It is meant to leave the device only when a person
         reads the GitHub issue draft and taps submit — not via cloud backup or
         device-to-device transfer, both of which run with nobody watching.
+
+        device_identity.xml holds this device's private identity key; a copy on
+        another phone could impersonate this one to every paired device.
+        audio/, peaks/ and energy/ are local copies of the user's music and
+        caches derived from them: large, rebuildable, and not backup material.
     -->
     <cloud-backup>
         <exclude domain="sharedpref" path="crash_reports.xml"/>
+        <exclude domain="sharedpref" path="device_identity.xml"/>
+        <exclude domain="file" path="audio/"/>
+        <exclude domain="file" path="peaks/"/>
+        <exclude domain="file" path="energy/"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="crash_reports.xml"/>
+        <exclude domain="sharedpref" path="device_identity.xml"/>
+        <exclude domain="file" path="audio/"/>
+        <exclude domain="file" path="peaks/"/>
+        <exclude domain="file" path="energy/"/>
     </device-transfer>
 </data-extraction-rules>

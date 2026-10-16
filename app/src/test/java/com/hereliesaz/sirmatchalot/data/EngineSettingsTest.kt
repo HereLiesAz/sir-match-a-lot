@@ -177,4 +177,63 @@ class EngineSettingsTest {
             SampleRateOption.HZ_48000.resolve(48_000),
         )
     }
+
+    // --- The identity key's move to its own, unbacked-up store ---
+
+    private class IdentityMapStore : KeyValueStore {
+        val values = HashMap<String, String>()
+        override fun getString(key: String): String? = values[key]
+        override fun putString(key: String, value: String) {
+            values[key] = value
+        }
+    }
+
+    private fun migrating(primary: IdentityMapStore, legacy: IdentityMapStore) = MigratingKeyValueStore(
+        primary = primary,
+        legacy = legacy,
+        removeLegacy = { legacy.values.remove(it) },
+        migratedKeys = SettingsStore.IDENTITY_KEYS,
+    )
+
+    @Test
+    fun `an identity key in the old settings file moves on first read and is deleted there`() {
+        val primary = IdentityMapStore()
+        val legacy = IdentityMapStore().apply {
+            values["identity_private"] = "secret"
+            values["sample_rate"] = "HZ_48000"
+        }
+        val store = migrating(primary, legacy)
+
+        assertEquals("secret", store.getString("identity_private"))
+        assertEquals("secret", primary.values["identity_private"])
+        assertFalse("the key is still in the backed-up file", "identity_private" in legacy.values)
+        assertEquals("unrelated settings are untouched", "HZ_48000", legacy.values["sample_rate"])
+    }
+
+    @Test
+    fun `a key not being migrated is never read from the old file`() {
+        val legacy = IdentityMapStore().apply { values["sample_rate"] = "HZ_48000" }
+        val store = migrating(IdentityMapStore(), legacy)
+        assertEquals(null, store.getString("sample_rate"))
+    }
+
+    @Test
+    fun `writes go to the new store and clear any stale copy in the old one`() {
+        val primary = IdentityMapStore()
+        val legacy = IdentityMapStore().apply { values["known_devices"] = "old" }
+        migrating(primary, legacy).putString("known_devices", "new")
+        assertEquals("new", primary.values["known_devices"])
+        assertFalse("known_devices" in legacy.values)
+    }
+
+    @Test
+    fun `the migrated keys are the ones DeviceIdentity actually writes`() {
+        val written = IdentityMapStore()
+        com.hereliesaz.sirmatchalot.sync.DeviceIdentity.load(written)
+        com.hereliesaz.sirmatchalot.sync.KnownDevices(written).let { known ->
+            // Remembering one device forces the list to be written.
+            known.remember("fingerprint", "Other")
+        }
+        assertEquals(SettingsStore.IDENTITY_KEYS, written.values.keys)
+    }
 }

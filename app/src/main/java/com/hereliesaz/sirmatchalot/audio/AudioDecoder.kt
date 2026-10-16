@@ -221,9 +221,11 @@ object AudioDecoder {
             return@withContext DecodeOutcome.Failure(DecodeOutcome.Reason.NO_AUDIO_TRACK)
         }
 
-        extractor.selectTrack(trackIndex)
         val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
-        val codec = runCatching { MediaCodec.createDecoderByType(mime) }.getOrElse { error ->
+        val codec = runCatching {
+            extractor.selectTrack(trackIndex)
+            MediaCodec.createDecoderByType(mime)
+        }.getOrElse {
             extractor.release()
             return@withContext DecodeOutcome.Failure(DecodeOutcome.Reason.NO_CODEC, mime)
         }
@@ -235,38 +237,34 @@ object AudioDecoder {
         var sampleRate = inputFormat.intOr(MediaFormat.KEY_SAMPLE_RATE, 44_100)
         var pcmEncoding = AudioFormatEncoding.PCM_16BIT
 
-        // Growable planar accumulation. Sized from the container duration when
-        // available so the common case does no reallocation.
-        // Container durations are approximate and decoders commonly emit a little
-        // more than they imply (encoder priming and padding). Allocating exactly
-        // the estimate therefore guarantees one reallocation, at the worst
-        // possible moment — when the buffer is already whole-track sized. A few
-        // per cent of slack makes the common case allocate once and never grow.
-        val estimatedFrames = runCatching {
-            (inputFormat.getLong(MediaFormat.KEY_DURATION) * sampleRate / 1_000_000L).toInt()
-        }.getOrNull()?.coerceIn(0, 60 * 60 * 192_000) ?: 0
-        val initialFrames = if (estimatedFrames > 0) {
-            (estimatedFrames + estimatedFrames / 32 + sampleRate).coerceAtMost(60 * 60 * 192_000)
-        } else {
-            sampleRate
-        }
+        // Growable planar accumulation, sized from the container duration (see
+        // initialCapacityFrames for the slack and the cap).
+        val initialFrames = initialCapacityFrames(
+            durationUs = runCatching { inputFormat.getLong(MediaFormat.KEY_DURATION) }.getOrNull(),
+            sampleRate = sampleRate,
+        )
 
         // Two accumulators, exactly one live. Which one is decided by the
         // codec's reported encoding at INFO_OUTPUT_FORMAT_CHANGED, which always
         // arrives before any audio does — so nothing is ever accumulated at the
         // wrong depth and then converted.
-        var planar: Array<ShortArray>? = Array(channelCount) { ShortArray(initialFrames) }
+        var planar: Array<ShortArray>? = null
         var planarFloat: Array<FloatArray>? = null
         var frames = 0
 
-        codec.configure(inputFormat, null, null, 0)
-        codec.start()
-
-        val info = MediaCodec.BufferInfo()
-        var inputDone = false
-        var outputDone = false
-
+        // From here on the codec and extractor are released by the `finally`
+        // below whatever happens — including the first allocation running the
+        // heap out, or `configure` rejecting the format, both of which used to
+        // throw before the `try` began and leak a hardware codec instance.
         try {
+            planar = Array(channelCount) { ShortArray(initialFrames) }
+            codec.configure(inputFormat, null, null, 0)
+            codec.start()
+
+            val info = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+
             while (!outputDone) {
                 if (!currentCoroutineContext().isActive) throw CancellationException()
 
@@ -486,6 +484,34 @@ object AudioDecoder {
      * memory at the precise moment the heap is fullest, which is what threw
      * OutOfMemoryError on a 256 MB device.
      */
+    /**
+     * Frames to allocate before the first decoded buffer arrives.
+     *
+     * Container durations are approximate and decoders commonly emit a little
+     * more than they imply (encoder priming and padding), so the estimate gets a
+     * few per cent of slack plus a second: allocating it exactly would guarantee
+     * one reallocation at the worst moment, when the buffer is already
+     * whole-track sized.
+     *
+     * Capped at [MAX_INITIAL_SECONDS], because the header is the file's claim,
+     * not a measurement: a corrupt or hostile duration used to size a buffer of
+     * up to an hour at 192 kHz — over a gigabyte per channel — before a single
+     * frame had been decoded. Anything longer than the cap simply grows.
+     */
+    internal fun initialCapacityFrames(durationUs: Long?, sampleRate: Int): Int {
+        val rate = sampleRate.coerceIn(1, 768_000).toLong()
+        val cap = rate * MAX_INITIAL_SECONDS
+        val estimated = durationUs?.takeIf { it > 0 }?.let { us ->
+            // Divide first where needed so an absurd duration cannot overflow.
+            if (us > Long.MAX_VALUE / rate) cap else us * rate / 1_000_000L
+        } ?: 0L
+        if (estimated <= 0L) return rate.toInt()
+        return (estimated + estimated / 32 + rate).coerceAtMost(cap).toInt()
+    }
+
+    /** See [initialCapacityFrames]. Twenty minutes covers nearly every track in one allocation. */
+    internal const val MAX_INITIAL_SECONDS = 20L * 60
+
     private fun ensureCapacity(planar: Array<ShortArray>, required: Int): Array<ShortArray> {
         if (planar[0].size >= required) return planar
         var capacity = planar[0].size.coerceAtLeast(1024)

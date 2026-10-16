@@ -238,26 +238,53 @@ class SettingsStore(private val store: KeyValueStore) {
         private const val KEY_GESTURE_DEBUG_LOGGING = "gesture_debug_logging"
 
         /**
-         * The raw store behind [forContext].
+         * The store the sync package keeps its own things in — a long-term
+         * identity key and the list of paired devices.
          *
-         * Exposed because the sync package keeps its own things in it — a
-         * long-term identity key and the list of paired devices — and neither
-         * belongs in [EngineSettings], which is entirely things a user chose and
-         * can see themselves choosing.
+         * Neither belongs in [EngineSettings], which is entirely things a user
+         * chose and can see themselves choosing, and neither belongs in this
+         * file's preferences either: the identity's private key must never
+         * leave the device, so it lives in its own preferences file,
+         * [IDENTITY_PREFERENCES_NAME], which the backup and data-extraction
+         * rules exclude by name. Installs that predate the split kept these
+         * keys in [PREFERENCES_NAME]; they are moved across, and deleted from
+         * there, the first time they are read.
          */
         fun keyValueFor(context: android.content.Context): KeyValueStore {
-            val preferences = context.getSharedPreferences(
+            val identity = context.getSharedPreferences(
+                IDENTITY_PREFERENCES_NAME,
+                android.content.Context.MODE_PRIVATE,
+            )
+            val legacy = context.getSharedPreferences(
                 PREFERENCES_NAME,
                 android.content.Context.MODE_PRIVATE,
             )
-            return object : KeyValueStore {
+            return MigratingKeyValueStore(
+                primary = preferencesStore(identity),
+                legacy = preferencesStore(legacy),
+                removeLegacy = { key -> legacy.edit().remove(key).apply() },
+                migratedKeys = IDENTITY_KEYS,
+            )
+        }
+
+        /** The preferences file holding the device identity; never backed up. */
+        const val IDENTITY_PREFERENCES_NAME = "device_identity"
+
+        /**
+         * The keys `DeviceIdentity` and `KnownDevices` in `:shared` write.
+         * Spelled out here because they are private there; the migration test
+         * pins them against a real `DeviceIdentity`.
+         */
+        val IDENTITY_KEYS: Set<String> = setOf("identity_private", "identity_public", "known_devices")
+
+        private fun preferencesStore(preferences: android.content.SharedPreferences): KeyValueStore =
+            object : KeyValueStore {
                 override fun getString(key: String): String? = preferences.getString(key, null)
 
                 override fun putString(key: String, value: String) {
                     preferences.edit().putString(key, value).apply()
                 }
             }
-        }
 
         /** A store backed by the app's own preferences file. */
         fun forContext(context: android.content.Context): SettingsStore {
@@ -276,5 +303,39 @@ class SettingsStore(private val store: KeyValueStore) {
                 },
             )
         }
+    }
+}
+
+/**
+ * A [KeyValueStore] that moves [migratedKeys] out of an older store on first read.
+ *
+ * Reading a migrated key that [primary] lacks but [legacy] holds copies the value
+ * into [primary] and then deletes it from [legacy], so after one read the old
+ * location no longer carries it. Writes always go to [primary].
+ */
+class MigratingKeyValueStore(
+    private val primary: KeyValueStore,
+    private val legacy: KeyValueStore,
+    private val removeLegacy: (String) -> Unit,
+    private val migratedKeys: Set<String>,
+) : KeyValueStore {
+
+    @Synchronized
+    override fun getString(key: String): String? {
+        primary.getString(key)?.let { current ->
+            if (key in migratedKeys && legacy.getString(key) != null) removeLegacy(key)
+            return current
+        }
+        if (key !in migratedKeys) return null
+        val old = legacy.getString(key) ?: return null
+        primary.putString(key, old)
+        removeLegacy(key)
+        return old
+    }
+
+    @Synchronized
+    override fun putString(key: String, value: String) {
+        primary.putString(key, value)
+        if (key in migratedKeys && legacy.getString(key) != null) removeLegacy(key)
     }
 }

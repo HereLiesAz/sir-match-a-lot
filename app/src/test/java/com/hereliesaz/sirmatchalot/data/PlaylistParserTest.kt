@@ -312,6 +312,116 @@ class PlaylistParserTest {
     }
 
     @Test
+    fun `a document declaring a DOCTYPE is refused, so an internal entity never expands`() {
+        // The test above passes even on an unhardened parser, since the JVM's
+        // default refuses to fetch that file anyway. An *internal* entity needs
+        // no fetching: without the hardening this parses to one entry titled
+        // "INJECTED", so this fails if the DOCTYPE refusal is ever lost.
+        val attack = """
+            <?xml version="1.0"?>
+            <!DOCTYPE feed [<!ENTITY x "INJECTED">]>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry><title>&x;</title></entry>
+            </feed>
+        """.trimIndent()
+        assertEquals(emptyList<PlaylistEntry>(), PlaylistParser.parse(attack))
+    }
+
+    private val plainXspf = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <playlist version="1" xmlns="http://xspf.org/ns/0/">
+          <trackList>
+            <track><title>One</title><location>https://example.com/one.mp3</location></track>
+            <track><title>Two</title><location>https://example.com/two.mp3</location></track>
+          </trackList>
+        </playlist>
+    """.trimIndent()
+
+    @Test
+    fun `XML still parses on a parser that rejects every hardening feature`() {
+        // Android's parser does not support every Xerces feature. Setting them
+        // inside the parse's own try meant one unsupported feature failed every
+        // XML playlist, hostile or not.
+        val entries = PlaylistParser.parse(plainXspf, remote = true) { FeaturelessFactory() }
+        assertEquals(listOf("One", "Two"), entries.map { it.title })
+        assertEquals("https://example.com/one.mp3", entries[0].sourceUri)
+    }
+
+    @Test
+    fun `a parser that cannot refuse DOCTYPE never sees a document declaring one`() {
+        val attack = """
+            <?xml version="1.0"?>
+            <!DOCTYPE feed [<!ENTITY x "INJECTED">]>
+            <feed><entry><title>&x;</title></entry></feed>
+        """.trimIndent()
+        assertEquals(
+            emptyList<PlaylistEntry>(),
+            PlaylistParser.parse(attack, remote = true) { FeaturelessFactory() },
+        )
+    }
+
+    /** A real parser that throws on every `setFeature`, as a minimal platform parser might. */
+    private class FeaturelessFactory : javax.xml.parsers.DocumentBuilderFactory() {
+        private val delegate = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+
+        override fun newDocumentBuilder(): javax.xml.parsers.DocumentBuilder {
+            delegate.isNamespaceAware = isNamespaceAware
+            delegate.isExpandEntityReferences = isExpandEntityReferences
+            return delegate.newDocumentBuilder()
+        }
+
+        override fun setAttribute(name: String?, value: Any?) = delegate.setAttribute(name, value)
+        override fun getAttribute(name: String?): Any? = delegate.getAttribute(name)
+        override fun setFeature(name: String?, value: Boolean) {
+            throw javax.xml.parsers.ParserConfigurationException("unsupported: $name")
+        }
+        override fun getFeature(name: String?): Boolean = false
+    }
+
+    // --- Where a location may point ---
+
+    @Test
+    fun `a fetched playlist keeps only http and https locations`() {
+        val document = """
+            #EXTM3U
+            #EXTINF:1,A - Web
+            https://example.com/a.mp3
+            #EXTINF:1,B - Provider
+            content://com.example.provider/audio/1
+            #EXTINF:1,C - File
+            file:///sdcard/Music/c.mp3
+            #EXTINF:1,D - Relative
+            ../music/d.mp3
+            #EXTINF:1,E - Absolute
+            /storage/emulated/0/e.mp3
+        """.trimIndent()
+        val entries = PlaylistParser.parse(document, remote = true)
+        assertEquals("every entry is kept, by name", 5, entries.size)
+        assertEquals(
+            listOf("https://example.com/a.mp3", null, null, null, null),
+            entries.map { it.sourceUri },
+        )
+    }
+
+    @Test
+    fun `locally supplied text may also name content URIs, but never files`() {
+        val document = "content://com.example.provider/audio/1\nfile:///sdcard/x.mp3\nhttp://example.com/y.mp3"
+        val entries = PlaylistParser.parse(document, remote = false)
+        assertEquals(
+            listOf("content://com.example.provider/audio/1", null, "http://example.com/y.mp3"),
+            entries.map { it.sourceUri },
+        )
+    }
+
+    @Test
+    fun `a scheme alone is not a location`() {
+        assertFalse(PlaylistParser.isAllowedSource("http:", remote = false))
+        assertFalse(PlaylistParser.isAllowedSource("https:/x", remote = false))
+        assertFalse(PlaylistParser.isAllowedSource("javascript:alert(1)", remote = false))
+        assertTrue(PlaylistParser.isAllowedSource("HTTPS://example.com/a.mp3", remote = true))
+    }
+
+    @Test
     fun `a large playlist is parsed in full`() {
         val document = buildString {
             appendLine("#EXTM3U")

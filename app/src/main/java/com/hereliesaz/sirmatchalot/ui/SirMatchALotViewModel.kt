@@ -111,9 +111,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * clears the decks, which [rebuildEngine] says out loud rather than doing
      * quietly.
      */
-    private var engine = AudioEngine(
-        AudioTrackOutput.forDevice(application, _settings.value.sampleRate),
-    )
+    private var engine = AudioEngine(newOutput(application, _settings.value.sampleRate))
 
     val audioEngine: AudioEngine get() = engine
 
@@ -180,11 +178,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 .extensionOf(getApplication(), original),
         ) ?: return original
 
-        // Recorded on the row so the copy is found again without a directory
-        // scan, and so deleting a track can delete its audio too.
-        runCatching { trackDao.updateTrack(track.copy(cachedPath = copied.absolutePath)) }
-        audioCache.trim(_settings.value.localCopies.ceiling(), keep = pinnedTrackIds())
+        // Recorded on the row as a record of the copy. Lookups and deletion go
+        // by track id against the cache directory, not through this column, so
+        // it is kept in step on every eviction rather than relied on. Column-
+        // targeted: [track] is a snapshot and must not be written back whole.
+        runCatching { trackDao.updateCachedPath(track.id, copied.absolutePath) }
+        trimLocalCopies(_settings.value.localCopies.ceiling())
         return Uri.fromFile(copied)
+    }
+
+    /** Evicts local copies down to [ceiling], and forgets them on their rows. */
+    private suspend fun trimLocalCopies(ceiling: Long) {
+        audioCache.trimIds(ceiling, keep = pinnedTrackIds()).forEach { id ->
+            runCatching { trackDao.updateCachedPath(id, null) }
+        }
     }
 
     /** Bytes of local audio held, and the ceiling, for the settings screen. */
@@ -197,9 +204,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     fun clearLocalCopies() {
         viewModelScope.launch(Dispatchers.IO) {
             val removed = audioCache.clear()
-            _tracks.value.filter { it.cachedPath != null }.forEach {
-                runCatching { trackDao.updateTrack(it.copy(cachedPath = null)) }
-            }
+            runCatching { trackDao.clearCachedPaths() }
             _feedbackMsg.value =
                 if (removed == 0) "No local copies to remove" else "Removed $removed local copies"
         }
@@ -322,6 +327,24 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _uiActive.value = active
     }
 
+    /**
+     * Audio focus and headphone unplugging; see [PlaybackFocus]. Held exactly
+     * while [isPlaying] is true, and anything that takes it away pauses.
+     */
+    private val playbackFocus = com.hereliesaz.sirmatchalot.audio.PlaybackFocus(application) {
+        if (_isPlaying.value) togglePlayback()
+    }
+
+    /** A device output that reports a failed audio thread instead of going silent without a word. */
+    private fun newOutput(
+        context: Application,
+        rate: com.hereliesaz.sirmatchalot.data.SampleRateOption,
+    ): AudioTrackOutput = AudioTrackOutput.forDevice(context, rate).also { output ->
+        output.onError = { error ->
+            _feedbackMsg.value = "Audio output stopped: ${error.message ?: error.javaClass.simpleName}"
+        }
+    }
+
     init {
         engine.idleShutdown = _settings.value.idleShutdown
         engine.onReverseThreshold = { _feedbackMsg.value = "I am Satan, Lord of Darkness." }
@@ -388,7 +411,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
         if (next.localCopies != current.localCopies) {
             viewModelScope.launch(Dispatchers.IO) {
-                audioCache.trim(next.localCopies.ceiling(), keep = pinnedTrackIds())
+                trimLocalCopies(next.localCopies.ceiling())
             }
         }
         engine.idleShutdown = next.idleShutdown
@@ -422,9 +445,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         loopCache.clear()
         clipTitles.clear()
 
-        val next = AudioEngine(
-            AudioTrackOutput.forDevice(getApplication(), settings.sampleRate),
-        )
+        val next = AudioEngine(newOutput(getApplication(), settings.sampleRate))
         next.idleShutdown = settings.idleShutdown
         next.onReverseThreshold = { _feedbackMsg.value = "I am Satan, Lord of Darkness." }
         // Carry the mixer positions across; the rate changed, not the mix.
@@ -906,6 +927,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         val evictions = DeckCapacity.evictionsFor(
             existing = entries,
             incoming = incomingBeats,
+            // The beat cap alone let a slow tempo fill more audio than the
+            // memory budget allows; the seconds cap applies through this.
+            maxBeats = DeckCapacity.maxBeatsFor(framesPerBeat / audioEngine.output.sampleRate),
             protectedIds = protectedIds,
         )
         if (evictions.isEmpty()) return engineDeck.clips
@@ -2701,6 +2725,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
 
+    init {
+        // Declared after [_isPlaying] so the flow exists when this runs.
+        viewModelScope.launch {
+            _isPlaying.collect { playing ->
+                if (playing) playbackFocus.acquire() else playbackFocus.release()
+            }
+        }
+    }
+
     // Seeded from the mixer rather than from a separate literal, so the slider
     // starts where the audio actually is.
     private val _audioVolume = MutableStateFlow(audioEngine.mixer.masterGain)
@@ -3263,24 +3296,18 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             energyFile.parentFile?.mkdirs()
             energyFile.writeBytes(analysis.energyCurve.toByteArray())
 
-            val sampleRate = decoded.pcm.sampleRate.toDouble()
-            trackDao.updateTrack(
-                track.copy(
-                    bpm = analysis.bpm,
-                    tempoConfidence = analysis.tempoConfidence,
-                    firstBeatSeconds = analysis.beatGrid?.firstBeatSeconds,
-                    downbeatOffset = analysis.beatGrid?.downbeatOffset ?: 0,
-                    camelotKey = analysis.camelotKey,
-                    keyName = analysis.keyName,
-                    keyConfidence = analysis.keyConfidence,
-                    energyLevel = analysis.energyLevel,
-                    durationMs = (analysis.durationSeconds * 1000).toLong(),
+            // Column-targeted, keyed by id. [track] is the row as it was before
+            // the decode; playableSource() may have recorded a local copy on it
+            // since, and a whole-row write of the snapshot would erase that.
+            trackDao.updateAnalysis(
+                track.id,
+                com.hereliesaz.sirmatchalot.data.AnalysisColumns.from(
+                    analysis = analysis,
                     sampleRate = decoded.pcm.sampleRate,
-                    trimStartMs = (decoded.trimmedStartFrames / sampleRate * 1000).toLong(),
-                    trimEndMs = ((decoded.trimmedStartFrames + decoded.pcm.frameCount) / sampleRate * 1000).toLong(),
+                    trimmedStartFrames = decoded.trimmedStartFrames,
+                    frameCount = decoded.pcm.frameCount,
                     peaksPath = peaksFile.absolutePath,
                     energyPath = energyFile.absolutePath,
-                    analysisVersion = Track.CURRENT_ANALYSIS_VERSION,
                 ),
             )
 
@@ -3484,40 +3511,47 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(Dispatchers.IO) {
           work.track(BackgroundWork.IMPORT, "Importing playlist", "reading the link") {
             _feedbackMsg.value = "Reading..."
+            // Not a URL at all: a pasted tracklist is itself the document, and
+            // the locations in it came from this device's user, not a server.
+            val remote = trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)
             val document = when {
-                // Not a URL at all: a pasted tracklist is itself the document.
-                !trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true) -> trimmed
+                !remote -> trimmed
                 else -> fetchPlaylistDocument(trimmed) ?: run {
                     _feedbackMsg.value = "Could not read that link"
                     return@track
                 }
             }
 
-            val entries = PlaylistParser.parse(document)
+            val entries = PlaylistParser.parse(document, remote = remote)
             if (entries.isEmpty()) {
                 _feedbackMsg.value = "Nothing recognisable as a playlist there"
                 return@track
             }
 
-            val existing = _tracks.value
+            val existing = trackDao.getAllTracks().toMutableList()
             var added = 0
             var withAudio = 0
             for (entry in entries) {
+                // Compared with the same normalisation it is stored with: an
+                // entry with no artist is saved as "Unknown Artist", and matching
+                // it against "" meant re-importing the same playlist duplicated
+                // every artistless song.
+                val artist = entry.artist?.takeIf { it.isNotBlank() } ?: UNKNOWN_ARTIST
                 val duplicate = existing.any { track ->
                     (entry.sourceUri != null && track.sourceUri == entry.sourceUri) ||
                         (track.title.equals(entry.title, ignoreCase = true) &&
-                            track.artist.equals(entry.artist ?: "", ignoreCase = true))
+                            track.artist.equals(artist, ignoreCase = true))
                 }
                 if (duplicate) continue
 
-                trackDao.insertTrack(
-                    Track(
-                        title = entry.title,
-                        artist = entry.artist ?: "Unknown Artist",
-                        sourceUri = entry.sourceUri,
-                        durationMs = ((entry.durationSeconds ?: 0.0) * 1000).toLong(),
-                    ),
+                val inserted = Track(
+                    title = entry.title,
+                    artist = artist,
+                    sourceUri = entry.sourceUri,
+                    durationMs = ((entry.durationSeconds ?: 0.0) * 1000).toLong(),
                 )
+                trackDao.insertTrack(inserted)
+                existing += inserted
                 added++
                 if (entry.hasAudio) withAudio++
             }
@@ -3527,7 +3561,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 val named = added - withAudio
                 if (named > 0) append(" — $named named only, with no audio file yet")
             }
-            if (withAudio > 0) analysePending()
+            if (withAudio > 0) analysePendingNow()
           }
         }
     }
@@ -3622,34 +3656,32 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     /**
      * Measures every track that has audio and has not been measured yet.
      *
-     * Reports something in *every* case. The previous version reported only from
-     * inside a successful per-track analysis, so an empty library, a fully
-     * analysed one, and one full of entries with no audio file were all silent —
-     * which is how "pressing analyse does nothing" came about. Three of those
-     * four outcomes were doing exactly nothing, correctly, and saying so.
-     */
-    /**
-     * Measures every track that has audio and has not been measured yet.
+     * Hands the run to [com.hereliesaz.sirmatchalot.analysis.AnalysisService],
+     * which has the notification, the Pause and Stop controls, and survives the
+     * app being backgrounded — for work that takes minutes and that nobody sits
+     * and watches. Library-wide analysis always goes there. (Analysing a single
+     * track from its menu is the one exception: [analyseTrack] runs in the
+     * ViewModel, because it is seconds of work the user is looking at.)
      *
-     * Hands the work to [com.hereliesaz.sirmatchalot.analysis.AnalysisService],
-     * always — which is the whole change. There used to be two analysis paths:
-     * this one, which ran inside the ViewModel with no notification and died the
-     * moment the app was backgrounded, and the service, which had the
-     * notification and the Pause and Stop controls and was started only by a
-     * folder import. The button in the library called the first one.
+     * Reports something in every case, including an empty or fully analysed
+     * library, so pressing the button is never silent.
      *
-     * So the run a user actually started was the one that could not be seen from
-     * outside the app and did not survive leaving it — for work that takes
-     * minutes and that nobody sits and watches. One path now, and it is the one
-     * with the notification.
+     * The plan is computed from a database read rather than from [_tracks]:
+     * called straight after an import's inserts, the observed flow has not yet
+     * caught up, and planning from it found nothing to do.
      *
      * @param rescan re-measure everything, not only what has never been measured.
      */
     fun analysePending(rescan: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) { analysePendingNow(rescan) }
+    }
+
+    private suspend fun analysePendingNow(rescan: Boolean = false) {
+        val tracks = runCatching { trackDao.getAllTracks() }.getOrElse { _tracks.value }
         val plan = if (rescan) {
-            AnalysisQueue.planFullRescan(_tracks.value)
+            AnalysisQueue.planFullRescan(tracks)
         } else {
-            AnalysisQueue.plan(_tracks.value)
+            AnalysisQueue.plan(tracks)
         }
         if (!plan.hasWork) {
             _feedbackMsg.value = plan.idleMessage()
@@ -3664,9 +3696,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     fun deleteTrack(track: Track) {
         viewModelScope.launch(Dispatchers.IO) {
-            // The copy goes with the row. Leaving it would be disk nobody can
+            // The copy goes with the row, and so do the waveform and energy
+            // files analysis wrote for it. Leaving them would be disk nobody can
             // account for and nothing can reach.
             audioCache.remove(track.id)
+            val files = getApplication<Application>().filesDir
+            java.io.File(files, "peaks/${track.id}.peaks").delete()
+            java.io.File(files, "energy/${track.id}.energy").delete()
             trackDao.deleteTrack(track)
             removeTrackFromDecks(track.id)
         }
@@ -3876,13 +3912,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     override fun onCleared() {
         super.onCleared()
         harvestJob?.cancel()
+        playbackFocus.release()
         audioEngine.release()
         decoded.clear()
         syncServer.stop()
         syncClient.disconnect()
+        // Releases OkHttp's dispatcher and connection-pool threads, which
+        // otherwise outlive the ViewModel.
+        syncClient.close()
     }
 
     companion object {
+        /** What a track with no known artist is stored as, and compared as. */
+        const val UNKNOWN_ARTIST = "Unknown Artist"
+
         /**
          * Marks a deck clip as coming from a sampler pad rather than a library
          * track. Prefixed rather than tracked in a set so the mark survives

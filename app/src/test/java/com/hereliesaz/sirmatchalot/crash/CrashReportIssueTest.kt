@@ -96,4 +96,21 @@ class CrashReportIssueTest {
         assertFalse(url.contains("\n"))
         assertTrue(url.contains("line%20two"))
     }
+
+    @Test
+    fun `a trace that encodes long is cut until the whole URL fits`() {
+        // Every character here encodes to nine: 4000 of them is a 36 KB URL.
+        val trace = "\u00e9\u4e2d".repeat(3000)
+        val url = CrashReportIssue.url(report(stackTrace = trace))
+
+        assertTrue("url was ${url.length} chars", url.length <= CrashReportIssue.MAX_URL_CHARS)
+        assertTrue("truncation is marked", java.net.URLDecoder.decode(url.substringAfter("&body="), "UTF-8").contains("(truncated)"))
+    }
+
+    @Test
+    fun `a short report's URL is left whole`() {
+        val url = CrashReportIssue.url(report())
+
+        assertTrue(java.net.URLDecoder.decode(url, "UTF-8").contains("beatsPerBar must be positive\n\tat Foo.bar(Foo.kt:1)"))
+    }
 }

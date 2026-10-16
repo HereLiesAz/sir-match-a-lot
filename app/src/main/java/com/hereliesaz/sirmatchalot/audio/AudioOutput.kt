@@ -152,6 +152,25 @@ class AudioTrackOutput(
     private var thread: Thread? = null
     private val running = AtomicBoolean(false)
 
+    /**
+     * Which start() the live render thread belongs to.
+     *
+     * [stop]'s join is bounded, so a render thread stuck in a blocking write can
+     * outlive it — and when a following [start] set `running` back to true, that
+     * old thread saw `true` and carried on, two threads rendering one engine
+     * into two tracks. Each thread now runs only while the generation it was
+     * started under is still current; [stop] and every [start] advance it.
+     */
+    private val generation = java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * Called, on the audio thread, when output fails and the thread gives up —
+     * the track could not start, or a write reported an error such as a dead
+     * audio server. The output is stopped by then; [start] may be called again.
+     */
+    @Volatile
+    var onError: ((Throwable) -> Unit)? = null
+
     /** Underrun count since start, for diagnosing whether an Oboe backend is warranted. */
     @Volatile
     var underrunCount: Int = 0
@@ -159,6 +178,7 @@ class AudioTrackOutput(
 
     override fun start(render: (FloatArray, Int) -> Unit) {
         if (running.getAndSet(true)) return
+        val myGeneration = generation.incrementAndGet()
 
         // A start()/stop() cycle without an intervening release() used to
         // leave the previous AudioTrack allocated: this overwrote `track`
@@ -198,7 +218,16 @@ class AudioTrackOutput(
             builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
         }
 
-        val created = builder.build()
+        // `running` is already true, so a build failure (no output device, an
+        // unsupported format on this hardware) has to put it back: left set,
+        // every later start() returned early and the app stayed silent for the
+        // rest of the process.
+        val created = try {
+            builder.build()
+        } catch (e: Exception) {
+            running.set(false)
+            throw e
+        }
         track = created
 
         // Roughly a second of blocks. Long enough that a silent bar, a clip
@@ -208,7 +237,10 @@ class AudioTrackOutput(
         val idleBlocksBeforeStandDown =
             (sampleRate / framesPerBuffer.coerceAtLeast(1)).coerceAtLeast(1)
 
+        fun current() = running.get() && generation.get() == myGeneration
+
         thread = Thread {
+          try {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val buffer = FloatArray(framesPerBuffer * Deck.CHANNELS)
             created.play()
@@ -216,7 +248,7 @@ class AudioTrackOutput(
             var idleBlocks = 0
             var paused = false
 
-            while (running.get()) {
+            while (current()) {
                 if (isIdle?.invoke() == true) idleBlocks++ else idleBlocks = 0
 
                 if (idleBlocks >= idleBlocksBeforeStandDown) {
@@ -248,14 +280,23 @@ class AudioTrackOutput(
                 render(buffer, framesPerBuffer)
                 var offset = 0
                 val total = buffer.size
-                while (offset < total && running.get()) {
+                while (offset < total && current()) {
                     val written = created.write(
                         buffer,
                         offset,
                         total - offset,
                         AudioTrack.WRITE_BLOCKING,
                     )
-                    if (written <= 0) break
+                    // Negative is an error code (a dead track, a bad state) that
+                    // will never clear by itself; breaking and rendering again
+                    // spun this thread at full speed, at urgent-audio priority,
+                    // forever. Zero from a blocking write should not happen; if
+                    // it does, back off rather than spin.
+                    if (written < 0) throw IllegalStateException("AudioTrack.write failed: $written")
+                    if (written == 0) {
+                        Thread.sleep(2)
+                        break
+                    }
                     offset += written
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -266,7 +307,19 @@ class AudioTrackOutput(
                     }
                 }
             }
-            created.stop()
+            runCatching { created.stop() }
+          } catch (e: InterruptedException) {
+            runCatching { created.stop() }
+          } catch (e: Throwable) {
+            runCatching { created.stop() }
+            // Only this generation's failure stops the output; a stale thread
+            // failing after a restart must not take the new one down with it.
+            if (generation.compareAndSet(myGeneration, myGeneration + 1)) {
+                running.set(false)
+                isStoodDown = false
+                onError?.invoke(e)
+            }
+          }
         }.apply {
             name = "SirMatchALot-Audio"
             start()
@@ -283,6 +336,9 @@ class AudioTrackOutput(
 
     override fun stop() {
         if (!running.getAndSet(false)) return
+        // Retires the current render thread even if a start() follows before it
+        // has noticed `running` drop.
+        generation.incrementAndGet()
         // The thread may be parked in the idle wait; without this, stopping
         // would block for the rest of the poll interval.
         wake()

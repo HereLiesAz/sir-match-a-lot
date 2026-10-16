@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import com.hereliesaz.sirmatchalot.audio.AudioDecoder
+import com.hereliesaz.sirmatchalot.data.AnalysisColumns
 import com.hereliesaz.sirmatchalot.data.AnalysisQueue
 import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.Track
@@ -35,8 +36,12 @@ import java.io.File
  * longer, then set it up to run in the background, allowing it to pause and
  * resume, reporting its progress in a notification."*
  *
- * The service owns its own database handle and analyser rather than reaching
- * back into the ViewModel, because it outlives the ViewModel by design. Progress
+ * The service reaches the database through the process-wide [AppDatabase]
+ * singleton and runs its own [TrackAnalyzer], never anything held by the
+ * ViewModel, because it outlives the ViewModel by design. Since the row it
+ * measures can be edited while the measurement runs, it writes back only the
+ * analysis columns ([com.hereliesaz.sirmatchalot.data.TrackDao.updateAnalysis]),
+ * never the whole row it started from. Progress
  * travels the other way through [AnalysisProgressBus], so the library screen and
  * the notification show the same figures without either being the source of the
  * other.
@@ -51,6 +56,19 @@ class AnalysisService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + job)
     private var worker: Job? = null
 
+    /**
+     * Stop pressed for the current run, recorded here as well as on the bus.
+     *
+     * [AnalysisProgressBus.begin] clears the bus's stop flag, and the worker
+     * calls it a moment after it starts — so a Stop that arrived in between was
+     * wiped and the run went ahead anyway. This flag belongs to the run and is
+     * only cleared when a new one is started.
+     */
+    @Volatile
+    private var stopThisRun = false
+
+    private val stopped: Boolean get() = stopThisRun || AnalysisProgressBus.stopRequested
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -60,17 +78,21 @@ class AnalysisService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PAUSE -> {
-                AnalysisProgressBus.setPaused(true)
-                notify(AnalysisProgressBus.state.value)
-                return START_STICKY
-            }
-            ACTION_RESUME -> {
-                AnalysisProgressBus.setPaused(false)
+            ACTION_PAUSE, ACTION_RESUME -> {
+                // A stale notification button can arrive after the run ended.
+                // That delivery creates the service afresh, and returning sticky
+                // without ever calling `startForeground` left it running in the
+                // background, doing nothing, for the system to recreate.
+                if (worker?.isActive != true) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                AnalysisProgressBus.setPaused(intent.action == ACTION_PAUSE)
                 notify(AnalysisProgressBus.state.value)
                 return START_STICKY
             }
             ACTION_STOP -> {
+                stopThisRun = true
                 AnalysisProgressBus.requestStop()
                 // Stopping a run that is not running has to end the service, not
                 // start one. Pressing Stop while idle delivered an intent, this
@@ -99,6 +121,7 @@ class AnalysisService : Service() {
         }
 
         val rescan = intent.getBooleanExtra(EXTRA_RESCAN, false)
+        stopThisRun = false
         startForegroundCompat(buildNotification(AnalysisState(total = 1, current = "Starting...")))
         worker = scope.launch { run(rescan) }
         return START_STICKY
@@ -110,25 +133,28 @@ class AnalysisService : Service() {
 
         val tracks = dao.getAllTracks()
         val plan = if (rescan) AnalysisQueue.planFullRescan(tracks) else AnalysisQueue.plan(tracks)
-        if (!plan.hasWork) {
+        if (!plan.hasWork || stopped) {
             AnalysisProgressBus.finish()
             stopSelf()
             return
         }
 
         AnalysisProgressBus.begin(plan.toAnalyse.size)
+        // begin() clears the bus's stop flag; a Stop that landed before it is
+        // still in [stopThisRun], and is put back so the UI sees it too.
+        if (stopThisRun) AnalysisProgressBus.requestStop()
         var done = 0
         var failed = 0
 
         for (track in plan.toAnalyse) {
-            if (AnalysisProgressBus.stopRequested) break
+            if (stopped) break
 
             // Hold between tracks rather than inside one, so resuming does not
             // repeat work already paid for.
-            while (AnalysisProgressBus.pauseRequested && !AnalysisProgressBus.stopRequested) {
+            while (AnalysisProgressBus.pauseRequested && !stopped) {
                 delay(400)
             }
-            if (AnalysisProgressBus.stopRequested) break
+            if (stopped) break
 
             AnalysisProgressBus.update(done, track.title, failed)
             notify(AnalysisProgressBus.state.value)
@@ -138,7 +164,13 @@ class AnalysisService : Service() {
         }
 
         AnalysisProgressBus.update(done, "", failed)
-        notifyComplete(done, failed)
+        val wasStopped = stopped
+        // Out of the foreground first, removing the progress notification, and
+        // only then the summary under its own id. Posted under the foreground
+        // id, as it was, the summary *was* the foreground notification, and
+        // stopSelf() took it down with the service a moment after it appeared.
+        stopForegroundCompat()
+        notifyComplete(done, failed, wasStopped)
         AnalysisProgressBus.finish()
         stopSelf()
     }
@@ -162,24 +194,18 @@ class AnalysisService : Service() {
             energyFile.parentFile?.mkdirs()
             energyFile.writeBytes(analysis.energyCurve.toByteArray())
 
-            val rate = decoded.pcm.sampleRate.toDouble()
-            dao.updateTrack(
-                track.copy(
-                    bpm = analysis.bpm,
-                    tempoConfidence = analysis.tempoConfidence,
-                    firstBeatSeconds = analysis.beatGrid?.firstBeatSeconds,
-                    downbeatOffset = analysis.beatGrid?.downbeatOffset ?: 0,
-                    camelotKey = analysis.camelotKey,
-                    keyName = analysis.keyName,
-                    keyConfidence = analysis.keyConfidence,
-                    energyLevel = analysis.energyLevel,
-                    durationMs = (analysis.durationSeconds * 1000).toLong(),
+            // Only the measured columns, keyed by id: [track] is a snapshot
+            // taken when the run began, and writing it back whole reverted any
+            // edit made to the row in the minutes since.
+            dao.updateAnalysis(
+                track.id,
+                AnalysisColumns.from(
+                    analysis = analysis,
                     sampleRate = decoded.pcm.sampleRate,
-                    trimStartMs = (decoded.trimmedStartFrames / rate * 1000).toLong(),
-                    trimEndMs = ((decoded.trimmedStartFrames + decoded.pcm.frameCount) / rate * 1000).toLong(),
+                    trimmedStartFrames = decoded.trimmedStartFrames,
+                    frameCount = decoded.pcm.frameCount,
                     peaksPath = peaksFile.absolutePath,
                     energyPath = energyFile.absolutePath,
-                    analysisVersion = Track.CURRENT_ANALYSIS_VERSION,
                 ),
             )
             true
@@ -266,7 +292,7 @@ class AnalysisService : Service() {
         runCatching { manager.notify(NOTIFICATION_ID, buildNotification(state)) }
     }
 
-    private fun notifyComplete(done: Int, failed: Int) {
+    private fun notifyComplete(done: Int, failed: Int, stopped: Boolean) {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
@@ -275,17 +301,21 @@ class AnalysisService : Service() {
             Notification.Builder(this)
         }
         builder
-            .setContentTitle("Analysis finished")
-            .setContentText(
-                buildString {
-                    append("$done ${if (done == 1) "track" else "tracks"} measured")
-                    if (failed > 0) append(", $failed could not be decoded")
-                },
-            )
+            .setContentTitle(if (stopped) "Analysis stopped" else "Analysis finished")
+            .setContentText(completionText(done, failed))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setAutoCancel(true)
             .setOngoing(false)
-        runCatching { manager.notify(NOTIFICATION_ID, builder.build()) }
+        runCatching { manager.notify(COMPLETE_NOTIFICATION_ID, builder.build()) }
+    }
+
+    private fun stopForegroundCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
     }
 
     private fun startForegroundCompat(notification: Notification) {
@@ -309,6 +339,23 @@ class AnalysisService : Service() {
     companion object {
         private const val CHANNEL_ID = "analysis"
         private const val NOTIFICATION_ID = 4711
+
+        /** The end-of-run summary; separate from the foreground id so it outlives the service. */
+        private const val COMPLETE_NOTIFICATION_ID = 4712
+
+        /**
+         * The summary line for a run that attempted [attempted] tracks, [failed]
+         * of which could not be measured. [attempted] counts the failures too,
+         * so "measured" is the difference — reporting it whole claimed every
+         * failed track as measured as well.
+         */
+        internal fun completionText(attempted: Int, failed: Int): String {
+            val measured = (attempted - failed).coerceAtLeast(0)
+            return buildString {
+                append("$measured ${if (measured == 1) "track" else "tracks"} measured")
+                if (failed > 0) append(", $failed could not be analysed")
+            }
+        }
 
         const val ACTION_PAUSE = "com.hereliesaz.sirmatchalot.ANALYSIS_PAUSE"
         const val ACTION_RESUME = "com.hereliesaz.sirmatchalot.ANALYSIS_RESUME"

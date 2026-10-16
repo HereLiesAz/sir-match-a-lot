@@ -12,7 +12,7 @@ plugins {
 val versionProps = Properties()
 val versionPropsFile = rootProject.file("version.properties")
 if (versionPropsFile.exists()) {
-    versionProps.load(FileInputStream(versionPropsFile))
+    FileInputStream(versionPropsFile).use { versionProps.load(it) }
 }
 
 // The central release workflows (HereLiesAz/workflows android-play-release /
@@ -30,7 +30,7 @@ val patch = versionProp("versionPatch", "patch") ?: 20
 // builds, Android Studio) we keep the previous behavior: auto-increment a counter in
 // version.properties on each build task.
 val versionBuildOverride = project.findProperty("versionBuild")?.toString()?.toIntOrNull()
-var buildNumber = versionBuildOverride ?: (versionProp("versionBuild", "build") ?: 0)
+var buildNumber = versionBuildOverride ?: (versionProp("versionBuild") ?: 0)
 
 val isBuildTask = gradle.startParameter.taskNames.any { taskName ->
     val name = taskName.substringAfterLast(':').lowercase()
@@ -43,8 +43,24 @@ val isBuildTask = gradle.startParameter.taskNames.any { taskName ->
 // Never on CI: the central workflows have already written the canonical build number.
 if (versionBuildOverride == null && isBuildTask && System.getenv("CI") == null) {
     buildNumber++
-    versionProps.setProperty("build", buildNumber.toString())
+    // Write back the same key that was read: writing a second key ("build") left
+    // versionBuild frozen, so the counter never actually advanced.
+    versionProps.setProperty("versionBuild", buildNumber.toString())
     versionPropsFile.writer().use { versionProps.store(it, null) }
+}
+
+// versionCode is (major.minor.patch) * 100000 + build, and must fit in an Int (Play rejects anything
+// above 2100000000). Fail the build with a clear message instead of silently overflowing into a
+// negative or colliding code.
+require(buildNumber in 0 until 100_000) {
+    "versionBuild ($buildNumber) must be in 0..99999: it is the low five digits of versionCode."
+}
+require(major >= 0 && minor in 0..99 && patch in 0..99) {
+    "Version $major.$minor.$patch cannot be encoded in versionCode (minor and patch must be 0..99)."
+}
+val encodedVersionCode = (major * 10000L + minor * 100L + patch) * 100_000L + buildNumber
+require(encodedVersionCode <= 2_100_000_000L) {
+    "versionCode $encodedVersionCode exceeds Play's limit of 2100000000."
 }
 
 android {
@@ -58,7 +74,7 @@ android {
         // The Play release passes the exact code/name it will upload as
         // -PversionCodeOverride / -PversionName; those win over the local encoding.
         versionCode = project.findProperty("versionCodeOverride")?.toString()?.toIntOrNull()
-            ?: ((major * 10000 + minor * 100 + patch) * 100000 + buildNumber)
+            ?: encodedVersionCode.toInt()
         versionName = project.findProperty("versionName")?.toString()?.takeIf { it.isNotBlank() }
             ?: "$major.$minor.$patch.$buildNumber"
 
@@ -102,10 +118,6 @@ android {
                 "proguard-rules.pro",
             )
         }
-    }
-
-    lint {
-        baseline = file("lint-baseline.xml")
     }
 
     compileOptions {
