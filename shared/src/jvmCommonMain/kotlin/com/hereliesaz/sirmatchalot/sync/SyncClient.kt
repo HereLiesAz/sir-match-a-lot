@@ -8,6 +8,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class SyncClient(
     private val listener: SyncListener,
@@ -60,6 +61,13 @@ class SyncClient(
 
     private var webSocket: WebSocket? = null
 
+    /**
+     * Which [connect] is current. Every callback from a socket checks it, so
+     * an old socket closing late — after a reconnect has already opened a new
+     * one — cannot report the new connection as dropped, or hand it frames.
+     */
+    private val connectGeneration = AtomicInteger(0)
+
     /** This connection's ephemeral keys, made fresh for every connect. */
     private var keys: java.security.KeyPair? = null
 
@@ -67,7 +75,11 @@ class SyncClient(
     @Volatile
     private var session: RoomCrypto.Session? = null
 
-    /** Set when this device's own user approves the digits. */
+    /**
+     * Set when this device's own user approves the digits — or when the host
+     * proved it is one this device remembers. Nothing but the handshake's own
+     * `identify` is sent before it, and nothing the room sends is acted on.
+     */
     @Volatile
     private var approvedByUser = false
 
@@ -122,7 +134,7 @@ class SyncClient(
      * device in the middle somewhere to stand.
      */
     fun approvePairing(roomCode: String, role: String, name: String) {
-        if (session == null) return
+        if (session == null || transcript == null) return
         approvedByUser = true
         // Remembered on approval, and only for a host whose signature has
         // already been checked — `recogniseHost` sets the fingerprint after
@@ -163,8 +175,12 @@ class SyncClient(
      * or before this device's user has approved it, is dropped rather than sent
      * in the clear — there is no path here that falls back to plaintext, because
      * a fallback is what an attacker would arrange.
+     *
+     * @param handshake true only for this device's own `identify`, which has to
+     *   go out before anybody can approve anything.
      */
-    private fun sendSealed(message: JSONObject) {
+    private fun sendSealed(message: JSONObject, handshake: Boolean = false) {
+        if (!handshake && !approvedByUser) return
         val current = session ?: return
         val sealed = current.seal(message.toString().toByteArray(Charsets.UTF_8))
         webSocket?.send(
@@ -174,20 +190,34 @@ class SyncClient(
             }.toString(),
         )
     }
+
+    @Volatile
     private var udpSocket: DatagramSocket? = null
     private val isDiscovering = AtomicBoolean(false)
 
+    /**
+     * Which discovery run is current, so a run that was stopped and replaced
+     * neither keeps going under the new one's flag nor, when it finally
+     * finishes, switches the new one off.
+     */
+    private val discoveryGeneration = AtomicInteger(0)
+
     fun startLanDiscovery() {
-        if (isDiscovering.get()) return
-        isDiscovering.set(true)
+        if (!isDiscovering.compareAndSet(false, true)) return
+        val generation = discoveryGeneration.incrementAndGet()
+        fun current() = isDiscovering.get() && discoveryGeneration.get() == generation
 
         Thread {
-            try {
-                udpSocket = DatagramSocket().apply {
+            val socket = runCatching {
+                DatagramSocket().apply {
                     broadcast = true
                     soTimeout = 4000
                 }
-                
+            }.getOrNull()
+            try {
+                if (socket == null) return@Thread
+                udpSocket = socket
+
                 val discoverMsg = "SIR_MATCH_A_LOT_DISCOVER"
                 val sendBuffer = discoverMsg.toByteArray()
                 val broadcastAddress = InetAddress.getByName("255.255.255.255")
@@ -197,13 +227,13 @@ class SyncClient(
                 val receiveBuffer = ByteArray(1024)
                 val receivePacket = DatagramPacket(receiveBuffer, receiveBuffer.size)
 
-                while (isDiscovering.get() && attempts < 10) {
+                while (current() && attempts < 10) {
                     attempts++
                     debugLog("SyncClient", "Sending UDP broadcast query attempt $attempts...")
-                    udpSocket?.send(sendPacket)
+                    socket.send(sendPacket)
 
                     try {
-                        udpSocket?.receive(receivePacket)
+                        socket.receive(receivePacket)
                         val responseText = String(receivePacket.data, 0, receivePacket.length)
                         debugLog("SyncClient", "UDP response received: $responseText")
                         
@@ -211,7 +241,7 @@ class SyncClient(
                         val serverIp = json.getString("serverIp")
                         val wsUrl = json.getString("wsUrl")
 
-                        listener.onServerDiscovered(serverIp, wsUrl)
+                        if (current()) listener.onServerDiscovered(serverIp, wsUrl)
                         break
                     } catch (e: Exception) {
                         // Read timeout
@@ -219,9 +249,15 @@ class SyncClient(
                     Thread.sleep(1000)
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                if (current()) e.printStackTrace()
             } finally {
-                stopLanDiscovery()
+                socket?.close()
+                // Only this run's own state: a newer run started after this
+                // one was stopped owns the flag and the field now.
+                if (discoveryGeneration.get() == generation) {
+                    isDiscovering.set(false)
+                    if (udpSocket === socket) udpSocket = null
+                }
             }
         }.start()
     }
@@ -248,6 +284,8 @@ class SyncClient(
         role: String = "",
     ) {
         disconnect()
+        val generation = connectGeneration.incrementAndGet()
+        fun current() = connectGeneration.get() == generation
 
         pendingRoomCode = roomCode.uppercase()
         pendingName = deviceName
@@ -265,10 +303,13 @@ class SyncClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!current()) return
                 listener.onConnected()
-                // The first thing on the wire, and the only thing this device
-                // sends in the clear: an ephemeral public key nobody can do
-                // anything with on its own. This device's name and its
+                // The first thing on the wire: a commitment to this
+                // connection's ephemeral key — its hash, not the key. The key
+                // itself follows once the host has sent its own, so a device in
+                // the middle never sees both honest keys before having to fix
+                // its own (see RoomCrypto). This device's name and its
                 // long-term identity key used to ride along here too — which
                 // meant anybody passively listening on the network learned
                 // both on every connection attempt, approved or not. They now
@@ -278,16 +319,23 @@ class SyncClient(
                 webSocket.send(
                     JSONObject().apply {
                         put("type", "hello")
-                        put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(ownKeys.public)))
+                        put(
+                            "commit",
+                            WebSocketProtocol.base64(
+                                RoomCrypto.commitmentOf(RoomCrypto.encodePublicKey(ownKeys.public)),
+                            ),
+                        )
                     }.toString(),
                 )
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!current()) return
                 try {
                     val outer = JSONObject(text)
                     when (outer.optString("type")) {
                         "hello_ack" -> {
+                            if (session != null) return
                             val hostKeyBytes =
                                 WebSocketProtocol.decodeBase64(outer.optString("key")) ?: return
                             val hostKey = RoomCrypto.decodePublicKey(hostKeyBytes) ?: return
@@ -297,6 +345,15 @@ class SyncClient(
                                 RoomCrypto.encodePublicKey(ownKeys.public),
                                 hostKeyBytes,
                                 pendingRoomCode,
+                            )
+
+                            // Now, and not before: the key this device
+                            // committed to in `hello`.
+                            webSocket.send(
+                                JSONObject().apply {
+                                    put("type", "reveal")
+                                    put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(ownKeys.public)))
+                                }.toString(),
                             )
 
                             // This device's name and its claimed identity used
@@ -313,6 +370,7 @@ class SyncClient(
                                         put("identity", WebSocketProtocol.base64(it.publicKey.encoded))
                                     }
                                 },
+                                handshake = true,
                             )
                             // Both users now hold the same six digits — but
                             // whether to show them, or skip straight to a
@@ -359,15 +417,21 @@ class SyncClient(
                         // server puts it, was true of the wire and false of the
                         // app. A refused join looked exactly like a working one
                         // until nothing responded.
+                        // Nothing below is acted on before this device's
+                        // user approved; an honest host sends none of it
+                        // earlier, and a dishonest one gets nowhere.
                         "init_state" -> {
+                            if (!approvedByUser) return
                             val roomState = data.getJSONObject("roomState")
                             listener.onRoomStateReceived(roomState)
                         }
                         "state_synced" -> {
+                            if (!approvedByUser) return
                             val state = data.getJSONObject("state")
                             listener.onRoomStateReceived(state)
                         }
                         "event_triggered" -> {
+                            if (!approvedByUser) return
                             val event = data.optString("event")
                             val payload = data.optJSONObject("payload") ?: JSONObject()
                             when (event) {
@@ -424,10 +488,12 @@ class SyncClient(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!current()) return
                 listener.onDisconnected()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!current()) return
                 t.printStackTrace()
                 listener.onDisconnected()
             }
@@ -441,11 +507,24 @@ class SyncClient(
     }
 
     /**
+     * Disconnects and releases the HTTP client's threads and pooled
+     * connections. For when the owner is going away for good; this client
+     * cannot connect again afterwards.
+     */
+    fun close() {
+        disconnect()
+        connectGeneration.incrementAndGet()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
+    }
+
+    /**
      * Kept for the discovery flow, which knows the code before a key exists.
      *
      * The join itself is now sent by [approvePairing], because it must not go
      * out until this device's user has seen the digits — sending it on connect
-     * would mean joining a host nobody had confirmed.
+     * would mean joining a host nobody had confirmed. Before that approval
+     * this sends nothing, like every other room message.
      */
     fun joinRoom(roomCode: String, role: String, name: String) {
         val payload = JSONObject().apply {

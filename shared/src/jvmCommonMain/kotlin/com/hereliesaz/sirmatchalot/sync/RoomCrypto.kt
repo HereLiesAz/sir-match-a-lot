@@ -47,6 +47,27 @@ import javax.crypto.spec.SecretKeySpec
  * the host is confirming which device it just admitted, and the joining device
  * is confirming which host it has been admitted to.
  *
+ * ## Why the joining device commits first
+ *
+ * Six digits are only about twenty bits. If a device in the middle could see
+ * both honest keys before choosing its own, it could try keys offline until
+ * the two legs happened to produce the same digits — a million tries is
+ * seconds of work. So the joining device's `hello` carries only
+ * [commitmentOf] its key; the host answers with its own key; and only then
+ * does the joiner reveal the key it committed to, which the host checks with
+ * [verifyCommitment] before deriving anything. Whoever sits in the middle has
+ * to fix its key on each leg before it learns the honest key on that leg, so
+ * it gets exactly one guess at the digits, not a million.
+ *
+ * ## Replays
+ *
+ * Every sealed frame carries a sequence number that increases by one per frame
+ * in each direction, authenticated with the frame ([Session.seal]). The
+ * receiver refuses any frame whose number is not greater than the last one it
+ * accepted, so a recorded frame — "load this track", "play pad 3" — cannot be
+ * sent again by somebody who merely watched it go past. The direction is
+ * authenticated too, so a frame cannot be reflected back at its sender.
+ *
  * ## The parts, and why these ones
  *
  * - **P-256 ECDH.** X25519 would be the modern choice and is not available
@@ -58,7 +79,7 @@ import javax.crypto.spec.SecretKeySpec
  *   room code rather than on the secret alone.
  * - **AES-256-GCM**, which authenticates as well as encrypts: a tampered frame
  *   fails to open rather than decrypting to something plausible. Each frame
- *   carries a fresh 12-byte nonce.
+ *   carries a fresh 12-byte nonce and an authenticated sequence number.
  */
 object RoomCrypto {
 
@@ -67,6 +88,11 @@ object RoomCrypto {
 
     /** Bytes of nonce on every sealed frame. */
     const val NONCE_BYTES = 12
+
+    /** Bytes of sequence number in front of every sealed frame. */
+    const val SEQUENCE_BYTES = 8
+
+    private const val GCM_TAG_BYTES = 16
 
     private const val GCM_TAG_BITS = 128
     private const val CURVE = "secp256r1"
@@ -82,6 +108,17 @@ object RoomCrypto {
     /** [key] as bytes, for putting on the wire. */
     fun encodePublicKey(key: PublicKey): ByteArray = key.encoded
 
+    /**
+     * What the joining device sends in place of its key: a SHA-256 of the
+     * encoded key, which binds it to that key without revealing it.
+     */
+    fun commitmentOf(encodedKey: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(encodedKey)
+
+    /** Whether [encodedKey] is the key [commitment] was made to. */
+    fun verifyCommitment(commitment: ByteArray, encodedKey: ByteArray): Boolean =
+        MessageDigest.isEqual(commitment, commitmentOf(encodedKey))
+
     /** A peer's public key from the wire, or null if it is not one. */
     fun decodePublicKey(bytes: ByteArray): PublicKey? = runCatching {
         KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(bytes))
@@ -93,11 +130,29 @@ object RoomCrypto {
      * @param key what frames are sealed with.
      * @param sas the six digits both devices show their user. Equal on both
      *   sides exactly when both sides are talking to each other.
+     * @param direction which way this side sends: 0 or 1, opposite on the two
+     *   sides. Authenticated with every frame, so a frame cannot be bounced
+     *   back to the device that sealed it.
      */
-    class Session(private val key: ByteArray, val sas: String) {
+    class Session(private val key: ByteArray, val sas: String, private val direction: Int) {
 
-        /** [plaintext] sealed under this session, as nonce followed by ciphertext. */
+        private val sent = java.util.concurrent.atomic.AtomicLong(0)
+
+        /** The highest sequence number [open] has accepted. Guarded by `this`. */
+        private var lastReceived = 0L
+
+        /** The key itself, for tests that check two legs agreed different ones. */
+        internal fun keyBytes(): ByteArray = key.copyOf()
+
+        /**
+         * [plaintext] sealed under this session, as sequence number, nonce and
+         * ciphertext. The sequence number is in the clear but authenticated
+         * along with the direction, so changing either makes the frame fail to
+         * open.
+         */
         fun seal(plaintext: ByteArray): ByteArray {
+            val sequence = sent.incrementAndGet()
+            val header = sequenceBytes(sequence)
             val nonce = ByteArray(NONCE_BYTES).also { random.nextBytes(it) }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(
@@ -105,28 +160,48 @@ object RoomCrypto {
                 SecretKeySpec(key, "AES"),
                 GCMParameterSpec(GCM_TAG_BITS, nonce),
             )
-            return nonce + cipher.doFinal(plaintext)
+            cipher.updateAAD(associatedData(direction, header))
+            return header + nonce + cipher.doFinal(plaintext)
         }
 
         /**
          * [sealed] opened, or null.
          *
          * Null covers every failure the same way — truncated, tampered, sealed
-         * under another key — because a caller has nothing useful to do with the
-         * difference and an attacker would like to know which it was.
+         * under another key, replayed, reflected — because a caller has nothing
+         * useful to do with the difference and an attacker would like to know
+         * which it was. Only a frame that authenticates moves the replay
+         * window, so garbage cannot push it forward.
          */
+        @Synchronized
         fun open(sealed: ByteArray): ByteArray? {
-            if (sealed.size <= NONCE_BYTES) return null
-            return runCatching {
+            if (sealed.size < SEQUENCE_BYTES + NONCE_BYTES + GCM_TAG_BYTES) return null
+            val header = sealed.copyOf(SEQUENCE_BYTES)
+            val sequence = java.nio.ByteBuffer.wrap(header).long
+            if (sequence <= lastReceived) return null
+            val opened = runCatching {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(
                     Cipher.DECRYPT_MODE,
                     SecretKeySpec(key, "AES"),
-                    GCMParameterSpec(GCM_TAG_BITS, sealed.copyOf(NONCE_BYTES)),
+                    GCMParameterSpec(
+                        GCM_TAG_BITS,
+                        sealed.copyOfRange(SEQUENCE_BYTES, SEQUENCE_BYTES + NONCE_BYTES),
+                    ),
                 )
-                cipher.doFinal(sealed, NONCE_BYTES, sealed.size - NONCE_BYTES)
-            }.getOrNull()
+                cipher.updateAAD(associatedData(1 - direction, header))
+                val offset = SEQUENCE_BYTES + NONCE_BYTES
+                cipher.doFinal(sealed, offset, sealed.size - offset)
+            }.getOrNull() ?: return null
+            lastReceived = sequence
+            return opened
         }
+
+        private fun sequenceBytes(sequence: Long): ByteArray =
+            java.nio.ByteBuffer.allocate(SEQUENCE_BYTES).putLong(sequence).array()
+
+        private fun associatedData(direction: Int, header: ByteArray): ByteArray =
+            byteArrayOf(direction.toByte()) + header
     }
 
     /**
@@ -158,6 +233,9 @@ object RoomCrypto {
         Session(
             key = hkdfExpand(prk, "sir-match-a-lot room key".toByteArray(), 32),
             sas = sasOf(hkdfExpand(prk, "sir-match-a-lot room sas".toByteArray(), 8)),
+            // The same sort the transcript uses, so the two sides pick
+            // opposite directions without either needing to know it is "host".
+            direction = if (compare(encodePublicKey(ownKeys.public), encodePublicKey(peerKey)) <= 0) 0 else 1,
         )
     }.getOrNull()
 

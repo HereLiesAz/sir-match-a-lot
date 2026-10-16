@@ -131,16 +131,23 @@ class SyncServerTest {
 
         private var transcript: ByteArray? = null
 
+        /** A key to reveal in place of the one committed to — the attack. */
+        var revealedKey: ByteArray? = null
+
+        /** The last sealed frame [sendSealed] put on the wire, for replaying. */
+        var lastSealed: JSONObject? = null
+
         /**
          * Says hello, waits for the host's key, and then sends this device's
          * name and claimed identity sealed — exactly as the app does now that
          * neither travels in the clear with `hello` any more.
          */
         fun startPairing(roomCode: String) {
+            val ownKey = RoomCrypto.encodePublicKey(keys.public)
             send(
                 JSONObject()
                     .put("type", "hello")
-                    .put("key", WebSocketProtocol.base64(RoomCrypto.encodePublicKey(keys.public))),
+                    .put("commit", WebSocketProtocol.base64(RoomCrypto.commitmentOf(ownKey))),
             )
             val ack = nextOfType("hello_ack")
             assertNotNull("the host must answer hello", ack)
@@ -150,6 +157,11 @@ class SyncServerTest {
             assertNotNull(hostKey)
             session = RoomCrypto.agree(keys, hostKey!!, roomCode)
             assertNotNull("the exchange must produce a session", session)
+            send(
+                JSONObject()
+                    .put("type", "reveal")
+                    .put("key", WebSocketProtocol.base64(revealedKey ?: ownKey)),
+            )
             transcript = RoomCrypto.transcriptOf(
                 RoomCrypto.encodePublicKey(keys.public),
                 WebSocketProtocol.decodeBase64(ack.getString("key"))!!,
@@ -191,16 +203,16 @@ class SyncServerTest {
         /** Sends [message] sealed, which is the only way the room accepts one. */
         fun sendSealed(message: JSONObject) {
             val current = session ?: throw AssertionError("no session; call startPairing first")
-            send(
-                JSONObject()
-                    .put("type", "sealed")
-                    .put(
-                        "data",
-                        WebSocketProtocol.base64(
-                            current.seal(message.toString().toByteArray(Charsets.UTF_8)),
-                        ),
+            val envelope = JSONObject()
+                .put("type", "sealed")
+                .put(
+                    "data",
+                    WebSocketProtocol.base64(
+                        current.seal(message.toString().toByteArray(Charsets.UTF_8)),
                     ),
-            )
+                )
+            lastSealed = envelope
+            send(envelope)
         }
 
         /** The next sealed message of [type], opened. */
@@ -565,6 +577,83 @@ class SyncServerTest {
                 .put("payload", JSONObject().put("padId", 3)),
         )
         assertNull("nor reach the engine", acted.poll(1, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `room broadcasts reach only approved peers`() {
+        // A device that has agreed a key holds a session it can open frames
+        // with — and the broadcast used to check nothing else, so an unapproved
+        // device sitting at the door heard every crossfader move and track load.
+        val server = startServer(code = "ABCD")
+        val member = join(server, "ABCD")
+        assertNotNull(member.nextSealed("init_state"))
+        val waiting = pair(server, "ABCD")
+        waiting.sendSealed(JSONObject().put("type", "join").put("roomCode", "ABCD"))
+
+        server.updateState(JSONObject().put("crossfader", 12))
+        server.broadcastEvent("play_sampler_pad", JSONObject().put("padId", 1))
+
+        assertNotNull("the member must hear the update", member.nextSealed("state_synced"))
+        assertNull("the unapproved device must not", waiting.nextSealed("state_synced", 600))
+        assertNull("nor the event", waiting.nextSealed("event_triggered", 300))
+    }
+
+    @Test
+    fun `a replayed frame is not acted on twice`() {
+        val server = startServer()
+        val acted = ArrayBlockingQueue<Pair<String, JSONObject>>(4)
+        server.onEvent = { event, payload -> acted.offer(event to payload) }
+        val peer = join(server)
+        assertNotNull(peer.nextSealed("init_state"))
+
+        peer.sendSealed(
+            JSONObject()
+                .put("type", "trigger_event")
+                .put("event", "play_sampler_pad")
+                .put("payload", JSONObject().put("padId", 3)),
+        )
+        assertNotNull("the original must play", acted.poll(2, TimeUnit.SECONDS))
+
+        // Exactly the bytes a listener on the network recorded, sent again.
+        peer.send(peer.lastSealed!!)
+        assertNull("the recording must not play again", acted.poll(800, TimeUnit.MILLISECONDS))
+    }
+
+    @Test
+    fun `a key that does not match its commitment ends the exchange`() {
+        // The move a device in the middle grinding for matching digits has to
+        // make: commit to one key, then — having seen the host's — reveal a
+        // different one it has searched for.
+        val server = startServer(code = "ABCD")
+        val asked = ArrayBlockingQueue<SyncServer.PendingPeer>(4)
+        server.onPairingRequested = { asked.offer(it) }
+
+        val peer = connect(server).also {
+            it.revealedKey = RoomCrypto.encodePublicKey(RoomCrypto.newKeyPair().public)
+        }
+        // The host may close before the last frame of the pairing is written.
+        runCatching { peer.startPairing("ABCD") }
+
+        assertNull("no session may be agreed", peer.nextSealed("identify", 800))
+        assertNull("and nobody asked about it", asked.poll(300, TimeUnit.MILLISECONDS))
+    }
+
+    @Test
+    fun `a full room turns further connections away`() {
+        val server = startServer()
+        val held = (1..SyncServer.MAX_CLIENTS).map { connect(server) }
+        assertEquals(SyncServer.MAX_CLIENTS, held.size)
+
+        Socket("127.0.0.1", server.port).use { socket ->
+            socket.soTimeout = 2_000
+            runCatching {
+                socket.getOutputStream().write("GET / HTTP/1.1\r\nHost: x\r\n\r\n".toByteArray())
+                socket.getOutputStream().flush()
+            }
+            // Closed without an answer, rather than served.
+            val read = runCatching { socket.getInputStream().read() }.getOrDefault(-1)
+            assertEquals(-1, read)
+        }
     }
 
     @Test

@@ -176,6 +176,13 @@ class RoomSession(
         _pendingHostPairing.value = null
     }
 
+    /** Final teardown: stops hosting, leaves any room, and releases the client's threads. Not reusable after. */
+    fun close() {
+        runCatching { stopHosting() }
+        runCatching { leaveRoom() }
+        syncClient.close()
+    }
+
     /** This machine's user confirms the digits match the host's screen. */
     fun approveHostPairing() {
         _pendingHostPairing.value = null

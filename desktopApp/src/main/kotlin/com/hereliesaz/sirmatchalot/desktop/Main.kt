@@ -65,8 +65,7 @@ private fun runApplication() = application {
             // Tear down everything holding a socket or a thread, so the
             // process actually exits and peers see this device leave rather
             // than time out. leaveRoom also stops any LAN discovery broadcast.
-            runCatching { roomSession.stopHosting() }
-            runCatching { roomSession.leaveRoom() }
+            runCatching { roomSession.close() }
             library.close()
             playback.release()
             exitApplication()

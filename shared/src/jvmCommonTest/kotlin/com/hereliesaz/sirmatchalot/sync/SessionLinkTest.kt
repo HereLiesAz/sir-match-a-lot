@@ -110,6 +110,22 @@ class SessionLinkTest {
     }
 
     @Test
+    fun `a title with a separator and no artist survives the round trip`() {
+        // "Eple - Remix" with no artist used to be written as exactly that,
+        // and read back as a track called "Remix" by an artist called "Eple".
+        val track = SessionLink.TrackRef("Eple - Remix", "")
+        val restored = SessionLink.fromUrl(SessionLink(deckA = listOf(track)).toUrl())
+        assertEquals(listOf(track), restored.deckA)
+    }
+
+    @Test
+    fun `a fragment is not read as part of the last parameter`() {
+        val restored = SessionLink.fromUrl("https://example.com/?a=A%20-%20T&room=ABCD#top")
+        assertEquals("ABCD", restored.roomCode)
+        assertEquals("T", restored.deckA[0].title)
+    }
+
+    @Test
     fun `an empty session produces a bare link`() {
         val url = SessionLink().toUrl()
         assertTrue(url, !url.contains("?"))
