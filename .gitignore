@@ -17,3 +17,4 @@ local.properties
 
 # Written from the GOOGLE_SERVICES secret by CI; never a checked-in file.
 /app/google-services.json
+.hotswan/
