@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="shared-desktop">
+    <output-path>$PROJECT_DIR$/shared/build/libs</output-path>
+    <root id="archive" name="shared-desktop.jar">
+      <element id="module-output" name="Sir_Match-a-Lot.shared.desktopMain" />
+    </root>
+  </artifact>
+</component>

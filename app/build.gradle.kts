@@ -29,7 +29,12 @@ val patch = versionProp("versionPatch", "patch") ?: 20
 // gets a strictly-increasing code (commit count only ever grows). When the override is absent (local
 // builds, Android Studio) we keep the previous behavior: auto-increment a counter in
 // version.properties on each build task.
-val versionBuildOverride = project.findProperty("versionBuild")?.toString()?.toIntOrNull()
+val rawVersionBuildOverride = project.findProperty("versionBuild")?.toString()?.trim()?.toLongOrNull()
+// The central workflows sometimes pass a full versionCode (e.g. 50000257) as -PversionBuild.
+// Anything past five digits is treated as that: used verbatim as versionCode, its low five
+// digits as the build number, instead of failing the range check below.
+val fullVersionCodeOverride = rawVersionBuildOverride?.takeIf { it >= 100_000L }
+val versionBuildOverride = rawVersionBuildOverride?.let { (it % 100_000L).toInt() }
 var buildNumber = versionBuildOverride ?: (versionProp("versionBuild") ?: 0)
 
 val isBuildTask = gradle.startParameter.taskNames.any { taskName ->
@@ -58,7 +63,8 @@ require(buildNumber in 0 until 100_000) {
 require(major >= 0 && minor in 0..99 && patch in 0..99) {
     "Version $major.$minor.$patch cannot be encoded in versionCode (minor and patch must be 0..99)."
 }
-val encodedVersionCode = (major * 10000L + minor * 100L + patch) * 100_000L + buildNumber
+val encodedVersionCode = fullVersionCodeOverride
+    ?: ((major * 10000L + minor * 100L + patch) * 100_000L + buildNumber)
 require(encodedVersionCode <= 2_100_000_000L) {
     "versionCode $encodedVersionCode exceeds Play's limit of 2100000000."
 }
