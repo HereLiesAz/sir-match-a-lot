@@ -1,26 +1,26 @@
 [versions]
-androidGradlePlugin = "9.3.1"
-androidxCore = "1.19.0"
+androidGradlePlugin = "9.4.1"
+androidxCore = "1.19.1"
 androidxLifecycle = "2.11.0"
 androidxActivity = "1.13.0"
-androidxComposeBom = "2026.06.01"
+androidxComposeBom = "2026.09.00"
 androidxTest = "1.7.0"
 androidxTestExt = "1.3.0"
 androidxTestRunner = "1.7.0"
 androidxTestEspresso = "3.7.0" 
 coroutines = "1.11.0"
 junit = "4.13.2"
-kotlin = "2.4.10"
-kotlinxSerializationJson = "1.11.0"
-nav3Core = "1.1.4"
+kotlin = "2.4.21"
+kotlinxSerializationJson = "1.12.0"
+nav3Core = "1.2.0"
 lifecycleViewmodelNav3 = "2.11.0"
-room = "2.8.4"
-okhttp = "5.4.0"
+room = "2.8.5"
+okhttp = "5.5.1"
 # Real SQLite for JVM tests, so migration SQL is executed rather than only read.
-sqliteJdbc = "3.53.2.1"
-json = "20260719"
+sqliteJdbc = "3.53.4.0"
+json = "20260814"
 # Paired with kotlin = "2.4.10" per JetBrains' compatibility table.
-composeMultiplatform = "1.11.1"
+composeMultiplatform = "1.12.2"
 # Compose Hot Reload's minimum supported Compose Multiplatform version is
 # 1.10.0, so 1.11.1 above qualifies. 1.2.0 is the first stable release with
 # the MCP server (reload/screenshot/semantic-tree/click tools for an agent
