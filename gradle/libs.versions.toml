@@ -37,7 +37,7 @@ ksp = "2.3.12"
 # Firebase is gone and that constraint with it, but this app calls
 # registerForActivityResult on MainActivity, so the floor stays stated rather
 # than inherited from whatever else happens to pull fragment in.
-androidxFragment = "1.8.6"
+androidxFragment = "1.9.1"
 
 [libraries]
 androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidxFragment" }
