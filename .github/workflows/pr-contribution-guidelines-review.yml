@@ -37,6 +37,9 @@ jobs:
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
       )
     runs-on: ubuntu-latest
+    # The secrets context is not allowed in step-level `if:`; expose key presence via env.
+    env:
+      HAS_GEMINI_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
 
     steps:
       - name: Checkout repository
@@ -108,7 +111,7 @@ jobs:
 
       - name: Validate PR against CONTRIBUTING.md
         id: gemini
-        if: ${{ secrets.GEMINI_API_KEY != '' }}
+        if: env.HAS_GEMINI_KEY == 'true'
         uses: google-github-actions/run-gemini-cli@v0
         env:
           # gh CLI inside Gemini
