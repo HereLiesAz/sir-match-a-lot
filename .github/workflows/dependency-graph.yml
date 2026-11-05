@@ -31,13 +31,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: '21'
           distribution: 'temurin'
 
       - name: Submit dependency graph
-        uses: gradle/actions/dependency-submission@v4
+        uses: gradle/actions/dependency-submission@v6
         env:
           # Report only the shipped release runtime classpaths; skip buildscript / plugin classpaths
           # (named "classpath") so build-time-only transitives aren't flagged by Dependabot.
