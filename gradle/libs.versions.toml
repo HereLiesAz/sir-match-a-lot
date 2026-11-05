@@ -1,5 +1,5 @@
 [versions]
-androidGradlePlugin = "9.4.1"
+androidGradlePlugin = "9.5.0"
 androidxCore = "1.19.1"
 androidxLifecycle = "2.11.0"
 androidxActivity = "1.13.0"
@@ -37,7 +37,7 @@ ksp = "2.3.13"
 # Firebase is gone and that constraint with it, but this app calls
 # registerForActivityResult on MainActivity, so the floor stays stated rather
 # than inherited from whatever else happens to pull fragment in.
-androidxFragment = "1.8.6"
+androidxFragment = "1.9.1"
 
 [libraries]
 androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidxFragment" }
