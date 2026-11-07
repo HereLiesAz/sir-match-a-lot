@@ -2149,6 +2149,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         _mixPlan.value = MixPlanner.planFor(edit(queueOrder()))
     }
 
+    /** Plays the queue from [index]: a tap on a row, "next" and "previous". */
+    fun playFrom(index: Int) {
+        if (index !in queueOrder().indices) return
+        startAutomatchicMix(from = index)
+    }
+
+    /** Skips to the next track. A hard cut, as on any player; at the end it stops. */
+    fun skipNext() {
+        val current = queueIndex.value
+        if (current < 0) return
+        if (current >= queueOrder().lastIndex) stopAutomatchicMix() else playFrom(current + 1)
+    }
+
+    /** Back to the previous track, or to the start of the first. */
+    fun skipPrevious() {
+        val current = queueIndex.value
+        if (current < 0) return
+        playFrom((current - 1).coerceAtLeast(0))
+    }
+
     fun queueMove(from: Int, to: Int) = editQueue { QueueOps.moved(it, from, to) }
 
     fun queueRemove(index: Int) = editQueue { QueueOps.removed(it, index) }
@@ -2183,6 +2203,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     private val _nowPlaying = MutableStateFlow<MixCommand.NowPlaying?>(null)
     val nowPlaying: StateFlow<MixCommand.NowPlaying?> = _nowPlaying
+
+    /** Where in the whole queue the director's own plan begins (non-zero after a skip). */
+    private val _playOffset = MutableStateFlow(0)
+
+    /** The playing track's place in the whole queue, or -1 when nothing is playing. */
+    val queueIndex: StateFlow<Int> =
+        combine(_nowPlaying, _playOffset, _mixDirector) { now, offset, director ->
+            if (director == null || now == null) -1 else now.index + offset
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, -1)
 
     /** 0..1 through the current transition, for the UI to show a fade in progress. */
     private val _transitionProgress = MutableStateFlow(0f)
@@ -2466,14 +2495,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * assumed to be exact — the elapsed time between iterations is measured and
      * passed in, so a stalled frame does not desynchronise the set.
      */
-    fun startAutomatchicMix() {
-        val plan = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
-        if (plan.steps.isEmpty()) {
+    fun startAutomatchicMix(from: Int = 0) {
+        val full = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
+        if (full.steps.isEmpty()) {
             _feedbackMsg.value = "No analysed tracks to mix"
             return
         }
         stopAutomatchicMix()
         clearDecks()
+        // Starting part-way through is a fresh plan over what is left, so the
+        // opening track plays at its own tempo and everything after aligns to it.
+        // The queue still shows the whole list; [queueIndex] adds the offset back.
+        val start = from.coerceIn(0, full.steps.lastIndex)
+        val plan = if (start == 0) full else MixPlanner.planFor(full.steps.drop(start).map { it.track })
+        _playOffset.value = start
 
         // Seeded from the clock, so running the same library twice is not the
         // same set twice — which is the whole point of the exercise.

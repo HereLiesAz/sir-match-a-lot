@@ -2,6 +2,7 @@ package com.hereliesaz.sirmatchalot.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -61,10 +62,10 @@ fun QueueScreen(
 ) {
     val plan by viewModel.mixPlan.collectAsState()
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
-    val nowPlaying by viewModel.nowPlaying.collectAsState()
+    val queueIndex by viewModel.queueIndex.collectAsState()
 
     val steps = plan?.steps.orEmpty()
-    val currentIndex = if (isAutoMixing) nowPlaying?.index ?: 0 else -1
+    val currentIndex = if (isAutoMixing) queueIndex else -1
 
     LazyColumn(
         modifier = modifier
@@ -87,6 +88,10 @@ fun QueueScreen(
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                     )
+                }
+                if (isAutoMixing) {
+                    QueueButton("PREV", Color(0xFF3F3F46)) { viewModel.skipPrevious() }
+                    QueueButton("NEXT", Color(0xFF3F3F46)) { viewModel.skipNext() }
                 }
                 QueueButton(
                     label = if (isAutoMixing) "STOP" else "PLAY",
@@ -126,6 +131,7 @@ fun QueueScreen(
                 locked = isAutoMixing,
                 isFirst = index == 0,
                 isLast = index == steps.lastIndex,
+                onPlay = { viewModel.playFrom(index) },
                 onUp = { viewModel.queueMove(index, index - 1) },
                 onDown = { viewModel.queueMove(index, index + 1) },
                 onRemove = { viewModel.queueRemove(index) },
@@ -182,6 +188,7 @@ private fun QueueRow(
     locked: Boolean,
     isFirst: Boolean,
     isLast: Boolean,
+    onPlay: () -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
     onRemove: () -> Unit,
@@ -208,6 +215,7 @@ private fun QueueRow(
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF18181B))
                 .border(1.dp, accent, RoundedCornerShape(10.dp))
+                .clickable(onClickLabel = "Play ${track.title}", onClick = onPlay)
                 .padding(start = 10.dp, top = 4.dp, bottom = 4.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
