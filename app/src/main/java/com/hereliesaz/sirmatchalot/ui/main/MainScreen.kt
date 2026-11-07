@@ -129,13 +129,50 @@ fun MainScreen(
     // screen first, then returns to Controls from another tab, and only
     // leaves the app if it was already there with nothing open — the same
     // shape as tapping the bottom nav to get home.
-    BackHandler(enabled = showSyncDialog || showSettings || showWork || currentTab != DjTab.CONTROLS) {
+    //
+    // From Controls with something on the decks, one swipe used to finish the
+    // activity and take the arrangement with it — mid-set, with nothing saved. It
+    // now asks first.
+    val hasDeckContent = !viewModel.platterState.collectAsState().value.isEmpty
+    var showLeaveConfirm by rememberSaveable { mutableStateOf(false) }
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    BackHandler(
+        enabled = showSyncDialog || showSettings || showWork || showLeaveConfirm ||
+            currentTab != DjTab.CONTROLS || hasDeckContent,
+    ) {
         when {
             showSyncDialog -> showSyncDialog = false
             showSettings -> showSettings = false
             showWork -> showWork = false
+            showLeaveConfirm -> showLeaveConfirm = false
             currentTab != DjTab.CONTROLS -> currentTab = DjTab.CONTROLS
+            else -> showLeaveConfirm = true
         }
+    }
+    if (showLeaveConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            containerColor = Color(0xFF18181B),
+            title = { Text("Leave Sir Match-a-Lot?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Text(
+                    "What is on the decks, and any mix playing, will be lost unless you saved it.",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showLeaveConfirm = false
+                    activity?.finish()
+                }) { Text("Leave", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showLeaveConfirm = false }) {
+                    Text("Stay", color = Color.Gray)
+                }
+            },
+        )
     }
 
     Scaffold(
