@@ -250,6 +250,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun endPending(trackId: String) {
+        autoClaims.remove(trackId)
         _pendingClips.value = _pendingClips.value.filterNot { it.id == trackId }
     }
 
@@ -514,6 +515,28 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * decisions and a write across two StateFlows, not a single compare-and-set.
      */
     private val deckMutation = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Decks claimed by taps that have chosen one but not finished loading, by
+     * track id. A tap's load takes seconds and the decks only show a clip once it
+     * lands, so two quick taps both saw "Deck A empty" and stacked on A.
+     */
+    private val autoClaims = java.util.concurrent.ConcurrentHashMap<String, PlatterGeometry.Deck>()
+
+    /**
+     * Loads [track] onto whichever deck a tap should fill: A first, then B, then
+     * keep stacking onto A. The choice counts loads still in flight, and is made
+     * synchronously, so a second tap before the first lands goes to B.
+     */
+    @Synchronized
+    fun loadTrackAuto(track: Track) {
+        val claimed = autoClaims.filterKeys { it != track.id }.values
+        val aEmpty = audioEngine.deckA.clips.isEmpty() && PlatterGeometry.Deck.A !in claimed
+        val bBusy = audioEngine.deckB.clips.isNotEmpty() || PlatterGeometry.Deck.B in claimed
+        val deck = if (aEmpty || bBusy) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B
+        autoClaims[track.id] = deck
+        loadOntoDeck(track, deck)
+    }
 
     fun loadOntoDeck(
         track: Track,

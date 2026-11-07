@@ -760,12 +760,9 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
             override fun onRemoveSelected() = viewModel.removeSelectedClips()
 
             override fun onLoadTrack(track: com.hereliesaz.sirmatchalot.data.Track) {
-                // Fill Deck A first, then Deck B, then keep stacking onto A.
-                val state = viewModel.platterState.value
-                val deck =
-                    if (state.deckA.isEmpty() || state.deckB.isNotEmpty()) PlatterGeometry.Deck.A
-                    else PlatterGeometry.Deck.B
-                viewModel.loadOntoDeck(track, deck)
+                // Fill Deck A first, then Deck B, then keep stacking onto A. Chosen
+                // in the ViewModel, which knows about loads still in flight.
+                viewModel.loadTrackAuto(track)
             }
 
             override fun onDropTrack(
