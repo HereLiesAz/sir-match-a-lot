@@ -173,6 +173,13 @@ shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
     SetArc.kt             energy arc across a planned set
     LoopHarvest.kt        loop candidates for a track
     BeatSnap.kt           snapping a time to the beat grid
+    GridSnap.kt           tiered snapping of one clip's beats/markers onto another's
+                          (bar on bar strong, beat four on beat two medium,
+                          other beats weak; marker on marker strong)
+    MixTimeline.kt        the mix as positions: PlanClip / PlanTransition on a
+                          master (played-back) timeline, plus snapMove()
+    TimelineLayout.kt     lays an ordered MixPlan out on that timeline so every
+                          incoming bar line lands on an outgoing one
     DeckCapacity.kt       how many beats of audio a deck timeline can hold
 
   session/
