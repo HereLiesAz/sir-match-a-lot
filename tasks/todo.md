@@ -64,8 +64,11 @@ tier.
 - [x] Plan screen (first cut): the Queue tab lists the plan, one row per track
       with the score and advice of the transition into it, the track playing
       highlighted, and the tracks the planner left out. Move / remove / shuffle
-      while idle; QUEUE and RADIO on every library track. Not done: lanes and a
-      bar ruler, pinning entry and exit points, editing while a mix plays.
+      while idle; tap to play from a row; PREV and NEXT (hard cuts). While a mix plays
+      the playing and next tracks are locked and everything after them can be
+      reordered, removed or shuffled (`MixDirector.replaceUpcoming`). QUEUE and
+      RADIO on every library track. Not done: lanes and a bar ruler, pinning
+      entry and exit points, a crossfaded skip.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 

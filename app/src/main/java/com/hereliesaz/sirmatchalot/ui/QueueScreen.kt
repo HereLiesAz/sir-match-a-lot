@@ -100,7 +100,7 @@ fun QueueScreen(
                 ) {
                     if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
                 }
-                QueueButton("SHUFFLE", Color(0xFF7C3AED), enabled = !isAutoMixing && steps.size > 1) {
+                QueueButton("SHUFFLE", Color(0xFF7C3AED), enabled = steps.size > 1 && (!isAutoMixing || steps.size > currentIndex + 3)) {
                     viewModel.queueShuffle()
                 }
                 QueueButton("BUILD", Color(0xFFDB2777), enabled = !isAutoMixing) {
@@ -128,7 +128,8 @@ fun QueueScreen(
                 step = step,
                 isCurrent = index == currentIndex,
                 isPast = currentIndex >= 0 && index < currentIndex,
-                locked = isAutoMixing,
+                // The playing track and the one after it are already on the decks.
+                locked = isAutoMixing && index <= currentIndex + 1,
                 isFirst = index == 0,
                 isLast = index == steps.lastIndex,
                 onPlay = { viewModel.playFrom(index) },

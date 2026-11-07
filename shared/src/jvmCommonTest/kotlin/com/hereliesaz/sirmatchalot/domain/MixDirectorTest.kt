@@ -768,4 +768,53 @@ class MixDirectorTest {
             assertTrue("seed $seed left the fader out of range", positions.all { it in 0f..1f })
         }
     }
+
+    // --- Editing the plan while it plays ---
+
+    @Test
+    fun `tracks after the next one can be reordered while the set plays`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c, d))
+        director.start()
+        director.advance(1.0)
+
+        val swapped = MixPlanner.planFor(listOf(a, b, d, c))
+
+        assertTrue(director.replaceUpcoming(swapped))
+        assertEquals(listOf("a", "b", "d", "c"), director.plan.steps.map { it.track.title })
+    }
+
+    @Test
+    fun `the playing track and the next one cannot be changed under the decks`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c, d))
+        director.start()
+
+        // The next track (b) is already being mixed in as far as the decks are concerned.
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(a, c, b, d))))
+        // Nor can the playing one be dropped.
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(b, c, d))))
+        assertEquals(listOf("a", "b", "c", "d"), director.plan.steps.map { it.track.title })
+    }
+
+    @Test
+    fun `a replacement that is too short to keep the next track is refused`() {
+        val a = track("a"); val b = track("b"); val c = track("c")
+        val director = MixDirector(planOf(a, b, c))
+        director.start()
+
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(a))))
+    }
+
+    @Test
+    fun `tracks can be added and removed past the next one`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c))
+        director.start()
+
+        assertTrue(director.replaceUpcoming(MixPlanner.planFor(listOf(a, b, d))))
+        assertEquals(listOf("a", "b", "d"), director.plan.steps.map { it.track.title })
+        assertTrue(director.replaceUpcoming(MixPlanner.planFor(listOf(a, b))))
+        assertEquals(2, director.plan.steps.size)
+    }
 }

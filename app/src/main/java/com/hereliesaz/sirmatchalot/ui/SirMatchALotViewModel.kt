@@ -2140,13 +2140,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     private fun queueOrder(): List<Track> = _mixPlan.value?.steps.orEmpty().map { it.track }
 
-    /** Applies [edit] to the queue and replans it; refused while a mix is playing. */
+    /**
+     * Applies [edit] to the queue and replans it.
+     *
+     * While a mix is playing only what comes after the next track may change: the
+     * playing track and the one being mixed in are already on the decks. The
+     * director is handed the edited plan for what is left, offset back from the
+     * whole queue, and refuses it if either of those two moved.
+     */
     private fun editQueue(edit: (List<Track>) -> List<Track>) {
-        if (_mixDirector.value != null) {
-            _feedbackMsg.value = "Stop the mix to edit the queue"
-            return
+        val edited = edit(queueOrder())
+        val director = _mixDirector.value
+        if (director != null) {
+            val offset = _playOffset.value
+            val remaining = MixPlanner.planFor(edited.drop(offset))
+            if (edited.size < offset || !director.replaceUpcoming(remaining)) {
+                _feedbackMsg.value = "The playing and next tracks can't be changed — edit what comes after"
+                return
+            }
         }
-        _mixPlan.value = MixPlanner.planFor(edit(queueOrder()))
+        _mixPlan.value = MixPlanner.planFor(edited)
     }
 
     /** Plays the queue from [index]: a tap on a row, "next" and "previous". */
@@ -2173,7 +2186,11 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     fun queueRemove(index: Int) = editQueue { QueueOps.removed(it, index) }
 
-    fun queueShuffle() = editQueue { QueueOps.shuffledAfter(it, current = -1) }
+    /** Shuffles the queue; while playing, only what comes after the playing and next tracks. */
+    fun queueShuffle() {
+        val keepThrough = if (_mixDirector.value != null) queueIndex.value + 1 else -1
+        editQueue { QueueOps.shuffledAfter(it, current = keepThrough) }
+    }
 
     /** Adds a library track to the end of the queue. */
     fun queueAdd(track: Track) {
