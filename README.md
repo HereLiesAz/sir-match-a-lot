@@ -34,14 +34,15 @@ met, rather than when a finger lifts, so you can run one straight into another.
 | Gesture | Action |
 | :--- | :--- |
 | 👆 **1 finger** | Manipulate the audio clips themselves |
-| ✌️ **2-finger horizontal** | Crossfade Deck A ↔ Deck B |
-| ✌️ **2-finger vertical** | Smart scratch — slows through zero into reverse, pitch following like a real turntable |
+| 👆 **1 finger, on bare platter** | Scratch — with the playhead free, drag it and the track slows through zero into reverse, pitch following like a real turntable; with it locked, spin the platter view instead |
 | 🎛️ **2-finger rotate** | Master volume, with the feel of a knob |
 | 🤏 **2-finger pinch/spread** | Bass boost |
 | 🖐️ **3 fingers** | Move, zoom and rotate the whole platter, to work precisely on part of a track |
 | **Tap** | Select the waveform under your finger on that deck |
 | **Double tap** | Select both decks' waveforms at that spot |
-| **Long press** | Remove the selected track(s) |
+| **Long press** | Remove the selected track(s), after asking |
+
+The crossfader is the slider under the platter. Two-finger horizontal and vertical drags are still recognised but deliberately do nothing: the crossfader has its own slider, and scratching moved to the one-finger drag above.
 
 While a gesture runs, its name appears at a clock position around the platter and
 floats upward, dissolving the instant the gesture ends.

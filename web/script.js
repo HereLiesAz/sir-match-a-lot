@@ -36,16 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
             from: [['55%', '35%']],
             to: [['45%', '65%']],
         },
-        'drag-2-h': {
-            caption: '2-Finger Horizontal — crossfader',
-            from: [['40%', '30%'], ['60%', '30%']],
-            to: [['40%', '70%'], ['60%', '70%']],
-        },
-        'drag-2-v': {
-            caption: '2-Finger Vertical — smart scratch, into reverse',
-            from: [['30%', '40%'], ['30%', '60%']],
-            to: [['70%', '40%'], ['70%', '60%']],
-        },
         'rotate-2': {
             caption: '2-Finger Rotate — master volume',
             from: [['50%', '30%'], ['50%', '70%']],
