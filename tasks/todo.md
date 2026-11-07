@@ -42,9 +42,17 @@ tier.
       schema 5.json), measured by `TrackAnalyzer` (drops, builds, breakdowns,
       vocal entry), read by the ViewModel instead of recomputing on every load.
       `CURRENT_ANALYSIS_VERSION` is now 2, so existing tracks are re-analysed.
-- [ ] Beat anchors (a drift-free per-beat grid) and time signature: need a beat
-      tracker and a meter detector; the grid is still one phase and one tempo,
-      and four four is assumed.
+- [x] Tempo accurate enough to hold a grid for a whole track: `TempoDetector`
+      now fits a weighted line through where the beats actually fall
+      (progressively, so a coarse period cannot lose the beat), instead of
+      stopping at one frame plus a parabola. Synthetic clicks: tempo within 0.05
+      BPM, grid within 40 ms after 300 s (was 0.3% off and 80 ms+). Real music
+      is untested, and a track whose tempo genuinely drifts needs per-beat
+      anchors, which this does not provide.
+- [ ] Time signature: no meter detector; four four is assumed everywhere.
+- [ ] Octave errors: the base detector reads some tempi at half or double
+      (121.5 BPM came out as 60.75); refinement makes the reading precise, not
+      right.
 - [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
       dragged clip against the clips on both decks, in conformed time, so bars
       land on bars and drops on drops. Over empty timeline the old session-grid
