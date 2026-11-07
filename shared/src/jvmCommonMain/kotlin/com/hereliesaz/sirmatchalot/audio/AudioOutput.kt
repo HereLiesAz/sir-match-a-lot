@@ -241,17 +241,15 @@ class AudioEngine(
      * from the UI and called `seekTo` whenever drift exceeded 40 ms, which could
      * not converge because the correction was coarser than the error.
      *
-     * @param phaseOffsetSeconds positive shifts the deck later.
+     * @param phaseOffsetSeconds positive moves the deck's beats later. See
+     *   [Deck.alignTo] for how that becomes a playhead nudge.
      */
     fun applyAlignment(deckName: String, tempoRatio: Double, phaseOffsetSeconds: Double) {
         val deck = if (deckName == "A") deckA else deckB
-        deck.rate = tempoRatio
-        // Delegates the playhead shift to nudgeSeconds rather than reading
-        // and rewriting deck.playhead here directly: this used to be a plain
-        // read-modify-write racing the render thread's own end-of-block
-        // write to the same field — exactly what playheadLock exists to
-        // prevent, and what nudgeSeconds already does correctly.
-        deck.nudgeSeconds(phaseOffsetSeconds)
+        // Goes through Deck.alignTo, which does the shift under the playhead
+        // lock: this used to be a plain read-modify-write racing the render
+        // thread's own end-of-block write to the same field.
+        deck.alignTo(tempoRatio, phaseOffsetSeconds)
     }
 
     // The rate deck B was actually running at before a scratch began — not
