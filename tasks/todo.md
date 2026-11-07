@@ -34,7 +34,11 @@ tier.
       a deck already moved to a bar-snapped entry. Should be computed from the
       outgoing deck's beat phase at the moment of the start, on the bar.
 - [ ] Persist beat anchors, time signature and markers in analysis.
-- [ ] Wire `GridSnap` into the ViewModel in place of `BeatSnap`.
+- [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
+      dragged clip against the clips on both decks, in conformed time, so bars
+      land on bars and drops on drops. Over empty timeline the old session-grid
+      snap still applies. Not yet done: pinch-stretch (`snapRatio`), cue
+      placement, desktop.
 - [ ] Plan screen: lanes, bar ruler, transitions, reorder, pin entry/exit.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
