@@ -51,6 +51,8 @@ fun LibraryScreen(
     val transitionProgress by viewModel.transitionProgress.collectAsState()
     val transitionStyle by viewModel.transitionStyle.collectAsState()
     val analysisProgress by viewModel.analysisProgress.collectAsState()
+    val platterState by viewModel.platterState.collectAsState()
+    val wipeGuard = rememberWipeGuard(hasClips = !platterState.isEmpty)
     var linkInput by rememberSaveable { mutableStateOf("") }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -308,7 +310,7 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
-                    onClick = { viewModel.shuffleCrate() },
+                    onClick = { wipeGuard.run { viewModel.shuffleCrate() } },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
                     shape = RoundedCornerShape(12.dp),
                 ) {
@@ -323,7 +325,7 @@ fun LibraryScreen(
                 }
                 Button(
                     onClick = {
-                        if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+                        if (isAutoMixing) viewModel.stopAutomatchicMix() else wipeGuard.run { viewModel.startAutomatchicMix() }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
@@ -504,7 +506,7 @@ fun LibraryScreen(
                 onLoadA = { viewModel.addTrackToDeckA(track) },
                 onLoadB = { viewModel.addTrackToDeckB(track) },
                 onQueue = { viewModel.queueAdd(track) },
-                onRadio = { viewModel.startRadio(track) },
+                onRadio = { wipeGuard.run { viewModel.startRadio(track) } },
                 onDelete = { viewModel.deleteTrack(track) }
             )
             Spacer(Modifier.height(8.dp))

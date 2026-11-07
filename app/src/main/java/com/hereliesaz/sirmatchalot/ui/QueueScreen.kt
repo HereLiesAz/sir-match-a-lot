@@ -63,6 +63,8 @@ fun QueueScreen(
     val plan by viewModel.mixPlan.collectAsState()
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val queueIndex by viewModel.queueIndex.collectAsState()
+    val platterState by viewModel.platterState.collectAsState()
+    val wipeGuard = rememberWipeGuard(hasClips = !platterState.isEmpty && !isAutoMixing)
 
     val steps = plan?.steps.orEmpty()
     val currentIndex = if (isAutoMixing) queueIndex else -1
@@ -98,7 +100,7 @@ fun QueueScreen(
                     color = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
                     enabled = isAutoMixing || steps.isNotEmpty(),
                 ) {
-                    if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+                    if (isAutoMixing) viewModel.stopAutomatchicMix() else wipeGuard.run { viewModel.startAutomatchicMix() }
                 }
                 QueueButton("SHUFFLE", Color(0xFF7C3AED), enabled = steps.size > 1 && (!isAutoMixing || steps.size > currentIndex + 3)) {
                     viewModel.queueShuffle()
@@ -132,7 +134,7 @@ fun QueueScreen(
                 locked = isAutoMixing && index <= currentIndex + 1,
                 isFirst = index == 0,
                 isLast = index == steps.lastIndex,
-                onPlay = { viewModel.playFrom(index) },
+                onPlay = { if (isAutoMixing) viewModel.playFrom(index) else wipeGuard.run { viewModel.playFrom(index) } },
                 onUp = { viewModel.queueMove(index, index - 1) },
                 onDown = { viewModel.queueMove(index, index + 1) },
                 onRemove = { viewModel.queueRemove(index) },
