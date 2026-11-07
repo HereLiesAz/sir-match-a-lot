@@ -622,6 +622,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     // Landmarks come from the energy curve that was just cached, so
                     // marking the drops costs no decode and no second analysis pass.
                     poiCache.getOrPut(track.id) {
+                        // Measured at analysis and stored: a track analysed by a
+                        // version that keeps landmarks needs no recompute here.
+                        if (track.markersCsv != null) return@getOrPut track.markers
                         val curve = energyCache[track.id]
                         if (curve == null) {
                             emptyList()

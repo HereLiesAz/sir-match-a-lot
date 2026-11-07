@@ -38,7 +38,13 @@ tier.
       writing the other, not sample-accurate; `BeatSync.align` itself still
       compares first beats at t=0 (used only for unconformed clips and the
       SYNC button).
-- [ ] Persist beat anchors, time signature and markers in analysis.
+- [x] Persist markers in analysis: `Track.markersCsv` (Room v5, migration 4->5,
+      schema 5.json), measured by `TrackAnalyzer` (drops, builds, breakdowns,
+      vocal entry), read by the ViewModel instead of recomputing on every load.
+      `CURRENT_ANALYSIS_VERSION` is now 2, so existing tracks are re-analysed.
+- [ ] Beat anchors (a drift-free per-beat grid) and time signature: need a beat
+      tracker and a meter detector; the grid is still one phase and one tempo,
+      and four four is assumed.
 - [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
       dragged clip against the clips on both decks, in conformed time, so bars
       land on bars and drops on drops. Over empty timeline the old session-grid

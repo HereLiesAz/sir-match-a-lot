@@ -6,7 +6,11 @@ import com.hereliesaz.sirmatchalot.dsp.BeatGrid
 import com.hereliesaz.sirmatchalot.dsp.EnergyCurve
 import com.hereliesaz.sirmatchalot.dsp.KeyDetector
 import com.hereliesaz.sirmatchalot.dsp.OnsetDetector
+import com.hereliesaz.sirmatchalot.dsp.BandEnergyCurve
 import com.hereliesaz.sirmatchalot.dsp.PeakEnvelope
+import com.hereliesaz.sirmatchalot.dsp.PointOfInterest
+import com.hereliesaz.sirmatchalot.dsp.StructureFinder
+import com.hereliesaz.sirmatchalot.dsp.VocalDetector
 import com.hereliesaz.sirmatchalot.dsp.TempoDetector
 
 /**
@@ -26,6 +30,8 @@ import com.hereliesaz.sirmatchalot.dsp.TempoDetector
  * @param keyConfidence 0..1, margin over the runner-up key.
  * @param energyCurve energy over time, for the ring around the platter.
  * @param peaks min/max envelope for drawing the waveform.
+ * @param points structural landmarks (drops, builds, breakdowns, vocal entry),
+ *   empty when none were found or the structure pass failed.
  */
 data class TrackAnalysis(
     val durationSeconds: Double,
@@ -38,6 +44,7 @@ data class TrackAnalysis(
     val keyConfidence: Float,
     val energyCurve: EnergyCurve,
     val peaks: PeakEnvelope,
+    val points: List<PointOfInterest> = emptyList(),
 ) {
     /** 1..10 energy rating for the library UI. */
     val energyLevel: Int get() = energyCurve.energyLevel()
@@ -112,6 +119,17 @@ class TrackAnalyzer(
         val key = keyDetector.detect(mono, sampleRate)
             ?.takeIf { it.confidence >= minimumKeyConfidence }
 
+        val energyCurve = EnergyCurve.compute(mono, sampleRate)
+
+        // Landmarks are enrichment on a track that is otherwise fully measured:
+        // a failure here costs the drops, not the analysis.
+        val points = runCatching {
+            val bands = BandEnergyCurve.compute(mono, sampleRate)
+            val structural = StructureFinder().findPointsOfInterest(energyCurve, beatGrid, bands = bands)
+            val vocal = VocalDetector().findVocalEntry(mono, sampleRate)
+            if (vocal == null) structural else structural + vocal
+        }.getOrDefault(emptyList())
+
         TrackAnalysis(
             durationSeconds = pcm.durationSeconds,
             sampleRate = sampleRate,
@@ -121,8 +139,9 @@ class TrackAnalyzer(
             camelotKey = key?.let { HarmonicEngine.camelotFor(it) },
             keyName = key?.name,
             keyConfidence = key?.confidence ?: 0f,
-            energyCurve = EnergyCurve.compute(mono, sampleRate),
+            energyCurve = energyCurve,
             peaks = PeakEnvelope.compute(mono, peakBuckets),
+            points = points,
         )
     }
 

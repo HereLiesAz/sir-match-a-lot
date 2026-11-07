@@ -69,7 +69,7 @@ interface TrackDao {
             "camelotKey = :camelotKey, keyName = :keyName, keyConfidence = :keyConfidence, " +
             "energyLevel = :energyLevel, durationMs = :durationMs, sampleRate = :sampleRate, " +
             "trimStartMs = :trimStartMs, trimEndMs = :trimEndMs, peaksPath = :peaksPath, " +
-            "energyPath = :energyPath, analysisVersion = :analysisVersion WHERE id = :id",
+            "energyPath = :energyPath, markersCsv = :markersCsv, analysisVersion = :analysisVersion WHERE id = :id",
     )
     suspend fun updateAnalysis(
         id: String,
@@ -87,6 +87,7 @@ interface TrackDao {
         trimEndMs: Long,
         peaksPath: String?,
         energyPath: String?,
+        markersCsv: String?,
         analysisVersion: Int,
     )
 
@@ -107,6 +108,7 @@ interface TrackDao {
         trimEndMs = columns.trimEndMs,
         peaksPath = columns.peaksPath,
         energyPath = columns.energyPath,
+        markersCsv = columns.markersCsv,
         analysisVersion = columns.analysisVersion,
     )
 
