@@ -503,6 +503,8 @@ fun LibraryScreen(
                 track = track,
                 onLoadA = { viewModel.addTrackToDeckA(track) },
                 onLoadB = { viewModel.addTrackToDeckB(track) },
+                onQueue = { viewModel.queueAdd(track) },
+                onRadio = { viewModel.startRadio(track) },
                 onDelete = { viewModel.deleteTrack(track) }
             )
             Spacer(Modifier.height(8.dp))
@@ -523,6 +525,8 @@ fun TrackRowItem(
     track: Track,
     onLoadA: () -> Unit,
     onLoadB: () -> Unit,
+    onQueue: () -> Unit,
+    onRadio: () -> Unit,
     onDelete: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -645,6 +649,24 @@ fun TrackRowItem(
                         modifier = Modifier.height(28.dp)
                     ) {
                         Text("LOAD DECK B", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                    }
+                    Button(
+                        onClick = onQueue,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("QUEUE", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                    }
+                    Button(
+                        onClick = onRadio,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDB2777)),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("RADIO", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
                     }
                 }
 

@@ -180,6 +180,11 @@ shared/src/jvmCommonMain/kotlin/com/hereliesaz/sirmatchalot/
                           master (played-back) timeline, plus snapMove()
     TimelineLayout.kt     lays an ordered MixPlan out on that timeline so every
                           incoming bar line lands on an outgoing one
+    ClipSnapper.kt        ClipMusic / PlacedClip: snaps a dropped or dragged clip
+                          against the clips on both decks, in conformed time;
+                          bar and beat arithmetic for starts and cues
+    QueueOps.kt           editing a play queue (move, remove, insert, play next,
+                          shuffle the rest, radio from a track)
     DeckCapacity.kt       how many beats of audio a deck timeline can hold
 
   session/

@@ -25,6 +25,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
+import com.hereliesaz.sirmatchalot.ui.QueueScreen
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterActions
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterScreen
@@ -32,7 +33,7 @@ import com.hereliesaz.sirmatchalot.ui.SamplerScreen
 import com.hereliesaz.sirmatchalot.sync.SyncRole
 
 enum class DjTab {
-    LIBRARY, CONTROLS, PERFORMANCE
+    LIBRARY, CONTROLS, PERFORMANCE, QUEUE
 }
 
 /**
@@ -331,6 +332,21 @@ fun MainScreen(
                         )
                     )
 
+                    NavigationBarItem(
+                        selected = currentTab == DjTab.QUEUE,
+                        enabled = role.allows(DjTab.QUEUE),
+                        onClick = { currentTab = DjTab.QUEUE },
+                        label = { Text("Queue", fontSize = 10.sp) },
+                        icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Queue") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Cyan,
+                            selectedTextColor = Color.Cyan,
+                            unselectedIconColor = Color.Gray,
+                            unselectedTextColor = Color.Gray,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+
                     // Play/pause is not here any more. It is at the centre of
                     // the platter, under the waveform, where the hand already
                     // is — a transport control in the tab bar sat among things
@@ -371,6 +387,7 @@ fun MainScreen(
             stateHolder.SaveableStateProvider(currentTab) {
             when (currentTab) {
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
+                DjTab.QUEUE -> QueueScreen(viewModel = viewModel)
                 DjTab.CONTROLS -> {
                     val platterState by viewModel.platterState.collectAsState()
                     // Ordered by what mixes next, and each card carrying its

@@ -51,7 +51,11 @@ tier.
       snap still applies. Cues are quantised to the nearest beat
       (`ClipMusic.nearestBeat`). Not done: pinch-stretch (`snapRatio` still
       rounds to whole beats of the session grid), desktop.
-- [ ] Plan screen: lanes, bar ruler, transitions, reorder, pin entry/exit.
+- [x] Plan screen (first cut): the Queue tab lists the plan, one row per track
+      with the score and advice of the transition into it, the track playing
+      highlighted, and the tracks the planner left out. Move / remove / shuffle
+      while idle; QUEUE and RADIO on every library track. Not done: lanes and a
+      bar ruler, pinning entry and exit points, editing while a mix plays.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 

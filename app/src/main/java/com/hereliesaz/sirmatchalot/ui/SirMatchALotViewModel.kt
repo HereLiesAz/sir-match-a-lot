@@ -22,6 +22,7 @@ import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.ClipMusic
 import com.hereliesaz.sirmatchalot.domain.ClipSnapper
 import com.hereliesaz.sirmatchalot.domain.PlacedClip
+import com.hereliesaz.sirmatchalot.domain.QueueOps
 import com.hereliesaz.sirmatchalot.domain.PlanMarker
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.measuredBeatGrid
@@ -2127,6 +2128,49 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 "Planned ${plan.steps.size} tracks (${plan.skipped.size} not analysed), " +
                     "${plan.averageScore}% average transition"
         }
+    }
+
+    // --- The queue: the plan, edited ---
+    //
+    // The plan *is* the queue. Every edit here replans the same running order
+    // with `MixPlanner.planFor`, which keeps the order the listener chose and
+    // recomputes each transition into it. Editing is refused while a mix is
+    // playing, because the director holds the plan it was started with; the
+    // message says so instead of the buttons silently doing nothing.
+
+    private fun queueOrder(): List<Track> = _mixPlan.value?.steps.orEmpty().map { it.track }
+
+    /** Applies [edit] to the queue and replans it; refused while a mix is playing. */
+    private fun editQueue(edit: (List<Track>) -> List<Track>) {
+        if (_mixDirector.value != null) {
+            _feedbackMsg.value = "Stop the mix to edit the queue"
+            return
+        }
+        _mixPlan.value = MixPlanner.planFor(edit(queueOrder()))
+    }
+
+    fun queueMove(from: Int, to: Int) = editQueue { QueueOps.moved(it, from, to) }
+
+    fun queueRemove(index: Int) = editQueue { QueueOps.removed(it, index) }
+
+    fun queueShuffle() = editQueue { QueueOps.shuffledAfter(it, current = -1) }
+
+    /** Adds a library track to the end of the queue. */
+    fun queueAdd(track: Track) {
+        editQueue { QueueOps.inserted(it, track) }
+        _feedbackMsg.value = "Queued ${track.title}"
+    }
+
+    /**
+     * Replaces the queue with a radio from [seed] — the planner's best next
+     * track, then the one after — and starts playing it.
+     */
+    fun startRadio(seed: Track) {
+        if (_mixDirector.value != null) stopAutomatchicMix()
+        val order = QueueOps.radio(seed, _tracks.value)
+        _mixPlan.value = MixPlanner.planFor(order)
+        _feedbackMsg.value = "Radio from ${seed.title} — ${order.size} tracks"
+        startAutomatchicMix()
     }
 
     // --- Performing the plan ---
