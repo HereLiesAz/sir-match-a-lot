@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Track::class], version = 4, exportSchema = true)
+@Database(entities = [Track::class], version = 5, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
 
@@ -167,6 +167,23 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the structural landmarks measured at analysis.
+         *
+         * One nullable column, so an `ALTER TABLE`. Existing rows get null, and
+         * [Track.CURRENT_ANALYSIS_VERSION] is bumped with it so they are
+         * re-analysed and fill it in rather than being trusted as complete.
+         */
+        val MIGRATION_4_5_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE `tracks` ADD COLUMN `markersCsv` TEXT",
+        )
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_4_5_STATEMENTS.forEach(db::execSQL)
+            }
+        }
+
+        /**
          * Every migration, in order, exactly as handed to Room in [getDatabase].
          *
          * A value rather than an inline list so the test can check the chain
@@ -174,7 +191,7 @@ abstract class AppDatabase : RoomDatabase() {
          * a migration written and tested but never registered would otherwise
          * pass every test and still crash upgrading users.
          */
-        val ALL_MIGRATIONS: Array<Migration> by lazy { arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4) }
+        val ALL_MIGRATIONS: Array<Migration> by lazy { arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5) }
 
         /**
          * The version 2 `tracks` table, as shipped.

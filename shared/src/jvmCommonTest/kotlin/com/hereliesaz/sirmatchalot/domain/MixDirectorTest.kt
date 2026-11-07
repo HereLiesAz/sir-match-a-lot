@@ -768,4 +768,102 @@ class MixDirectorTest {
             assertTrue("seed $seed left the fader out of range", positions.all { it in 0f..1f })
         }
     }
+
+    // --- Editing the plan while it plays ---
+
+    @Test
+    fun `tracks after the next one can be reordered while the set plays`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c, d))
+        director.start()
+        director.advance(1.0)
+
+        val swapped = MixPlanner.planFor(listOf(a, b, d, c))
+
+        assertTrue(director.replaceUpcoming(swapped))
+        assertEquals(listOf("a", "b", "d", "c"), director.plan.steps.map { it.track.title })
+    }
+
+    @Test
+    fun `the playing track and the next one cannot be changed under the decks`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c, d))
+        director.start()
+
+        // The next track (b) is already being mixed in as far as the decks are concerned.
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(a, c, b, d))))
+        // Nor can the playing one be dropped.
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(b, c, d))))
+        assertEquals(listOf("a", "b", "c", "d"), director.plan.steps.map { it.track.title })
+    }
+
+    @Test
+    fun `a replacement that is too short to keep the next track is refused`() {
+        val a = track("a"); val b = track("b"); val c = track("c")
+        val director = MixDirector(planOf(a, b, c))
+        director.start()
+
+        assertTrue(!director.replaceUpcoming(MixPlanner.planFor(listOf(a))))
+    }
+
+    @Test
+    fun `tracks can be added and removed past the next one`() {
+        val a = track("a"); val b = track("b"); val c = track("c"); val d = track("d")
+        val director = MixDirector(planOf(a, b, c))
+        director.start()
+
+        assertTrue(director.replaceUpcoming(MixPlanner.planFor(listOf(a, b, d))))
+        assertEquals(listOf("a", "b", "d"), director.plan.steps.map { it.track.title })
+        assertTrue(director.replaceUpcoming(MixPlanner.planFor(listOf(a, b))))
+        assertEquals(2, director.plan.steps.size)
+    }
+
+    // --- Skipping ahead ---
+
+    @Test
+    fun `the handover can be brought forward once the next track has been asked for`() {
+        val a = track("a"); val b = track("b")
+        val director = MixDirector(planOf(a, b))
+        director.start()
+        // Run to just past the preload point, well before the planned exit.
+        var preloaded = false
+        var t = 0.0
+        while (!preloaded && t < 240.0) {
+            val commands = director.advance(1.0)
+            t += 1.0
+            preloaded = commands.any { it is MixCommand.Preload }
+        }
+        assertTrue("the next track should have been asked for", preloaded)
+
+        assertTrue(director.beginTransitionNow())
+
+        val commands = director.advance(0.05)
+        assertTrue(
+            "bringing it forward should start the next track at once",
+            commands.any { it is MixCommand.Start && it.track.title == "b" },
+        )
+    }
+
+    @Test
+    fun `it cannot be brought forward before the next track has been asked for`() {
+        val director = MixDirector(planOf(track("a"), track("b")))
+        director.start()
+        director.advance(1.0)
+
+        assertTrue(!director.beginTransitionNow())
+    }
+
+    @Test
+    fun `there is nothing to bring forward on the last track or once it has started`() {
+        val last = MixDirector(planOf(track("a")))
+        last.start()
+        last.advance(1.0)
+        assertTrue(!last.beginTransitionNow())
+
+        val director = MixDirector(planOf(track("a"), track("b")))
+        director.start()
+        var t = 0.0
+        while (t < 240.0 && director.transitionProgress <= 0.0) { director.advance(1.0); t += 1.0 }
+        assertTrue(!director.beginTransitionNow())
+    }
 }

@@ -196,6 +196,44 @@ object MixPlanner {
     }
 
     /**
+     * A plan for a running order somebody else chose.
+     *
+     * [automatchicMix] decides the order; a queue the listener has edited — a
+     * track moved up, another dropped in next, one removed — has an order that
+     * is already decided, and what is still wanted is every transition's score
+     * and alignment, chained the way the planner chains them. Every track is
+     * kept: a track the user put there is not "skipped" for having no measured
+     * tempo, it simply has no transition to score.
+     */
+    fun planFor(order: List<Track>): MixPlan {
+        val steps = ArrayList<MixStep>(order.size)
+        var previous: Track? = null
+        // The tempo the previous track is actually *played* at; see automatchicMix.
+        var previousPlayedBpm: Double? = null
+        for (track in order) {
+            val before = previous
+            if (before == null) {
+                steps.add(MixStep(track, transition = null, alignment = null))
+                previousPlayedBpm = track.bpm
+            } else {
+                val measured = before.bpm != null && before.camelotKey != null &&
+                    track.bpm != null && track.camelotKey != null
+                val match = if (measured) HarmonicEngine.compareTracks(before, track) else null
+                val alignment = BeatSync.align(track, before.copy(bpm = previousPlayedBpm))
+                steps.add(MixStep(track, transition = match, alignment = alignment))
+                previousPlayedBpm = track.bpm?.let { bpm -> alignment?.let { bpm * it.tempoRatio } ?: bpm }
+            }
+            previous = track
+        }
+        val scores = steps.mapNotNull { it.transition?.overallScore }
+        return MixPlan(
+            steps = steps,
+            skipped = emptyList(),
+            averageScore = if (scores.isEmpty()) 0 else scores.average().toInt(),
+        )
+    }
+
+    /**
      * Every track, each carrying its own match against [reference].
      *
      * This exists because a *filtered* list of matches is the wrong shape for

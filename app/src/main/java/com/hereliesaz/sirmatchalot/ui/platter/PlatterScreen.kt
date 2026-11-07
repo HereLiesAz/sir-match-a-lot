@@ -390,6 +390,14 @@ fun PlatterScreen(
     // inventing a second pattern for the same kind of decision.
     var pendingRemoveConfirm by remember { mutableStateOf(false) }
 
+    // The clips the long-press would remove. Read through rememberUpdatedState so
+    // the gesture handler, which is set up once, sees the selection as it is now.
+    val selectedTitles by androidx.compose.runtime.rememberUpdatedState(
+        (state.clipsFor(PlatterGeometry.Deck.A) + state.clipsFor(PlatterGeometry.Deck.B))
+            .filter { it.selected }
+            .map { it.title },
+    )
+
     var visibleLabels by remember { mutableStateOf(labels.visible()) }
     var scratching by remember { mutableStateOf(false) }
 
@@ -910,6 +918,10 @@ fun PlatterScreen(
                         onLongPress = { position ->
                             if (isTransportButton(position)) return@detectTapGestures
                             if (!isOnPlatter(position)) return@detectTapGestures
+                            // Nothing selected means nothing to remove: a dialog
+                            // that asked to remove "the selected clip(s)" and then
+                            // did nothing was a confirm with no subject.
+                            if (selectedTitles.isEmpty()) return@detectTapGestures
                             pendingRemoveConfirm = true
                         },
                     )
@@ -1271,7 +1283,7 @@ fun PlatterScreen(
             title = { Text("Remove clip?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
             text = {
                 Text(
-                    "This removes the selected clip(s) from the platter. This cannot be undone.",
+                    "This removes ${selectedTitles.joinToString(", ")} from the platter. This cannot be undone.",
                     color = Color(0xFF9CA3AF),
                     fontSize = 12.sp,
                 )

@@ -73,6 +73,13 @@ data class Track(
     // --- User data ---
     @ColumnInfo(defaultValue = "0") val isUserAdded: Boolean = true,
     val cuePointsCsv: String? = null,
+
+    /**
+     * Structural landmarks (drops, builds, breakdowns, vocal entries) measured at
+     * analysis, encoded by [com.hereliesaz.sirmatchalot.dsp.MarkerCodec]. Null
+     * until the track has been analysed by a version that measures them.
+     */
+    val markersCsv: String? = null,
 ) {
     /** True once this track has been analysed by the current analyser. */
     val isAnalysed: Boolean
@@ -96,6 +103,10 @@ data class Track(
             ?.map { it.trim().toDoubleOrNull() }
             ?: emptyList()
 
+    /** Landmarks decoded from storage; empty when none were measured or stored. */
+    val markers: List<com.hereliesaz.sirmatchalot.dsp.PointOfInterest>
+        get() = com.hereliesaz.sirmatchalot.dsp.MarkerCodec.decode(markersCsv)
+
     /** Tempo for display, or a dash when it was never measured. */
     fun bpmLabel(): String = bpm?.let { String.format("%.1f", it) } ?: "—"
 
@@ -107,7 +118,7 @@ data class Track(
          * Bump when the analysis pipeline changes in a way that invalidates
          * stored results, so existing rows are re-analysed rather than trusted.
          */
-        const val CURRENT_ANALYSIS_VERSION = 1
+        const val CURRENT_ANALYSIS_VERSION = 2
 
         /**
          * Encodes cue slots positionally: an empty slot before the last set

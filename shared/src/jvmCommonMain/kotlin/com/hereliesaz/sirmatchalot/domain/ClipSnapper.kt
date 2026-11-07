@@ -36,6 +36,17 @@ data class ClipMusic(
     }
 
     /**
+     * The beat nearest [positionSeconds] (in the clip's own time), or the position
+     * unchanged when no tempo was measured. What a cue is quantised to.
+     */
+    fun nearestBeat(positionSeconds: Double): Double {
+        val perMinute = bpm?.takeIf { it > 0.0 } ?: return positionSeconds
+        val beat = 60.0 / perMinute
+        val k = Math.round((positionSeconds - firstBeatSeconds) / beat)
+        return firstBeatSeconds + k * beat
+    }
+
+    /**
      * [positionSeconds] if it is already on a bar line (within
      * [toleranceSeconds]), otherwise the next bar line after it. Unchanged when
      * no tempo was measured.

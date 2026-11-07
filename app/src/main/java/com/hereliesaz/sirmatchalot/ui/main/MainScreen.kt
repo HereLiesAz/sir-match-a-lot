@@ -25,6 +25,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hereliesaz.sirmatchalot.ui.SirMatchALotViewModel
 import com.hereliesaz.sirmatchalot.ui.LibraryScreen
+import com.hereliesaz.sirmatchalot.ui.QueueScreen
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterActions
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterGeometry
 import com.hereliesaz.sirmatchalot.ui.platter.PlatterScreen
@@ -32,7 +33,7 @@ import com.hereliesaz.sirmatchalot.ui.SamplerScreen
 import com.hereliesaz.sirmatchalot.sync.SyncRole
 
 enum class DjTab {
-    LIBRARY, CONTROLS, PERFORMANCE
+    LIBRARY, CONTROLS, PERFORMANCE, QUEUE
 }
 
 /**
@@ -128,13 +129,50 @@ fun MainScreen(
     // screen first, then returns to Controls from another tab, and only
     // leaves the app if it was already there with nothing open — the same
     // shape as tapping the bottom nav to get home.
-    BackHandler(enabled = showSyncDialog || showSettings || showWork || currentTab != DjTab.CONTROLS) {
+    //
+    // From Controls with something on the decks, one swipe used to finish the
+    // activity and take the arrangement with it — mid-set, with nothing saved. It
+    // now asks first.
+    val hasDeckContent = !viewModel.platterState.collectAsState().value.isEmpty
+    var showLeaveConfirm by rememberSaveable { mutableStateOf(false) }
+    val activity = androidx.activity.compose.LocalActivity.current
+    BackHandler(
+        enabled = showSyncDialog || showSettings || showWork || showLeaveConfirm ||
+            currentTab != DjTab.CONTROLS || hasDeckContent,
+    ) {
         when {
             showSyncDialog -> showSyncDialog = false
             showSettings -> showSettings = false
             showWork -> showWork = false
+            showLeaveConfirm -> showLeaveConfirm = false
             currentTab != DjTab.CONTROLS -> currentTab = DjTab.CONTROLS
+            else -> showLeaveConfirm = true
         }
+    }
+    if (showLeaveConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            containerColor = Color(0xFF18181B),
+            title = { Text("Leave Sir Match-a-Lot?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Text(
+                    "What is on the decks, and any mix playing, will be lost unless you saved it.",
+                    color = Color(0xFF9CA3AF),
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showLeaveConfirm = false
+                    activity?.finish()
+                }) { Text("Leave", color = Color(0xFFDC2626), fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showLeaveConfirm = false }) {
+                    Text("Stay", color = Color.Gray)
+                }
+            },
+        )
     }
 
     Scaffold(
@@ -331,6 +369,21 @@ fun MainScreen(
                         )
                     )
 
+                    NavigationBarItem(
+                        selected = currentTab == DjTab.QUEUE,
+                        enabled = role.allows(DjTab.QUEUE),
+                        onClick = { currentTab = DjTab.QUEUE },
+                        label = { Text("Queue", fontSize = 10.sp) },
+                        icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Queue") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Color.Cyan,
+                            selectedTextColor = Color.Cyan,
+                            unselectedIconColor = Color.Gray,
+                            unselectedTextColor = Color.Gray,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+
                     // Play/pause is not here any more. It is at the centre of
                     // the platter, under the waveform, where the hand already
                     // is — a transport control in the tab bar sat among things
@@ -371,6 +424,7 @@ fun MainScreen(
             stateHolder.SaveableStateProvider(currentTab) {
             when (currentTab) {
                 DjTab.LIBRARY -> LibraryScreen(viewModel = viewModel)
+                DjTab.QUEUE -> QueueScreen(viewModel = viewModel)
                 DjTab.CONTROLS -> {
                     val platterState by viewModel.platterState.collectAsState()
                     // Ordered by what mixes next, and each card carrying its
@@ -743,12 +797,9 @@ private fun rememberPlatterActions(viewModel: SirMatchALotViewModel): PlatterAct
             override fun onRemoveSelected() = viewModel.removeSelectedClips()
 
             override fun onLoadTrack(track: com.hereliesaz.sirmatchalot.data.Track) {
-                // Fill Deck A first, then Deck B, then keep stacking onto A.
-                val state = viewModel.platterState.value
-                val deck =
-                    if (state.deckA.isEmpty() || state.deckB.isNotEmpty()) PlatterGeometry.Deck.A
-                    else PlatterGeometry.Deck.B
-                viewModel.loadOntoDeck(track, deck)
+                // Fill Deck A first, then Deck B, then keep stacking onto A. Chosen
+                // in the ViewModel, which knows about loads still in flight.
+                viewModel.loadTrackAuto(track)
             }
 
             override fun onDropTrack(

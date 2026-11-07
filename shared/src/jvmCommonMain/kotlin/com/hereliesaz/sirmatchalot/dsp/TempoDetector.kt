@@ -51,10 +51,138 @@ class TempoDetector(
         val maxLag = (envelope.frameRate * 60.0 / minBpm).toInt()
         if (maxLag <= minLag || maxLag >= x.size) return null
 
+        // Which lag wins is decided on the *smoothed* envelope, because a click is
+        // one or two frames wide and the true period is rarely a whole number of
+        // frames: at an integer lag the pulses overlap by a fraction that depends
+        // on the lag, so a lag that happened to land near whole frames outscored
+        // the true one and every tempo from about 121 BPM up was read as its half.
+        // Widening each pulse makes the overlap vary smoothly with the lag.
+        val chosen = scoreLags(smooth(x), minLag, maxLag, envelope.frameRate) ?: return null
+
+        // Confidence is still taken from the raw envelope: that is the scale the
+        // analyser's gate was calibrated on (noise, tone and chord below it, real
+        // click tracks above), and it answers "is there a clear pulse at all",
+        // which smoothing makes slightly easier to fake.
+        val raw = scoreLags(x, minLag, maxLag, envelope.frameRate) ?: return null
+
+        val refinedLag = parabolicRefine(chosen.scores, chosen.best, minLag, maxLag)
+        val coarsePhase = estimatePhase(x, refinedLag)
+
+        // The period above is good to a fraction of a percent, which is seconds
+        // of drift over a whole track. Fit a line through where the beats
+        // actually fall to get it to a few hundredths of a BPM.
+        val (period, phase) = refineGrid(x, refinedLag, coarsePhase)
+        val bpm = envelope.frameRate * 60.0 / period
+
+        return TempoEstimate(
+            bpm = bpm,
+            firstBeatSeconds = phase / envelope.frameRate,
+            confidence = confidenceOf(raw.scores, minLag, maxLag, raw.bestScore),
+        )
+    }
+
+    /**
+     * Refines a (period, phase) estimate, both in frames, by least squares over the
+     * beats themselves.
+     *
+     * For each expected beat the strongest onset within a window is located to a
+     * fraction of a frame; a weighted line `position = phase + k * period` is fitted
+     * through those, and the fit is repeated with a tighter window around the new
+     * line. Weighting by onset strength makes the clear beats decide it and the
+     * ones that missed barely count. Over hundreds of beats the quantisation of
+     * each peak averages out, which is what turns a fraction of a percent into a
+     * few hundredths of a BPM.
+     *
+     * Falls back to the input when there are too few beats to fit, or when the fit
+     * moves the period by more than 2% — a refinement that large has found a
+     * different pulse, not a better measurement of this one.
+     */
+    private fun refineGrid(envelope: FloatArray, period: Double, phase: Double): Pair<Double, Double> {
+        var a = phase
+        var b = period
+        var half = b / 4.0
+        // The coarse period is off by up to about half a percent, which over a few
+        // hundred beats is more than a beat of drift — so a window around the
+        // *coarse* line has lost the beat by the end of the track. Fit the first
+        // few beats first, where the drift is still inside the window, then use
+        // that better line to reach further, and so on until the whole track is in.
+        var limit = INITIAL_BEATS
+        var wholeTrackPasses = 0
+
+        for (pass in 0 until MAX_REFINE_PASSES) {
+            var sumW = 0.0
+            var sumK = 0.0
+            var sumP = 0.0
+            var sumKK = 0.0
+            var sumKP = 0.0
+            var beats = 0
+
+            var k = 0
+            while (k < limit) {
+                val expected = a + k * b
+                if (expected >= envelope.size - 1) break
+                val lo = Math.ceil(expected - half).toInt().coerceAtLeast(1)
+                val hi = Math.floor(expected + half).toInt().coerceAtMost(envelope.size - 2)
+                if (hi >= lo) {
+                    var peak = lo
+                    for (i in lo..hi) if (envelope[i] > envelope[peak]) peak = i
+                    val centre = envelope[peak]
+                    if (centre > 0f) {
+                        val left = envelope[peak - 1]
+                        val right = envelope[peak + 1]
+                        val denominator = left - 2 * centre + right
+                        val sub = if (abs(denominator) > 1e-12f) (0.5f * (left - right) / denominator).toDouble().coerceIn(-0.5, 0.5) else 0.0
+                        val position = peak + sub
+                        val w = centre.toDouble()
+                        sumW += w
+                        sumK += w * k
+                        sumP += w * position
+                        sumKK += w * k * k
+                        sumKP += w * k * position
+                        beats++
+                    }
+                }
+                k++
+            }
+
+            if (beats < MIN_BEATS_TO_REFINE) break
+            val denominator = sumW * sumKK - sumK * sumK
+            if (abs(denominator) < 1e-9) break
+            val newPeriod = (sumW * sumKP - sumK * sumP) / denominator
+            val newPhase = (sumP - newPeriod * sumK) / sumW
+            if (abs(newPeriod - period) > period * MAX_REFINE_SHIFT) return period to phase
+
+            b = newPeriod
+            a = newPhase
+
+            val totalBeats = ((envelope.size - 1 - a) / b).toInt()
+            if (limit >= totalBeats) {
+                // Every beat is in. Two more passes with a tight window settle it.
+                half = kotlin.math.max(1.0, b / 8.0)
+                if (++wholeTrackPasses >= 2) break
+            } else {
+                limit = kotlin.math.min(totalBeats, (limit * BEAT_GROWTH).toInt())
+            }
+        }
+
+        // A phase within the first beat, as the caller expects.
+        var normalised = a % b
+        if (normalised < 0) normalised += b
+        return b to normalised
+    }
+
+    private class LagScores(val scores: DoubleArray, val best: Int, val bestScore: Double)
+
+    /**
+     * The harmonic-reinforced, prior-weighted autocorrelation score of every lag in
+     * [minLag]..[maxLag] of [signal], and the winning lag; null when [signal] has
+     * no variation to correlate.
+     */
+    private fun scoreLags(signal: FloatArray, minLag: Int, maxLag: Int, frameRate: Double): LagScores? {
         // Mean-remove so the autocorrelation measures periodicity rather than
         // the envelope's DC level.
-        val mean = x.average().toFloat()
-        val centred = FloatArray(x.size) { x[it] - mean }
+        val mean = signal.average().toFloat()
+        val centred = FloatArray(signal.size) { signal[it] - mean }
 
         val zeroLag = autocorrelation(centred, 0)
         if (zeroLag <= 0.0) return null
@@ -68,14 +196,14 @@ class TempoDetector(
             var weight = 1.0
             for (multiple in 2..3) {
                 val harmonicLag = lag * multiple
-                if (harmonicLag >= x.size) break
+                if (harmonicLag >= centred.size) break
                 val harmonicWeight = 1.0 / multiple
                 score += harmonicWeight * autocorrelation(centred, harmonicLag) / zeroLag
                 weight += harmonicWeight
             }
             score /= weight
 
-            val bpm = envelope.frameRate * 60.0 / lag
+            val bpm = frameRate * 60.0 / lag
             score *= tempoPrior(bpm)
 
             scores[lag] = score
@@ -84,15 +212,18 @@ class TempoDetector(
                 best = lag
             }
         }
+        return LagScores(scores, best, bestScore)
+    }
 
-        val refinedLag = parabolicRefine(scores, best, minLag, maxLag)
-        val bpm = envelope.frameRate * 60.0 / refinedLag
-
-        return TempoEstimate(
-            bpm = bpm,
-            firstBeatSeconds = estimatePhase(x, refinedLag) / envelope.frameRate,
-            confidence = confidenceOf(scores, minLag, maxLag, bestScore),
-        )
+    /** A [0.25, 0.5, 0.25] smoothing of [x]; the ends keep their own value on the missing side. */
+    private fun smooth(x: FloatArray): FloatArray {
+        val out = FloatArray(x.size)
+        for (i in x.indices) {
+            val left = x[if (i == 0) 0 else i - 1]
+            val right = x[if (i == x.size - 1) x.size - 1 else i + 1]
+            out[i] = 0.25f * left + 0.5f * x[i] + 0.25f * right
+        }
+        return out
     }
 
     /** Sum of lagged products, normalised by overlap count so short lags are not favoured. */
@@ -135,11 +266,16 @@ class TempoDetector(
         val candidates = period.roundToInt().coerceAtLeast(1)
         var bestOffset = 0
         var bestSum = -Double.MAX_VALUE
+        // Only the first few dozen beats. The period is still half a percent off
+        // at this point, and a pulse train spaced by it slides across a whole beat
+        // over a few hundred, so summing the full track blurs the phase into
+        // whichever offset the drift happens to favour.
+        val limit = minOf(envelope.size.toDouble(), period * PHASE_BEATS)
 
         for (offset in 0 until candidates) {
             var sum = 0.0
             var position = offset.toDouble()
-            while (position < envelope.size) {
+            while (position < limit) {
                 sum += envelope[position.toInt()]
                 position += period
             }
@@ -195,5 +331,23 @@ class TempoDetector(
     companion object {
         /** z-score at which confidence reads 0.5 — see [confidenceOf]. */
         private const val Z_HALF_CONFIDENCE = 2.2
+
+        /** Upper bound on least-squares passes over the beats. */
+        private const val MAX_REFINE_PASSES = 16
+
+        /** Beats the coarse phase is read from; see [estimatePhase]. */
+        private const val PHASE_BEATS = 32.0
+
+        /** Beats the first fit uses, few enough that the coarse period has not drifted off them. */
+        private const val INITIAL_BEATS = 16
+
+        /** How much further each fit reaches than the last. */
+        private const val BEAT_GROWTH = 2.5
+
+        /** Fewer beats than this is not enough to fit a line through. */
+        private const val MIN_BEATS_TO_REFINE = 8
+
+        /** A refinement that moves the period by more than this found another pulse. */
+        private const val MAX_REFINE_SHIFT = 0.02
     }
 }

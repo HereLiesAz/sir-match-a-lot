@@ -38,13 +38,38 @@ tier.
       writing the other, not sample-accurate; `BeatSync.align` itself still
       compares first beats at t=0 (used only for unconformed clips and the
       SYNC button).
-- [ ] Persist beat anchors, time signature and markers in analysis.
+- [x] Persist markers in analysis: `Track.markersCsv` (Room v5, migration 4->5,
+      schema 5.json), measured by `TrackAnalyzer` (drops, builds, breakdowns,
+      vocal entry), read by the ViewModel instead of recomputing on every load.
+      `CURRENT_ANALYSIS_VERSION` is now 2, so existing tracks are re-analysed.
+- [x] Tempo accurate enough to hold a grid for a whole track: `TempoDetector`
+      now fits a weighted line through where the beats actually fall
+      (progressively, so a coarse period cannot lose the beat), instead of
+      stopping at one frame plus a parabola. Synthetic clicks: tempo within 0.05
+      BPM, grid within 40 ms after 300 s (was 0.3% off and 80 ms+). Real music
+      is untested, and a track whose tempo genuinely drifts needs per-beat
+      anchors, which this does not provide.
+- [ ] Time signature: no meter detector; four four is assumed everywhere.
+- [x] Octave errors: every tempo from 90 to 149 BPM on synthetic clicks is now
+      read as itself (the lag is chosen on a smoothed envelope; 18 of 86 were
+      read as their half before, all from 121 BPM up). 150 BPM and up is still
+      ambiguous with half, which is a valid reading of the same pulse and is
+      handled by the half/double-time ladder.
 - [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
       dragged clip against the clips on both decks, in conformed time, so bars
       land on bars and drops on drops. Over empty timeline the old session-grid
-      snap still applies. Not yet done: pinch-stretch (`snapRatio`), cue
-      placement, desktop.
-- [ ] Plan screen: lanes, bar ruler, transitions, reorder, pin entry/exit.
+      snap still applies. Cues are quantised to the nearest beat
+      (`ClipMusic.nearestBeat`). Not done: pinch-stretch (`snapRatio` still
+      rounds to whole beats of the session grid), desktop.
+- [x] Plan screen (first cut): the Queue tab lists the plan, one row per track
+      with the score and advice of the transition into it, the track playing
+      highlighted, and the tracks the planner left out. Move / remove / shuffle
+      while idle; tap to play from a row; PREV and NEXT (hard cuts). While a mix plays
+      the playing and next tracks are locked and everything after them can be
+      reordered, removed or shuffled (`MixDirector.replaceUpcoming`). QUEUE and
+      RADIO on every library track. NEXT blends into the next track when it is
+      already on its deck (`MixDirector.beginTransitionNow`), otherwise cuts.
+      Not done: lanes and a bar ruler, pinning entry and exit points.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 

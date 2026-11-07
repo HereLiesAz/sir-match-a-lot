@@ -51,6 +51,8 @@ fun LibraryScreen(
     val transitionProgress by viewModel.transitionProgress.collectAsState()
     val transitionStyle by viewModel.transitionStyle.collectAsState()
     val analysisProgress by viewModel.analysisProgress.collectAsState()
+    val platterState by viewModel.platterState.collectAsState()
+    val wipeGuard = rememberWipeGuard(hasClips = !platterState.isEmpty)
     var linkInput by rememberSaveable { mutableStateOf("") }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -308,7 +310,7 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
-                    onClick = { viewModel.shuffleCrate() },
+                    onClick = { wipeGuard.run { viewModel.shuffleCrate() } },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
                     shape = RoundedCornerShape(12.dp),
                 ) {
@@ -323,7 +325,7 @@ fun LibraryScreen(
                 }
                 Button(
                     onClick = {
-                        if (isAutoMixing) viewModel.stopAutomatchicMix() else viewModel.startAutomatchicMix()
+                        if (isAutoMixing) viewModel.stopAutomatchicMix() else wipeGuard.run { viewModel.startAutomatchicMix() }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isAutoMixing) Color(0xFFDC2626) else Color(0xFF059669),
@@ -503,6 +505,8 @@ fun LibraryScreen(
                 track = track,
                 onLoadA = { viewModel.addTrackToDeckA(track) },
                 onLoadB = { viewModel.addTrackToDeckB(track) },
+                onQueue = { viewModel.queueAdd(track) },
+                onRadio = { wipeGuard.run { viewModel.startRadio(track) } },
                 onDelete = { viewModel.deleteTrack(track) }
             )
             Spacer(Modifier.height(8.dp))
@@ -523,6 +527,8 @@ fun TrackRowItem(
     track: Track,
     onLoadA: () -> Unit,
     onLoadB: () -> Unit,
+    onQueue: () -> Unit,
+    onRadio: () -> Unit,
     onDelete: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -645,6 +651,24 @@ fun TrackRowItem(
                         modifier = Modifier.height(28.dp)
                     ) {
                         Text("LOAD DECK B", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                    }
+                    Button(
+                        onClick = onQueue,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F3F46)),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("QUEUE", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                    }
+                    Button(
+                        onClick = onRadio,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDB2777)),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("RADIO", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Black)
                     }
                 }
 

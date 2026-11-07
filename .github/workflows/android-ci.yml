@@ -66,6 +66,12 @@ jobs:
           chmod +x gradlew
           ./gradlew test --continue --build-cache --no-daemon --stacktrace
 
+      # `test` compiles :shared but does not run its tests: the module declares
+      # them as desktopTest only, and no Android host-test source set exists.
+      # That left the DSP, domain, audio, session and sync tests (800+) ungated.
+      - name: Run shared module tests
+        run: ./gradlew :shared:desktopTest --continue --build-cache --no-daemon --stacktrace
+
       - name: Run Android lint
         run: ./gradlew lintDebug --continue --build-cache --no-daemon --stacktrace
 

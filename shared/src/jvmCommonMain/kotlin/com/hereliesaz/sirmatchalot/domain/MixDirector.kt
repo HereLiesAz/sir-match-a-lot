@@ -142,7 +142,7 @@ sealed interface MixCommand {
  *   set twice.
  */
 class MixDirector(
-    val plan: MixPlan,
+    plan: MixPlan,
     val crossfadeBars: Int = DEFAULT_CROSSFADE_BARS,
     val preloadLeadSeconds: Double = DEFAULT_PRELOAD_LEAD_SECONDS,
     private val structures: TrackStructureProvider? = null,
@@ -150,8 +150,15 @@ class MixDirector(
     seed: Long = 0L,
     private val taste: TransitionTaste? = null,
 ) {
+    /**
+     * The plan being performed. Only [replaceUpcoming] changes it, and only past
+     * the track that is playing and the one being mixed in.
+     */
+    var plan: MixPlan = plan
+        private set
+
     private val random = Random(seed)
-    private val arc = SetArc.of(plan.steps)
+    private var arc = SetArc.of(plan.steps)
     private val recentStyles = ArrayDeque<TransitionStyle>()
 
     /** The transition out of the current track, or null when blending blindly. */
@@ -201,6 +208,47 @@ class MixDirector(
     private var preloadIssued = false
     private var transitionStarted = false
     private var started = false
+
+    /**
+     * Swaps in an edited plan while this one is playing.
+     *
+     * Allowed only when everything up to and including the next track is
+     * unchanged: the playing track and the one being mixed in are already loaded
+     * and scripted, and changing either under the decks would cut audio mid-blend.
+     * Anything after them has not been touched yet, which is what a listener
+     * editing "up next" is changing.
+     *
+     * @return false, leaving the plan as it was, when [replacement] changes or
+     *   drops the playing track or the next one.
+     */
+    fun replaceUpcoming(replacement: MixPlan): Boolean {
+        val keep = minOf(index + 2, plan.steps.size)
+        if (replacement.steps.size < keep) return false
+        for (i in 0 until keep) {
+            if (replacement.steps[i].track.id != plan.steps[i].track.id) return false
+        }
+        plan = replacement
+        arc = SetArc.of(replacement.steps)
+        return true
+    }
+
+    /**
+     * Starts the handover to the next track now, instead of at its planned exit.
+     *
+     * What a "next" button wants: the same blend, brought forward. Only possible
+     * once the next track has been asked for ([MixCommand.Preload] issued), because
+     * starting a deck that holds nothing is a hole in the set; the caller is
+     * responsible for checking it has actually arrived on its deck.
+     *
+     * @return false, changing nothing, when there is no next track, the preload
+     *   has not been issued yet, or the handover is already under way.
+     */
+    fun beginTransitionNow(): Boolean {
+        if (finished || !started || nextStep == null) return false
+        if (!preloadIssued || transitionStarted) return false
+        elapsed = maxOf(elapsed, transitionAt())
+        return true
+    }
 
     /** The step now in the foreground, or null once the plan is done. */
     val currentStep: MixStep? get() = plan.steps.getOrNull(index)

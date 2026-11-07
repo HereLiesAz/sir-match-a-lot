@@ -22,6 +22,7 @@ import com.hereliesaz.sirmatchalot.domain.BeatSnap
 import com.hereliesaz.sirmatchalot.domain.ClipMusic
 import com.hereliesaz.sirmatchalot.domain.ClipSnapper
 import com.hereliesaz.sirmatchalot.domain.PlacedClip
+import com.hereliesaz.sirmatchalot.domain.QueueOps
 import com.hereliesaz.sirmatchalot.domain.PlanMarker
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.measuredBeatGrid
@@ -249,6 +250,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private fun endPending(trackId: String) {
+        autoClaims.remove(trackId)
         _pendingClips.value = _pendingClips.value.filterNot { it.id == trackId }
     }
 
@@ -514,6 +516,28 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      */
     private val deckMutation = kotlinx.coroutines.sync.Mutex()
 
+    /**
+     * Decks claimed by taps that have chosen one but not finished loading, by
+     * track id. A tap's load takes seconds and the decks only show a clip once it
+     * lands, so two quick taps both saw "Deck A empty" and stacked on A.
+     */
+    private val autoClaims = java.util.concurrent.ConcurrentHashMap<String, PlatterGeometry.Deck>()
+
+    /**
+     * Loads [track] onto whichever deck a tap should fill: A first, then B, then
+     * keep stacking onto A. The choice counts loads still in flight, and is made
+     * synchronously, so a second tap before the first lands goes to B.
+     */
+    @Synchronized
+    fun loadTrackAuto(track: Track) {
+        val claimed = autoClaims.filterKeys { it != track.id }.values
+        val aEmpty = audioEngine.deckA.clips.isEmpty() && PlatterGeometry.Deck.A !in claimed
+        val bBusy = audioEngine.deckB.clips.isNotEmpty() || PlatterGeometry.Deck.B in claimed
+        val deck = if (aEmpty || bBusy) PlatterGeometry.Deck.A else PlatterGeometry.Deck.B
+        autoClaims[track.id] = deck
+        loadOntoDeck(track, deck)
+    }
+
     fun loadOntoDeck(
         track: Track,
         deck: PlatterGeometry.Deck,
@@ -622,6 +646,9 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     // Landmarks come from the energy curve that was just cached, so
                     // marking the drops costs no decode and no second analysis pass.
                     poiCache.getOrPut(track.id) {
+                        // Measured at analysis and stored: a track analysed by a
+                        // version that keeps landmarks needs no recompute here.
+                        if (track.markersCsv != null) return@getOrPut track.markers
                         val curve = energyCache[track.id]
                         if (curve == null) {
                             emptyList()
@@ -1135,7 +1162,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
 
             for (clip in engineDeck.clips) {
-                val points = poiCache[clip.id] ?: continue
+                // In the clip's own, conformed time: the landmarks were measured
+                // on the original file, and a clip stretched from 140 to 120 BPM
+                // has every one of them moved by the same factor. Drawn at the
+                // file's own time, a drop sat several bars early.
+                val track = _tracks.value.firstOrNull { it.id == clip.id }
+                val points = if (track != null) {
+                    clipMusicFor(track).markers.map { PointOfInterest(it.fileSeconds, it.kind, it.strength) }
+                } else {
+                    poiCache[clip.id] ?: continue
+                }
                 val clipStart = clip.startFrame.toDouble() / clip.buffer.sampleRate
                 for (point in points) {
                     val kind = when (point.kind) {
@@ -1773,11 +1809,37 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (ratio <= 0.0 || abs(ratio - 1.0) < 1e-3) return
         val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
         val existing = engineDeck.clips.firstOrNull { it.id == clipId } ?: return
-        val pristine = decoded[clipId] ?: existing.buffer
+        val decodedOriginal = decoded[clipId]
+        val pristine = decodedOriginal ?: existing.buffer
 
+        // The pinch ratio is relative to the clip *as it is now*, which has
+        // already been stretched to the session tempo; `pristine` is the
+        // unconformed original. Working out the whole-beat length the pinch asks
+        // for from the clip on the deck, and expressing it as a scale of the
+        // original, is what keeps a conformed clip from being re-rendered as if it
+        // had never been stretched (a pinch of 1.1 used to *shorten* a clip that
+        // had been conformed to 1.17).
         val framesPerBeat = sessionFramesPerBeat()
-        val snapped = BeatSnap.snapRatio(pristine.frameCount, ratio, framesPerBeat)
+        val targetFrames = (existing.frameCount * ratio).toInt().coerceAtLeast(1)
+        val snappedFrames = BeatSnap.snapLength(targetFrames, framesPerBeat)
+        val snapped = (snappedFrames.toDouble() / pristine.frameCount)
             .coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+
+        // The conform also shifted the key; rendering from the original has to do
+        // it again or the harmonic match made at load stops being one. Not when
+        // the original is gone and the deck's own (already shifted) audio is the
+        // source.
+        val semitones = if (decodedOriginal != null) {
+            val moved = _tracks.value.firstOrNull { it.id == clipId }
+            val reference = _reference.value
+            if (moved != null && reference != null && reference.id != moved.id) {
+                BeatSync.align(moved, reference)?.semitoneShift ?: 0
+            } else {
+                0
+            }
+        } else {
+            0
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             _feedbackMsg.value = "Stretching to ${String.format("%.2fx", snapped)}..."
@@ -1785,7 +1847,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 id = BackgroundWork.stretchId(clipId),
                 label = "Stretching ${clipTitle(clipId)}",
                 detail = String.format("%.2fx, holding pitch", snapped),
-            ) { pristine.timeStretched(snapped) }
+            ) {
+                val timed = pristine.timeStretched(snapped)
+                if (semitones != 0) timed.pitchShifted(semitones.toDouble()) else timed
+            }
             val current = engineDeck.clips.firstOrNull { it.id == clipId } ?: return@launch
             engineDeck.clips = engineDeck.clips.map { clip ->
                 if (clip.id != clipId) {
@@ -2126,6 +2191,101 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    // --- The queue: the plan, edited ---
+    //
+    // The plan *is* the queue. Every edit here replans the same running order
+    // with `MixPlanner.planFor`, which keeps the order the listener chose and
+    // recomputes each transition into it. Editing is refused while a mix is
+    // playing, because the director holds the plan it was started with; the
+    // message says so instead of the buttons silently doing nothing.
+
+    private fun queueOrder(): List<Track> = _mixPlan.value?.steps.orEmpty().map { it.track }
+
+    /**
+     * Applies [edit] to the queue and replans it.
+     *
+     * While a mix is playing only what comes after the next track may change: the
+     * playing track and the one being mixed in are already on the decks. The
+     * director is handed the edited plan for what is left, offset back from the
+     * whole queue, and refuses it if either of those two moved.
+     */
+    private fun editQueue(edit: (List<Track>) -> List<Track>) {
+        val edited = edit(queueOrder())
+        val director = _mixDirector.value
+        if (director != null) {
+            val offset = _playOffset.value
+            val remaining = MixPlanner.planFor(edited.drop(offset))
+            if (edited.size < offset || !director.replaceUpcoming(remaining)) {
+                _feedbackMsg.value = "The playing and next tracks can't be changed — edit what comes after"
+                return
+            }
+        }
+        _mixPlan.value = MixPlanner.planFor(edited)
+    }
+
+    /** Plays the queue from [index]: a tap on a row, "next" and "previous". */
+    fun playFrom(index: Int) {
+        if (index !in queueOrder().indices) return
+        startAutomatchicMix(from = index)
+    }
+
+    /** Skips to the next track. A hard cut, as on any player; at the end it stops. */
+    fun skipNext() {
+        val current = queueIndex.value
+        if (current < 0) return
+        if (current >= queueOrder().lastIndex) {
+            stopAutomatchicMix()
+            return
+        }
+        // If the next track is already on its deck, bring the planned handover
+        // forward and blend into it; otherwise a hard cut is all that is possible.
+        val director = _mixDirector.value
+        val next = director?.nextStep?.track
+        if (director != null && next != null) {
+            val incoming = deckNamed(if (director.deck == MixDeck.A) "B" else "A")
+            if (incoming.clips.any { it.id == next.id } && director.beginTransitionNow()) {
+                _feedbackMsg.value = "Mixing into ${next.title}"
+                return
+            }
+        }
+        playFrom(current + 1)
+    }
+
+    /** Back to the previous track, or to the start of the first. */
+    fun skipPrevious() {
+        val current = queueIndex.value
+        if (current < 0) return
+        playFrom((current - 1).coerceAtLeast(0))
+    }
+
+    fun queueMove(from: Int, to: Int) = editQueue { QueueOps.moved(it, from, to) }
+
+    fun queueRemove(index: Int) = editQueue { QueueOps.removed(it, index) }
+
+    /** Shuffles the queue; while playing, only what comes after the playing and next tracks. */
+    fun queueShuffle() {
+        val keepThrough = if (_mixDirector.value != null) queueIndex.value + 1 else -1
+        editQueue { QueueOps.shuffledAfter(it, current = keepThrough) }
+    }
+
+    /** Adds a library track to the end of the queue. */
+    fun queueAdd(track: Track) {
+        editQueue { QueueOps.inserted(it, track) }
+        _feedbackMsg.value = "Queued ${track.title}"
+    }
+
+    /**
+     * Replaces the queue with a radio from [seed] — the planner's best next
+     * track, then the one after — and starts playing it.
+     */
+    fun startRadio(seed: Track) {
+        if (_mixDirector.value != null) stopAutomatchicMix()
+        val order = QueueOps.radio(seed, _tracks.value)
+        _mixPlan.value = MixPlanner.planFor(order)
+        _feedbackMsg.value = "Radio from ${seed.title} — ${order.size} tracks"
+        startAutomatchicMix()
+    }
+
     // --- Performing the plan ---
 
     private val _mixDirector = MutableStateFlow<MixDirector?>(null)
@@ -2136,6 +2296,15 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
 
     private val _nowPlaying = MutableStateFlow<MixCommand.NowPlaying?>(null)
     val nowPlaying: StateFlow<MixCommand.NowPlaying?> = _nowPlaying
+
+    /** Where in the whole queue the director's own plan begins (non-zero after a skip). */
+    private val _playOffset = MutableStateFlow(0)
+
+    /** The playing track's place in the whole queue, or -1 when nothing is playing. */
+    val queueIndex: StateFlow<Int> =
+        combine(_nowPlaying, _playOffset, _mixDirector) { now, offset, director ->
+            if (director == null || now == null) -1 else now.index + offset
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, -1)
 
     /** 0..1 through the current transition, for the UI to show a fade in progress. */
     private val _transitionProgress = MutableStateFlow(0f)
@@ -2419,14 +2588,20 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * assumed to be exact — the elapsed time between iterations is measured and
      * passed in, so a stalled frame does not desynchronise the set.
      */
-    fun startAutomatchicMix() {
-        val plan = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
-        if (plan.steps.isEmpty()) {
+    fun startAutomatchicMix(from: Int = 0) {
+        val full = _mixPlan.value ?: MixPlanner.automatchicMix(_tracks.value).also { _mixPlan.value = it }
+        if (full.steps.isEmpty()) {
             _feedbackMsg.value = "No analysed tracks to mix"
             return
         }
         stopAutomatchicMix()
         clearDecks()
+        // Starting part-way through is a fresh plan over what is left, so the
+        // opening track plays at its own tempo and everything after aligns to it.
+        // The queue still shows the whole list; [queueIndex] adds the offset back.
+        val start = from.coerceIn(0, full.steps.lastIndex)
+        val plan = if (start == 0) full else MixPlanner.planFor(full.steps.drop(start).map { it.track })
+        _playOffset.value = start
 
         // Seeded from the clock, so running the same library twice is not the
         // same set twice — which is the whole point of the exercise.
@@ -2520,16 +2695,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * time, so it is true to within the time between this read and the write
      * that uses it — a few milliseconds, where a polled timer was up to fifty.
      */
-    private fun secondsToOutgoingBar(incomingName: String): Double? {
-        val outgoing = deckNamed(if (incomingName == "A") "B" else "A")
-        if (!outgoing.playing) return null
-        val playhead = outgoing.playhead
-        val clip = outgoing.clips.firstOrNull {
+    private fun secondsToOutgoingBar(incomingName: String): Double? =
+        barWait(if (incomingName == "A") "B" else "A")?.first
+
+    /**
+     * Seconds until the deck [name] reaches its next bar line, paired with the
+     * length of its bar, or null when nothing is playing there to read.
+     */
+    private fun barWait(name: String): Pair<Double, Double>? {
+        val deck = deckNamed(name)
+        if (!deck.playing) return null
+        val playhead = deck.playhead
+        val clip = deck.clips.firstOrNull {
             playhead >= it.startFrame && playhead < it.endFrame
         } ?: return null
         val track = _tracks.value.firstOrNull { it.id == clip.id } ?: return null
+        val music = clipMusicFor(track)
         val seconds = (playhead - clip.startFrame) / clip.buffer.sampleRate
-        return clipMusicFor(track).secondsToNextBar(seconds)
+        val wait = music.secondsToNextBar(seconds) ?: return null
+        val bar = 60.0 / (music.bpm ?: return null) * music.beatsPerBar
+        return wait to bar
     }
 
     /** Carries out what the director asked for. */
@@ -2728,6 +2913,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * already in step costs no audio processing at all.
      */
     fun syncToDeckA() {
+        // Clips are conformed to the session tempo and key at load, so the decks
+        // already agree on both; what is left is where each is in its bar. The
+        // tempo and pitch below would stretch audio that has already been
+        // stretched. Move Deck B's playhead the shortest way that brings its next
+        // bar line in when Deck A's arrives.
+        if (_reference.value != null) {
+            val a = barWait("A")
+            val b = barWait("B")
+            if (a == null || b == null) {
+                _feedbackMsg.value = "Both decks need to be playing to line their bars up"
+                return
+            }
+            val bar = b.second
+            var delta = b.first - a.first
+            if (delta > bar / 2) delta -= bar else if (delta < -bar / 2) delta += bar
+            deckNamed("B").nudgeSeconds(delta)
+            _feedbackMsg.value = "Bars lined up (${String.format("%+.0f", delta * 1000)} ms)"
+            return
+        }
         val reference = _loadedTracksA.value.firstOrNull { it.bpm != null }
         if (reference == null) {
             _feedbackMsg.value = "Deck A has no measured tempo to sync to"
@@ -2888,7 +3092,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _cuesB = MutableStateFlow<List<Float?>>(listOf(null, null, null, null))
     val cuesB: StateFlow<List<Float?>> = _cuesB
 
-    fun setCue(deck: String, index: Int, time: Float) {
+    /**
+     * A cue time moved onto the nearest beat of whatever clip it falls in.
+     *
+     * A cue is where a deck starts from, and a start a few tens of milliseconds
+     * off the beat is a handover that is off the beat. Left alone when no clip
+     * covers the time or its tempo was never measured.
+     */
+    private fun quantisedCue(deck: String, seconds: Double): Double {
+        val engineDeck = deckNamed(deck)
+        val rate = audioEngine.output.sampleRate
+        val frame = seconds * rate
+        val clip = engineDeck.clips.firstOrNull { frame >= it.startFrame && frame < it.endFrame } ?: return seconds
+        val track = _tracks.value.firstOrNull { it.id == clip.id } ?: return seconds
+        val origin = clip.startFrame.toDouble() / rate
+        return origin + clipMusicFor(track).nearestBeat(seconds - origin)
+    }
+
+    fun setCue(deck: String, index: Int, rawTime: Float) {
+        val time = quantisedCue(deck, rawTime.toDouble()).coerceAtLeast(0.0).toFloat()
         if (deck == "A") {
             val nextCues = _cuesA.value.toMutableList()
             nextCues[index - 1] = time

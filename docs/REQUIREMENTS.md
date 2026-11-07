@@ -74,8 +74,8 @@ Prompt 75 replaced it with D1–D6 below.
 | # | Requirement | Status |
 | :-- | :--- | :--- |
 | D1 | All single-finger gestures manipulate the audio clips themselves | **done** — a single finger starting on a clip drags that clip's placement around the circle, across decks, or off the platter to remove it |
-| D2 | 2-finger horizontal = crossfader A to B | done |
-| D3 | 2-finger vertical = smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | done (`ScratchModel`, continuity tested) |
+| D2 | 2-finger horizontal = crossfader A to B | **superseded**: recognised but deliberately unwired; the crossfader is the slider under the platter |
+| D3 | Smart scratch: seek, plus BPM and pitch falling on a non-linear curve through zero into reverse | done (`ScratchModel`, continuity tested), now driven by a one-finger drag on the bare platter rather than a 2-finger vertical drag |
 | D4 | 2-finger rotate = volume | done |
 | D5 | 2-finger pinch/spread = bass boost | done — and it now reaches the music |
 | D6 | 3-finger drag/pinch/rotate = place, resize, rotate the whole platter, to zoom in for precise work | done |

@@ -26,6 +26,7 @@ data class AnalysisColumns(
     val trimEndMs: Long,
     val peaksPath: String?,
     val energyPath: String?,
+    val markersCsv: String? = null,
     val analysisVersion: Int = Track.CURRENT_ANALYSIS_VERSION,
 ) {
     companion object {
@@ -57,6 +58,7 @@ data class AnalysisColumns(
                 trimEndMs = ((trimmedStartFrames.toLong() + frameCount) / rate * 1000).toLong(),
                 peaksPath = peaksPath,
                 energyPath = energyPath,
+                markersCsv = com.hereliesaz.sirmatchalot.dsp.MarkerCodec.encode(analysis.points),
             )
         }
     }
