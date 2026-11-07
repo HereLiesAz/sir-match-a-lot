@@ -2233,7 +2233,22 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     fun skipNext() {
         val current = queueIndex.value
         if (current < 0) return
-        if (current >= queueOrder().lastIndex) stopAutomatchicMix() else playFrom(current + 1)
+        if (current >= queueOrder().lastIndex) {
+            stopAutomatchicMix()
+            return
+        }
+        // If the next track is already on its deck, bring the planned handover
+        // forward and blend into it; otherwise a hard cut is all that is possible.
+        val director = _mixDirector.value
+        val next = director?.nextStep?.track
+        if (director != null && next != null) {
+            val incoming = deckNamed(if (director.deck == MixDeck.A) "B" else "A")
+            if (incoming.clips.any { it.id == next.id } && director.beginTransitionNow()) {
+                _feedbackMsg.value = "Mixing into ${next.title}"
+                return
+            }
+        }
+        playFrom(current + 1)
     }
 
     /** Back to the previous track, or to the start of the first. */

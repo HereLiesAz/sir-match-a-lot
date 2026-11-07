@@ -67,8 +67,9 @@ tier.
       while idle; tap to play from a row; PREV and NEXT (hard cuts). While a mix plays
       the playing and next tracks are locked and everything after them can be
       reordered, removed or shuffled (`MixDirector.replaceUpcoming`). QUEUE and
-      RADIO on every library track. Not done: lanes and a bar ruler, pinning
-      entry and exit points, a crossfaded skip.
+      RADIO on every library track. NEXT blends into the next track when it is
+      already on its deck (`MixDirector.beginTransitionNow`), otherwise cuts.
+      Not done: lanes and a bar ruler, pinning entry and exit points.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 

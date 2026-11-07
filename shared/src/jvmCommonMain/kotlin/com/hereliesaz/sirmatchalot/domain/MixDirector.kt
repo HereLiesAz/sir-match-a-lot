@@ -232,6 +232,24 @@ class MixDirector(
         return true
     }
 
+    /**
+     * Starts the handover to the next track now, instead of at its planned exit.
+     *
+     * What a "next" button wants: the same blend, brought forward. Only possible
+     * once the next track has been asked for ([MixCommand.Preload] issued), because
+     * starting a deck that holds nothing is a hole in the set; the caller is
+     * responsible for checking it has actually arrived on its deck.
+     *
+     * @return false, changing nothing, when there is no next track, the preload
+     *   has not been issued yet, or the handover is already under way.
+     */
+    fun beginTransitionNow(): Boolean {
+        if (finished || !started || nextStep == null) return false
+        if (!preloadIssued || transitionStarted) return false
+        elapsed = maxOf(elapsed, transitionAt())
+        return true
+    }
+
     /** The step now in the foreground, or null once the plan is done. */
     val currentStep: MixStep? get() = plan.steps.getOrNull(index)
 
