@@ -135,7 +135,7 @@ fun MainScreen(
     // now asks first.
     val hasDeckContent = !viewModel.platterState.collectAsState().value.isEmpty
     var showLeaveConfirm by rememberSaveable { mutableStateOf(false) }
-    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    val activity = androidx.activity.compose.LocalActivity.current
     BackHandler(
         enabled = showSyncDialog || showSettings || showWork || showLeaveConfirm ||
             currentTab != DjTab.CONTROLS || hasDeckContent,
