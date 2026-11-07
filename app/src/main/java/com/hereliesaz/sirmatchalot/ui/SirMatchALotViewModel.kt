@@ -19,6 +19,10 @@ import com.hereliesaz.sirmatchalot.data.AppDatabase
 import com.hereliesaz.sirmatchalot.data.PlaylistParser
 import com.hereliesaz.sirmatchalot.data.Track
 import com.hereliesaz.sirmatchalot.domain.BeatSnap
+import com.hereliesaz.sirmatchalot.domain.ClipMusic
+import com.hereliesaz.sirmatchalot.domain.ClipSnapper
+import com.hereliesaz.sirmatchalot.domain.PlacedClip
+import com.hereliesaz.sirmatchalot.domain.PlanMarker
 import com.hereliesaz.sirmatchalot.domain.BeatSync
 import com.hereliesaz.sirmatchalot.domain.measuredBeatGrid
 import com.hereliesaz.sirmatchalot.domain.DeckCapacity
@@ -694,10 +698,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                             // Snapped, exactly as a drag is. A drop that landed off the
                             // grid while a drag of the same clip snapped onto it would
                             // be two different answers to the same question.
-                            val snapped = BeatSnap.snapFrame(
-                                frame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
-                                framesPerBeat = sessionFramesPerBeat(),
-                                phaseFrames = sessionBeatPhaseFrames(),
+                            val snapped = snapPlacement(
+                                track = track,
+                                desiredFrame = (atFraction.coerceIn(0f, 1f) * cycle).toInt().coerceIn(0, cycle),
+                                lengthFrames = playable.frameCount,
                             ).coerceIn(0, cycle)
                             // A drop that lands on top of what is already there
                             // is pulled to the nearest clear stretch of the
@@ -1604,11 +1608,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         // Land on a beat. A finger on a five-minute revolution is tens of
         // milliseconds out at best, which is audibly off and impossible to
         // correct by eye.
-        val snapped = BeatSnap.snapFrame(
-            frame = raw,
-            framesPerBeat = sessionFramesPerBeat(),
-            phaseFrames = sessionBeatPhaseFrames(),
-        )
+        val movedTrack = _tracks.value.firstOrNull { it.id == clipId }
+        val snapped = if (movedTrack != null) {
+            snapPlacement(movedTrack, raw, existing.frameCount)
+        } else {
+            BeatSnap.snapFrame(
+                frame = raw,
+                framesPerBeat = sessionFramesPerBeat(),
+                phaseFrames = sessionBeatPhaseFrames(),
+            )
+        }
         // Dragged on top of another clip already on the target deck, the move
         // is pulled to the nearest clear stretch instead — a clip you can drag
         // onto another must not be a clip you can drag over another.
@@ -1646,6 +1655,68 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
         republishPlatter()
+    }
+
+    /**
+     * What is known about a track's music as it sits on the platter: its tempo,
+     * first beat, bars and drops **after** the conform to the session tempo.
+     *
+     * Conforming stretches the audio by `trackBpm / referenceBpm`, which moves
+     * the first beat, every bar line and every drop by the same factor.
+     * Snapping with the file's own numbers — as the old single-grid snap did for
+     * markers — lands a stretched clip's drop several bars from where it sounds.
+     */
+    private fun clipMusicFor(track: Track): ClipMusic {
+        val reference = _reference.value
+        val referenceBpm = reference?.bpm
+        val trackBpm = track.bpm
+        val scale = if (reference == null || reference.id == track.id ||
+            referenceBpm == null || trackBpm == null || referenceBpm <= 0.0 || trackBpm <= 0.0
+        ) {
+            1.0
+        } else {
+            (trackBpm / referenceBpm).coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+        }
+        val markers = poiCache[track.id].orEmpty().map { PlanMarker(it.timeSeconds, it.kind, it.strength) }
+        return ClipMusic.conformed(
+            bpm = trackBpm,
+            firstBeatSeconds = track.firstBeatSeconds ?: 0.0,
+            downbeatOffset = track.downbeatOffset,
+            markers = markers,
+            scale = scale,
+        )
+    }
+
+    /**
+     * Where a clip dropped or dragged to [desiredFrame] should actually start.
+     *
+     * Snapped against the clips on **both** decks, tier by tier: a bar line
+     * pulls hardest, beat four on beat two less, any other beat only when
+     * close, and a drop on a drop strongly. A clip that overlaps something but
+     * is not near anything it could be matched with is left where it was put.
+     * Over empty timeline, where there is nothing to match, the old single
+     * session grid still lands it on a beat.
+     */
+    private fun snapPlacement(track: Track, desiredFrame: Int, lengthFrames: Int): Int {
+        val tracks = _tracks.value
+        val others = (audioEngine.deckA.clips + audioEngine.deckB.clips)
+            .filter { it.id != track.id }
+            .mapNotNull { clip ->
+                tracks.firstOrNull { it.id == clip.id }?.let { other ->
+                    PlacedClip(clip.id, clip.startFrame, clip.frameCount, clipMusicFor(other))
+                }
+            }
+        val result = ClipSnapper.snap(
+            mover = PlacedClip(track.id, desiredFrame, lengthFrames, clipMusicFor(track)),
+            others = others,
+            sampleRate = audioEngine.output.sampleRate,
+        )
+        if (result.snap != null || result.overlapsOthers) return result.startFrame
+        return BeatSnap.snapFrame(
+            frame = desiredFrame,
+            framesPerBeat = sessionFramesPerBeat(),
+            phaseFrames = sessionBeatPhaseFrames(),
+        )
     }
 
     /**

@@ -445,6 +445,26 @@ class Deck(
     }
 
     /**
+     * Applies a computed beat alignment: tempo as the playback rate, phase as a
+     * single playhead nudge.
+     *
+     * @param phaseOffsetSeconds how far this deck's **beats** must move later,
+     *   as the domain computes it (`BeatGrid.phaseErrorTo`). Positive means the
+     *   beats sound later.
+     *
+     * Moving the *playhead* forward does the opposite: it plays material that
+     * was due later, so every beat arrives sooner. The nudge is therefore the
+     * negative of the offset, and it is scaled by [tempoRatio] because the
+     * offset is in played-back seconds while the playhead moves in material
+     * seconds. Passing the offset straight to [nudgeSeconds], as this used to,
+     * moved the beats the wrong way — doubling the error it meant to remove.
+     */
+    fun alignTo(tempoRatio: Double, phaseOffsetSeconds: Double) {
+        rate = tempoRatio
+        nudgeSeconds(-phaseOffsetSeconds * tempoRatio)
+    }
+
+    /**
      * Places the playhead [seconds] from the start of the timeline, wrapping if
      * that is past the end. Does nothing on an empty deck.
      */
