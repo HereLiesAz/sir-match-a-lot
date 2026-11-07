@@ -72,4 +72,34 @@ class BarStartTest {
         // 13.3 is 0.3 s into a half-second beat; 20.0 is on one. They never coincide.
         assertTrue(onsets(outgoing, 2.0) != onsets(incoming, 2.0))
     }
+
+    @Test
+    fun `lining up two playing decks nudges the later one the short way`() {
+        val music = ClipMusic(bpm = 120.0)
+        val a = deckOf().apply { playhead = 13.3 * sr }
+        val b = deckOf().apply { playhead = 20.9 * sr }
+
+        // The arithmetic the sync button uses: each deck's wait for its next bar,
+        // the difference folded into half a bar either way, and a nudge by it.
+        val waitA = music.secondsToNextBar(13.3)!!
+        val waitB = music.secondsToNextBar(20.9)!!
+        val bar = 2.0
+        var delta = waitB - waitA
+        if (delta > bar / 2) delta -= bar else if (delta < -bar / 2) delta += bar
+        b.nudgeSeconds(delta)
+
+        assertEquals(onsets(a, 4.0), onsets(b, 4.0))
+    }
+
+    @Test
+    fun `a deck whose bar is nearly a full bar away is nudged back, not forward`() {
+        val music = ClipMusic(bpm = 120.0)
+        val waitA = music.secondsToNextBar(14.1)!!   // 1.9 s to the next bar
+        val waitB = music.secondsToNextBar(21.9)!!   // 0.1 s to the next bar
+        var delta = waitB - waitA                    // -1.8: B would have to jump nearly a bar
+        val bar = 2.0
+        if (delta > bar / 2) delta -= bar else if (delta < -bar / 2) delta += bar
+
+        assertEquals(0.2, delta, 1e-9)               // folded to the short way round
+    }
 }

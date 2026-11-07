@@ -1162,7 +1162,16 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
 
             for (clip in engineDeck.clips) {
-                val points = poiCache[clip.id] ?: continue
+                // In the clip's own, conformed time: the landmarks were measured
+                // on the original file, and a clip stretched from 140 to 120 BPM
+                // has every one of them moved by the same factor. Drawn at the
+                // file's own time, a drop sat several bars early.
+                val track = _tracks.value.firstOrNull { it.id == clip.id }
+                val points = if (track != null) {
+                    clipMusicFor(track).markers.map { PointOfInterest(it.fileSeconds, it.kind, it.strength) }
+                } else {
+                    poiCache[clip.id] ?: continue
+                }
                 val clipStart = clip.startFrame.toDouble() / clip.buffer.sampleRate
                 for (point in points) {
                     val kind = when (point.kind) {
@@ -2671,16 +2680,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * time, so it is true to within the time between this read and the write
      * that uses it — a few milliseconds, where a polled timer was up to fifty.
      */
-    private fun secondsToOutgoingBar(incomingName: String): Double? {
-        val outgoing = deckNamed(if (incomingName == "A") "B" else "A")
-        if (!outgoing.playing) return null
-        val playhead = outgoing.playhead
-        val clip = outgoing.clips.firstOrNull {
+    private fun secondsToOutgoingBar(incomingName: String): Double? =
+        barWait(if (incomingName == "A") "B" else "A")?.first
+
+    /**
+     * Seconds until the deck [name] reaches its next bar line, paired with the
+     * length of its bar, or null when nothing is playing there to read.
+     */
+    private fun barWait(name: String): Pair<Double, Double>? {
+        val deck = deckNamed(name)
+        if (!deck.playing) return null
+        val playhead = deck.playhead
+        val clip = deck.clips.firstOrNull {
             playhead >= it.startFrame && playhead < it.endFrame
         } ?: return null
         val track = _tracks.value.firstOrNull { it.id == clip.id } ?: return null
+        val music = clipMusicFor(track)
         val seconds = (playhead - clip.startFrame) / clip.buffer.sampleRate
-        return clipMusicFor(track).secondsToNextBar(seconds)
+        val wait = music.secondsToNextBar(seconds) ?: return null
+        val bar = 60.0 / (music.bpm ?: return null) * music.beatsPerBar
+        return wait to bar
     }
 
     /** Carries out what the director asked for. */
@@ -2879,6 +2898,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      * already in step costs no audio processing at all.
      */
     fun syncToDeckA() {
+        // Clips are conformed to the session tempo and key at load, so the decks
+        // already agree on both; what is left is where each is in its bar. The
+        // tempo and pitch below would stretch audio that has already been
+        // stretched. Move Deck B's playhead the shortest way that brings its next
+        // bar line in when Deck A's arrives.
+        if (_reference.value != null) {
+            val a = barWait("A")
+            val b = barWait("B")
+            if (a == null || b == null) {
+                _feedbackMsg.value = "Both decks need to be playing to line their bars up"
+                return
+            }
+            val bar = b.second
+            var delta = b.first - a.first
+            if (delta > bar / 2) delta -= bar else if (delta < -bar / 2) delta += bar
+            deckNamed("B").nudgeSeconds(delta)
+            _feedbackMsg.value = "Bars lined up (${String.format("%+.0f", delta * 1000)} ms)"
+            return
+        }
         val reference = _loadedTracksA.value.firstOrNull { it.bpm != null }
         if (reference == null) {
             _feedbackMsg.value = "Deck A has no measured tempo to sync to"
