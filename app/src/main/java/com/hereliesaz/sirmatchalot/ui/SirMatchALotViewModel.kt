@@ -2891,7 +2891,25 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
     private val _cuesB = MutableStateFlow<List<Float?>>(listOf(null, null, null, null))
     val cuesB: StateFlow<List<Float?>> = _cuesB
 
-    fun setCue(deck: String, index: Int, time: Float) {
+    /**
+     * A cue time moved onto the nearest beat of whatever clip it falls in.
+     *
+     * A cue is where a deck starts from, and a start a few tens of milliseconds
+     * off the beat is a handover that is off the beat. Left alone when no clip
+     * covers the time or its tempo was never measured.
+     */
+    private fun quantisedCue(deck: String, seconds: Double): Double {
+        val engineDeck = deckNamed(deck)
+        val rate = audioEngine.output.sampleRate
+        val frame = seconds * rate
+        val clip = engineDeck.clips.firstOrNull { frame >= it.startFrame && frame < it.endFrame } ?: return seconds
+        val track = _tracks.value.firstOrNull { it.id == clip.id } ?: return seconds
+        val origin = clip.startFrame.toDouble() / rate
+        return origin + clipMusicFor(track).nearestBeat(seconds - origin)
+    }
+
+    fun setCue(deck: String, index: Int, rawTime: Float) {
+        val time = quantisedCue(deck, rawTime.toDouble()).coerceAtLeast(0.0).toFloat()
         if (deck == "A") {
             val nextCues = _cuesA.value.toMutableList()
             nextCues[index - 1] = time

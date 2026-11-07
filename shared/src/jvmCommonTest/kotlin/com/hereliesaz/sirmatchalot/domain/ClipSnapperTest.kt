@@ -197,4 +197,14 @@ class ClipMusicBarTest {
     fun `with no tempo the entry is left as it was`() {
         assertEquals(1.7, music(bpm = null).barAtOrAfter(1.7), 0.0)
     }
+
+    @Test
+    fun `the nearest beat follows the first beat and tempo`() {
+        val m = music(firstBeat = 0.3)
+        // Beats at 0.3, 0.8, 1.3 ...
+        assertEquals(1.3, m.nearestBeat(1.1), 1e-9)
+        assertEquals(0.8, m.nearestBeat(0.6), 1e-9)
+        assertEquals(-0.2, m.nearestBeat(0.0), 1e-9)  // -0.2 is nearer than 0.3
+        assertEquals(2.2, music(bpm = null).nearestBeat(2.2), 0.0)
+    }
 }
