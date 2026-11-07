@@ -143,3 +143,58 @@ class ClipSnapperTest {
         assertEquals(b.startFrame, ClipSnapper.snap(b, listOf(placed("a", 0.0)), 0).startFrame)
     }
 }
+
+/** Where in its bar a clip is, as a starting deck needs to know it. */
+class ClipMusicBarTest {
+
+    private fun music(firstBeat: Double = 0.0, offset: Int = 0, perBar: Int = 4, bpm: Double? = 120.0) =
+        ClipMusic(bpm = bpm, firstBeatSeconds = firstBeat, beatsPerBar = perBar, downbeatOffset = offset)
+
+    @Test
+    fun `time to the next bar counts down through the bar`() {
+        // 120 BPM four four: a bar every 2 s, bar lines at 0, 2, 4 ...
+        assertEquals(0.7, music().secondsToNextBar(13.3)!!, 1e-9)
+        assertEquals(2.0 - 0.25, music().secondsToNextBar(0.25)!!, 1e-9)
+    }
+
+    @Test
+    fun `on a bar line there is no wait`() {
+        assertEquals(0.0, music().secondsToNextBar(14.0)!!, 0.0)
+        assertEquals(0.0, music().secondsToNextBar(0.0)!!, 0.0)
+    }
+
+    @Test
+    fun `bar lines follow the first beat and the downbeat offset`() {
+        // First beat 0.3, downbeat on the third beat: bar lines at 0.3 + 1.0 + 2n = 1.3, 3.3 ...
+        assertEquals(0.3, music(firstBeat = 0.3, offset = 2).secondsToNextBar(3.0)!!, 1e-9)
+        // Before the first bar line still counts forward to it.
+        assertEquals(1.3, music(firstBeat = 0.3, offset = 2).secondsToNextBar(0.0)!!, 1e-9)
+    }
+
+    @Test
+    fun `a three four bar is three beats long`() {
+        // 1.5 s a bar: 4.0 is 1.0 s past the line at 3.0, so 0.5 s to the next.
+        assertEquals(0.5, music(perBar = 3).secondsToNextBar(4.0)!!, 1e-9)
+    }
+
+    @Test
+    fun `with no measured tempo there is nothing to count`() {
+        assertNull(music(bpm = null).secondsToNextBar(5.0))
+        assertNull(music(bpm = 0.0).secondsToNextBar(5.0))
+    }
+
+    @Test
+    fun `an entry already on a bar is kept and one off a bar moves to the next`() {
+        val m = music(firstBeat = 0.3)
+        // Bar lines at 0.3, 2.3, 4.3 ...
+        assertEquals(4.3, m.barAtOrAfter(4.3), 0.0)
+        assertEquals(4.3000001, m.barAtOrAfter(4.3000001), 0.0)
+        assertEquals(0.3, m.barAtOrAfter(0.0), 1e-9)
+        assertEquals(6.3, m.barAtOrAfter(4.5), 1e-9)
+    }
+
+    @Test
+    fun `with no tempo the entry is left as it was`() {
+        assertEquals(1.7, music(bpm = null).barAtOrAfter(1.7), 0.0)
+    }
+}
