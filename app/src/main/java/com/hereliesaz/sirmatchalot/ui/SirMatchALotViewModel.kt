@@ -1777,11 +1777,37 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         if (ratio <= 0.0 || abs(ratio - 1.0) < 1e-3) return
         val engineDeck = if (deck == PlatterGeometry.Deck.A) audioEngine.deckA else audioEngine.deckB
         val existing = engineDeck.clips.firstOrNull { it.id == clipId } ?: return
-        val pristine = decoded[clipId] ?: existing.buffer
+        val decodedOriginal = decoded[clipId]
+        val pristine = decodedOriginal ?: existing.buffer
 
+        // The pinch ratio is relative to the clip *as it is now*, which has
+        // already been stretched to the session tempo; `pristine` is the
+        // unconformed original. Working out the whole-beat length the pinch asks
+        // for from the clip on the deck, and expressing it as a scale of the
+        // original, is what keeps a conformed clip from being re-rendered as if it
+        // had never been stretched (a pinch of 1.1 used to *shorten* a clip that
+        // had been conformed to 1.17).
         val framesPerBeat = sessionFramesPerBeat()
-        val snapped = BeatSnap.snapRatio(pristine.frameCount, ratio, framesPerBeat)
+        val targetFrames = (existing.frameCount * ratio).toInt().coerceAtLeast(1)
+        val snappedFrames = BeatSnap.snapLength(targetFrames, framesPerBeat)
+        val snapped = (snappedFrames.toDouble() / pristine.frameCount)
             .coerceIn(MIN_CLIP_SCALE, MAX_CLIP_SCALE)
+
+        // The conform also shifted the key; rendering from the original has to do
+        // it again or the harmonic match made at load stops being one. Not when
+        // the original is gone and the deck's own (already shifted) audio is the
+        // source.
+        val semitones = if (decodedOriginal != null) {
+            val moved = _tracks.value.firstOrNull { it.id == clipId }
+            val reference = _reference.value
+            if (moved != null && reference != null && reference.id != moved.id) {
+                BeatSync.align(moved, reference)?.semitoneShift ?: 0
+            } else {
+                0
+            }
+        } else {
+            0
+        }
 
         viewModelScope.launch(Dispatchers.Default) {
             _feedbackMsg.value = "Stretching to ${String.format("%.2fx", snapped)}..."
@@ -1789,7 +1815,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                 id = BackgroundWork.stretchId(clipId),
                 label = "Stretching ${clipTitle(clipId)}",
                 detail = String.format("%.2fx, holding pitch", snapped),
-            ) { pristine.timeStretched(snapped) }
+            ) {
+                val timed = pristine.timeStretched(snapped)
+                if (semitones != 0) timed.pitchShifted(semitones.toDouble()) else timed
+            }
             val current = engineDeck.clips.firstOrNull { it.id == clipId } ?: return@launch
             engineDeck.clips = engineDeck.clips.map { clip ->
                 if (clip.id != clipId) {
