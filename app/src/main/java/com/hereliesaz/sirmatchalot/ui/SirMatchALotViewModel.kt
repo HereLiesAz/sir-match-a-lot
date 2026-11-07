@@ -2512,6 +2512,26 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         releaseMixControls()
     }
 
+    /**
+     * Seconds until the deck that is not [incomingName] reaches its next bar
+     * line, or null when there is nothing playing there to line up with.
+     *
+     * Read from the outgoing deck's own playhead, in the clip's own (conformed)
+     * time, so it is true to within the time between this read and the write
+     * that uses it — a few milliseconds, where a polled timer was up to fifty.
+     */
+    private fun secondsToOutgoingBar(incomingName: String): Double? {
+        val outgoing = deckNamed(if (incomingName == "A") "B" else "A")
+        if (!outgoing.playing) return null
+        val playhead = outgoing.playhead
+        val clip = outgoing.clips.firstOrNull {
+            playhead >= it.startFrame && playhead < it.endFrame
+        } ?: return null
+        val track = _tracks.value.firstOrNull { it.id == clip.id } ?: return null
+        val seconds = (playhead - clip.startFrame) / clip.buffer.sampleRate
+        return clipMusicFor(track).secondsToNextBar(seconds)
+    }
+
     /** Carries out what the director asked for. */
     private fun apply(commands: List<MixCommand>) {
         for (command in commands) when (command) {
@@ -2536,23 +2556,36 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
                     .firstOrNull { it.id == command.track.id }
                     ?.buffer?.sampleRate
                     ?: engineDeck.outputSampleRate
+                // The entry is moved onto a bar line of the incoming clip first: the
+                // start of a file is only a bar line if the music begins on one.
+                val entrySeconds = clipMusicFor(command.track).barAtOrAfter(command.entrySeconds)
+                val entryFrames = (entrySeconds * clipRate).coerceAtLeast(0.0)
+                // Where the outgoing deck is in its bar decides how long to wait
+                // for the incoming bar line: start the incoming deck that much
+                // *before* its entry point and the two sets of bars arrive
+                // together. Starting at the entry the instant a timer fires put
+                // the handover a random fraction of a bar out.
+                val lead = secondsToOutgoingBar(name)
                 engineDeck.playhead =
-                    (command.entrySeconds * clipRate).coerceAtLeast(0.0)
+                    if (lead != null && entryFrames - lead * clipRate >= 0.0) entryFrames - lead * clipRate
+                    else entryFrames
                 engineDeck.playing = true
                 _isPlaying.value = true
                 engine.wake()
 
                 // Clips are conformed to the session reference at load, so they
-                // already share its tempo and key. Applying the planner's
-                // alignment on top would correct a difference that has already
-                // been rendered away — a track would be stretched twice and
-                // shifted twice. Only phase is still worth applying, and only
-                // when the clip was never conformed.
+                // already share its tempo and key, and the planner's alignment
+                // would correct a difference that has already been rendered away.
+                // Its *phase* was a difference between the two files' first beats
+                // at time zero, which says nothing about where a deck that is
+                // already playing is in its bar, so it is not applied here: the
+                // lead above is. A clip that was never conformed (no reference)
+                // still takes the planner's tempo and phase.
                 command.alignment?.let { alignment ->
                     if (_reference.value == null) {
                         audioEngine.applyAlignment(name, alignment.tempoRatio, alignment.phaseOffsetSeconds)
                     } else {
-                        audioEngine.applyAlignment(name, 1.0, alignment.phaseOffsetSeconds)
+                        audioEngine.applyAlignment(name, 1.0, 0.0)
                     }
                 }
             }

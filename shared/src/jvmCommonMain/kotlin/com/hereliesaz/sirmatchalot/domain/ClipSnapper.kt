@@ -18,7 +18,42 @@ data class ClipMusic(
     val downbeatOffset: Int = 0,
     val markers: List<PlanMarker> = emptyList(),
 ) {
+    /**
+     * Seconds from [positionSeconds] (in the clip's own time) to its next bar
+     * line, or 0 when it is already on one. Null when no tempo was measured.
+     *
+     * What a starting deck needs to know about the deck it is joining: bring the
+     * incoming bar line in exactly this long from now and the two sets of bars
+     * land together, wherever in its bar the outgoing track happens to be.
+     */
+    fun secondsToNextBar(positionSeconds: Double): Double? {
+        val perMinute = bpm?.takeIf { it > 0.0 } ?: return null
+        val beat = 60.0 / perMinute
+        val bar = beat * beatsPerBar
+        val firstBar = firstBeatSeconds + downbeatOffset * beat
+        val into = ((positionSeconds - firstBar) % bar + bar) % bar
+        return if (into < BAR_EPSILON || bar - into < BAR_EPSILON) 0.0 else bar - into
+    }
+
+    /**
+     * [positionSeconds] if it is already on a bar line (within
+     * [toleranceSeconds]), otherwise the next bar line after it. Unchanged when
+     * no tempo was measured.
+     *
+     * An entry point that is not on a bar cannot be lined up with anything: the
+     * start of a file is only a bar line if the music happens to begin on one.
+     */
+    fun barAtOrAfter(positionSeconds: Double, toleranceSeconds: Double = 0.005): Double {
+        val wait = secondsToNextBar(positionSeconds) ?: return positionSeconds
+        val perMinute = bpm ?: return positionSeconds
+        val bar = 60.0 / perMinute * beatsPerBar
+        return if (wait < toleranceSeconds || bar - wait < toleranceSeconds) positionSeconds
+        else positionSeconds + wait
+    }
+
     companion object {
+        private const val BAR_EPSILON = 1e-9
+
         /**
          * The music of a track after it was stretched to be [scale] times longer.
          *

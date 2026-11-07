@@ -29,10 +29,15 @@ tier.
 - [x] `applyAlignment` phase sign: `Deck.alignTo` nudges the playhead by the
       negative of the beat offset, scaled by tempo ratio (PhaseAlignmentTest
       renders two click decks; the old sign fails 4 of its 5 tests).
-- [ ] `BeatSync` phase frame and downbeats: `align()` still compares first beats
-      at t=0 and ignores bar position, and the director's `Start` applies it to
-      a deck already moved to a bar-snapped entry. Should be computed from the
-      outgoing deck's beat phase at the moment of the start, on the bar.
+- [x] Director `Start` lines bars up: the incoming deck is started `lead`
+      seconds before its (bar-snapped) entry, where `lead` is the time to the
+      outgoing deck's next bar line (`ClipMusic.secondsToNextBar`, read from the
+      outgoing playhead). The planner's first-beat phase is no longer applied to
+      a conformed clip. Limits: skipped when the lead would start before the
+      file begins; accurate to the few ms between reading one playhead and
+      writing the other, not sample-accurate; `BeatSync.align` itself still
+      compares first beats at t=0 (used only for unconformed clips and the
+      SYNC button).
 - [ ] Persist beat anchors, time signature and markers in analysis.
 - [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
       dragged clip against the clips on both decks, in conformed time, so bars
