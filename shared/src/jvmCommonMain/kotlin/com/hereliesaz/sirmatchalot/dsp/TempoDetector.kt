@@ -51,41 +51,21 @@ class TempoDetector(
         val maxLag = (envelope.frameRate * 60.0 / minBpm).toInt()
         if (maxLag <= minLag || maxLag >= x.size) return null
 
-        // Mean-remove so the autocorrelation measures periodicity rather than
-        // the envelope's DC level.
-        val mean = x.average().toFloat()
-        val centred = FloatArray(x.size) { x[it] - mean }
+        // Which lag wins is decided on the *smoothed* envelope, because a click is
+        // one or two frames wide and the true period is rarely a whole number of
+        // frames: at an integer lag the pulses overlap by a fraction that depends
+        // on the lag, so a lag that happened to land near whole frames outscored
+        // the true one and every tempo from about 121 BPM up was read as its half.
+        // Widening each pulse makes the overlap vary smoothly with the lag.
+        val chosen = scoreLags(smooth(x), minLag, maxLag, envelope.frameRate) ?: return null
 
-        val zeroLag = autocorrelation(centred, 0)
-        if (zeroLag <= 0.0) return null
+        // Confidence is still taken from the raw envelope: that is the scale the
+        // analyser's gate was calibrated on (noise, tone and chord below it, real
+        // click tracks above), and it answers "is there a clear pulse at all",
+        // which smoothing makes slightly easier to fake.
+        val raw = scoreLags(x, minLag, maxLag, envelope.frameRate) ?: return null
 
-        val scores = DoubleArray(maxLag + 1)
-        var best = minLag
-        var bestScore = -Double.MAX_VALUE
-
-        for (lag in minLag..maxLag) {
-            var score = autocorrelation(centred, lag) / zeroLag
-            var weight = 1.0
-            for (multiple in 2..3) {
-                val harmonicLag = lag * multiple
-                if (harmonicLag >= x.size) break
-                val harmonicWeight = 1.0 / multiple
-                score += harmonicWeight * autocorrelation(centred, harmonicLag) / zeroLag
-                weight += harmonicWeight
-            }
-            score /= weight
-
-            val bpm = envelope.frameRate * 60.0 / lag
-            score *= tempoPrior(bpm)
-
-            scores[lag] = score
-            if (score > bestScore) {
-                bestScore = score
-                best = lag
-            }
-        }
-
-        val refinedLag = parabolicRefine(scores, best, minLag, maxLag)
+        val refinedLag = parabolicRefine(chosen.scores, chosen.best, minLag, maxLag)
         val coarsePhase = estimatePhase(x, refinedLag)
 
         // The period above is good to a fraction of a percent, which is seconds
@@ -97,7 +77,7 @@ class TempoDetector(
         return TempoEstimate(
             bpm = bpm,
             firstBeatSeconds = phase / envelope.frameRate,
-            confidence = confidenceOf(scores, minLag, maxLag, bestScore),
+            confidence = confidenceOf(raw.scores, minLag, maxLag, raw.bestScore),
         )
     }
 
@@ -189,6 +169,61 @@ class TempoDetector(
         var normalised = a % b
         if (normalised < 0) normalised += b
         return b to normalised
+    }
+
+    private class LagScores(val scores: DoubleArray, val best: Int, val bestScore: Double)
+
+    /**
+     * The harmonic-reinforced, prior-weighted autocorrelation score of every lag in
+     * [minLag]..[maxLag] of [signal], and the winning lag; null when [signal] has
+     * no variation to correlate.
+     */
+    private fun scoreLags(signal: FloatArray, minLag: Int, maxLag: Int, frameRate: Double): LagScores? {
+        // Mean-remove so the autocorrelation measures periodicity rather than
+        // the envelope's DC level.
+        val mean = signal.average().toFloat()
+        val centred = FloatArray(signal.size) { signal[it] - mean }
+
+        val zeroLag = autocorrelation(centred, 0)
+        if (zeroLag <= 0.0) return null
+
+        val scores = DoubleArray(maxLag + 1)
+        var best = minLag
+        var bestScore = -Double.MAX_VALUE
+
+        for (lag in minLag..maxLag) {
+            var score = autocorrelation(centred, lag) / zeroLag
+            var weight = 1.0
+            for (multiple in 2..3) {
+                val harmonicLag = lag * multiple
+                if (harmonicLag >= centred.size) break
+                val harmonicWeight = 1.0 / multiple
+                score += harmonicWeight * autocorrelation(centred, harmonicLag) / zeroLag
+                weight += harmonicWeight
+            }
+            score /= weight
+
+            val bpm = frameRate * 60.0 / lag
+            score *= tempoPrior(bpm)
+
+            scores[lag] = score
+            if (score > bestScore) {
+                bestScore = score
+                best = lag
+            }
+        }
+        return LagScores(scores, best, bestScore)
+    }
+
+    /** A [0.25, 0.5, 0.25] smoothing of [x]; the ends keep their own value on the missing side. */
+    private fun smooth(x: FloatArray): FloatArray {
+        val out = FloatArray(x.size)
+        for (i in x.indices) {
+            val left = x[if (i == 0) 0 else i - 1]
+            val right = x[if (i == x.size - 1) x.size - 1 else i + 1]
+            out[i] = 0.25f * left + 0.5f * x[i] + 0.25f * right
+        }
+        return out
     }
 
     /** Sum of lagged products, normalised by overlap count so short lags are not favoured. */

@@ -50,9 +50,11 @@ tier.
       is untested, and a track whose tempo genuinely drifts needs per-beat
       anchors, which this does not provide.
 - [ ] Time signature: no meter detector; four four is assumed everywhere.
-- [ ] Octave errors: the base detector reads some tempi at half or double
-      (121.5 BPM came out as 60.75); refinement makes the reading precise, not
-      right.
+- [x] Octave errors: every tempo from 90 to 149 BPM on synthetic clicks is now
+      read as itself (the lag is chosen on a smoothed envelope; 18 of 86 were
+      read as their half before, all from 121 BPM up). 150 BPM and up is still
+      ambiguous with half, which is a valid reading of the same pulse and is
+      handled by the half/double-time ladder.
 - [x] Wire `GridSnap` into the ViewModel: `ClipSnapper` snaps a dropped or
       dragged clip against the clips on both decks, in conformed time, so bars
       land on bars and drops on drops. Over empty timeline the old session-grid
