@@ -210,3 +210,90 @@ class TrackStructureTest {
 
     private fun abs(x: Double) = kotlin.math.abs(x)
 }
+
+/** Entry and exit points the user chose, which beat everything measured. */
+class TrackStructurePinTest {
+
+    private fun structure(
+        pinnedEntry: Double? = null,
+        pinnedExit: Double? = null,
+        points: List<PointOfInterest> = emptyList(),
+    ) = TrackStructure(
+        trackId = "t",
+        durationSeconds = 240.0,
+        bpm = 120.0,
+        firstBeatSeconds = 0.0,
+        points = points,
+        pinnedEntrySeconds = pinnedEntry,
+        pinnedExitSeconds = pinnedExit,
+    )
+
+    @Test
+    fun `a pinned entry comes first and sits on a bar line`() {
+        // Bars are 2 s at 120 BPM, so 31.3 is moved to 32.
+        val entries = structure(pinnedEntry = 31.3).entries()
+        assertEquals(32.0, entries.first(), 1e-9)
+        assertEquals(0.0, entries.last(), 0.0)
+    }
+
+    @Test
+    fun `a pinned entry past the end of the track is ignored`() {
+        assertEquals(listOf(0.0), structure(pinnedEntry = 500.0).entries())
+    }
+
+    @Test
+    fun `a pinned entry that matches a measured one is listed once`() {
+        val s = structure(
+            pinnedEntry = 40.0,
+            points = listOf(PointOfInterest(72.0, PointOfInterest.Kind.DROP, 1f)),
+        )
+        // The drop's run-up is 16 bars = 32 s before it: 40.0 as well.
+        assertTrue("the measured entry should be 40.0", s.pinOptions().entries.any { it.seconds == 40.0 })
+        assertEquals(1, s.entries().count { it == 40.0 })
+    }
+
+    @Test
+    fun `a pinned exit beats a measured breakdown`() {
+        val s = structure(
+            pinnedExit = 100.0,
+            points = listOf(PointOfInterest(150.0, PointOfInterest.Kind.BREAKDOWN, 1f)),
+        )
+        val exits = s.exits(after = 60.0)
+        assertEquals(100.0, exits.first().atSeconds, 1e-9)
+        assertTrue(exits.first().pinned)
+        assertTrue("the measured exits stay available behind it", exits.any { it.atSeconds == 150.0 })
+    }
+
+    @Test
+    fun `a pinned exit too early to leave is ignored`() {
+        val exits = structure(pinnedExit = 30.0).exits(after = 60.0)
+        assertTrue(exits.none { it.pinned })
+    }
+
+    @Test
+    fun `pins are scaled with the rest of the structure`() {
+        val s = structure(pinnedEntry = 32.0, pinnedExit = 100.0).scaledBy(1.25)
+        assertEquals(40.0, s.pinnedEntrySeconds!!, 1e-9)
+        assertEquals(125.0, s.pinnedExitSeconds!!, 1e-9)
+    }
+
+    @Test
+    fun `pin options list the measured places without the pin`() {
+        val s = structure(
+            pinnedEntry = 10.0,
+            pinnedExit = 100.0,
+            points = listOf(
+                PointOfInterest(72.0, PointOfInterest.Kind.DROP, 1f),
+                PointOfInterest(150.0, PointOfInterest.Kind.BREAKDOWN, 1f),
+            ),
+        )
+        val options = s.pinOptions()
+
+        assertEquals(listOf(40.0, 0.0), options.entries.map { it.seconds })
+        assertEquals("the start", options.entries.last().label)
+        assertEquals(150.0, options.exits.first().seconds, 1e-9)
+        assertEquals("breakdown", options.exits.first().label)
+        assertEquals("end of the track", options.exits.last().label)
+        assertTrue("a pin is not one of its own options", options.exits.none { it.seconds == 100.0 })
+    }
+}

@@ -36,6 +36,8 @@ import com.hereliesaz.sirmatchalot.domain.MixPlanner
 import com.hereliesaz.sirmatchalot.domain.MixMatch
 import com.hereliesaz.sirmatchalot.domain.RankedTrack
 import com.hereliesaz.sirmatchalot.domain.LoopHarvest
+import com.hereliesaz.sirmatchalot.domain.PinOptions
+import com.hereliesaz.sirmatchalot.domain.TrackPins
 import com.hereliesaz.sirmatchalot.domain.TrackStructure
 import com.hereliesaz.sirmatchalot.domain.TransitionRecord
 import com.hereliesaz.sirmatchalot.domain.TransitionStyle
@@ -1327,12 +1329,13 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
      */
     private fun structureFor(track: Track): TrackStructure? {
         if (track.durationMs <= 0L || track.bpm == null) return null
+        val pinned = _pins.value[track.id]
         val structure = TrackStructure.of(
             track = track,
             points = poiCache[track.id].orEmpty(),
             loops = loopsFor(track),
             energy = energyCache[track.id],
-        )
+        ).copy(pinnedEntrySeconds = pinned?.entrySeconds, pinnedExitSeconds = pinned?.exitSeconds)
         val reference = _reference.value?.bpm
         val trackBpm = track.bpm
         // Conforming multiplies the rate by reference/source, so the played
@@ -2223,6 +2226,41 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             }
         }
         _mixPlan.value = MixPlanner.planFor(edited)
+    }
+
+    // --- Pins: where a track comes in and where it leaves ---
+    //
+    // The planner picks an entry and an exit for every track; a person may know
+    // better. A pin is chosen from the places the planner itself would consider
+    // (see TrackStructure.pinOptions), in the file's own time, and applied in
+    // structureFor so the director and the timeline both honour it. Kept for the
+    // session only; they are not saved with the track.
+
+    private val _pins = MutableStateFlow<Map<String, TrackPins>>(emptyMap())
+    val pins: StateFlow<Map<String, TrackPins>> = _pins
+
+    /** Pins the entry of [trackId] at [seconds] of the file, or back to automatic with null. */
+    fun pinEntry(trackId: String, seconds: Double?) = updatePin(trackId) { it.copy(entrySeconds = seconds) }
+
+    /** Pins the exit of [trackId] at [seconds] of the file, or back to automatic with null. */
+    fun pinExit(trackId: String, seconds: Double?) = updatePin(trackId) { it.copy(exitSeconds = seconds) }
+
+    private fun updatePin(trackId: String, change: (TrackPins) -> TrackPins) {
+        val next = change(_pins.value[trackId] ?: TrackPins())
+        _pins.value = if (next.isEmpty) _pins.value - trackId else _pins.value + (trackId to next)
+        if (_mixDirector.value != null) {
+            _feedbackMsg.value = "Pinned points apply to handovers that have not started yet"
+        }
+    }
+
+    /** What [track] can be pinned at, or null when it has no measured shape. */
+    fun pinOptions(track: Track): PinOptions? {
+        if (track.durationMs <= 0L || track.bpm == null) return null
+        return TrackStructure.of(
+            track = track,
+            points = poiCache[track.id].orEmpty(),
+            loops = loopsFor(track),
+        ).pinOptions()
     }
 
     /** Plays the queue from [index]: a tap on a row, "next" and "previous". */

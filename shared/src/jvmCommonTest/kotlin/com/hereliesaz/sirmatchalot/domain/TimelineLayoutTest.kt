@@ -208,4 +208,21 @@ class TimelineLayoutTest {
         assertEquals(1.05, timeline.clips[1].ratio, 1e-9)
         assertEquals(-2, timeline.clips[1].semitones)
     }
+
+    @Test
+    fun `a pinned entry and exit are where the clips come in and leave, on bars`() {
+        val timeline = layout(
+            step("a"), step("b", ratio = 1.0),
+            shapes = mapOf(
+                "a" to shape("a").copy(pinnedExitSeconds = 150.3),
+                "b" to shape("b").copy(pinnedEntrySeconds = 45.1),
+            ),
+        )
+        val (a, b) = timeline.clips
+
+        // Bars are 2 s at 120 BPM: 150.3 -> 150, 45.1 -> 46.
+        assertEquals(150.0, a.outSeconds, 1e-9)
+        assertEquals(46.0, b.inSeconds, 1e-9)
+        assertBarsCoincide(a, b)
+    }
 }

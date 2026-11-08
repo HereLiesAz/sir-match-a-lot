@@ -67,7 +67,8 @@ tier.
       land on bars and drops on drops. Over empty timeline the old session-grid
       snap still applies. Cues are quantised to the nearest beat
       (`ClipMusic.nearestBeat`). Not done: pinch-stretch (`snapRatio` still
-      rounds to whole beats of the session grid), desktop.
+      rounds to whole beats of the session grid). Desktop has nothing to snap: it
+      has two decks, a crossfader and a sampler, but no timeline or clip placement.
 - [x] Plan screen (first cut): the Queue tab lists the plan, one row per track
       with the score and advice of the transition into it, the track playing
       highlighted, and the tracks the planner left out. Move / remove / shuffle
@@ -76,7 +77,11 @@ tier.
       reordered, removed or shuffled (`MixDirector.replaceUpcoming`). QUEUE and
       RADIO on every library track. NEXT blends into the next track when it is
       already on its deck (`MixDirector.beginTransitionNow`), otherwise cuts.
-      Not done: lanes and a bar ruler, pinning entry and exit points.
+      Entry and exit points can be pinned per track (IN / OUT chips on a row):
+      picked from the places the planner itself would consider
+      (`TrackStructure.pinOptions`), applied in `structureFor` so the director
+      and the timeline both honour them. Session only: pins are not saved.
+      Not done: lanes and a bar ruler.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 
