@@ -109,10 +109,14 @@ class TrackAnalyzer(
             ?.takeIf { it.confidence >= minimumTempoConfidence }
 
         val beatGrid = tempo?.let {
+            // The meter first: which beat is the downbeat is a question about
+            // bars, and a bar is three beats or four.
+            val perBar = BeatGrid.inferBeatsPerBar(onsets, it.bpm, it.firstBeatSeconds)
             BeatGrid(
                 bpm = it.bpm,
                 firstBeatSeconds = it.firstBeatSeconds,
-                downbeatOffset = BeatGrid.inferDownbeat(onsets, it.bpm, it.firstBeatSeconds),
+                beatsPerBar = perBar,
+                downbeatOffset = BeatGrid.inferDownbeat(onsets, it.bpm, it.firstBeatSeconds, perBar),
             )
         }
 

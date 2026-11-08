@@ -49,7 +49,14 @@ tier.
       BPM, grid within 40 ms after 300 s (was 0.3% off and 80 ms+). Real music
       is untested, and a track whose tempo genuinely drifts needs per-beat
       anchors, which this does not provide.
-- [ ] Time signature: no meter detector; four four is assumed everywhere.
+- [x] Time signature: `BeatGrid.inferBeatsPerBar` folds beat strengths into bars
+      of three and of four and reads three only when it clearly beats four
+      (contrast >= 0.2 and over twice four's, with 24+ beats); anything else is
+      four. Stored as `Track.beatsPerBar` (Room v6, migration 5->6, analysis
+      version 3 so tracks are re-read), carried through `TrackStructure`,
+      `TimelineLayout` and `ClipMusic` so bars and snapping use the real length.
+      Synthetic click tracks only; real music is untested, and no other meter
+      (6/8, 5/4, 7/8) is read. Session files do not record it yet.
 - [x] Octave errors: every tempo from 90 to 149 BPM on synthetic clicks is now
       read as itself (the lag is chosen on a smoothed envelope; 18 of 86 were
       read as their half before, all from 121 BPM up). 150 BPM and up is still

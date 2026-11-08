@@ -126,6 +126,7 @@ class MigrationSqlTest {
         createStatement().use { statement ->
             for (sql in AppDatabase.MIGRATION_3_4_STATEMENTS) statement.executeUpdate(sql)
             for (sql in AppDatabase.MIGRATION_4_5_STATEMENTS) statement.executeUpdate(sql)
+            for (sql in AppDatabase.MIGRATION_5_6_STATEMENTS) statement.executeUpdate(sql)
         }
     }
 
@@ -354,8 +355,8 @@ class MigrationSqlTest {
         //
         // Reading the exported JSON makes the entity itself the expectation, so
         // the next column added has to appear in a migration or this fails here.
-        val expected = exportedColumnDefinitions(version = 5)
-        assertTrue("no exported schema found for version 5", expected.isNotEmpty())
+        val expected = exportedColumnDefinitions(version = 6)
+        assertTrue("no exported schema found for version 6", expected.isNotEmpty())
 
         openVersion2Database().use { connection ->
             connection.insertVersion2Row("a")
@@ -382,7 +383,7 @@ class MigrationSqlTest {
 
             assertEquals(
                 "a version 1 upgrade must land on exactly the schema Room validates",
-                exportedColumnDefinitions(version = 5),
+                exportedColumnDefinitions(version = 6),
                 connection.columnDefinitions(),
             )
             connection.createStatement().use { statement ->
@@ -409,7 +410,7 @@ class MigrationSqlTest {
         openVersion2Database().use { connection ->
             connection.migrateAll()
             val columns = connection.columnNames()
-            for (expected in listOf("id", "title", "artist", "sourceUri", "cachedPath", "peaksPath", "energyPath", "markersCsv")) {
+            for (expected in listOf("id", "title", "artist", "sourceUri", "cachedPath", "peaksPath", "energyPath", "markersCsv", "beatsPerBar")) {
                 assertTrue("the migrated table is missing `$expected`", expected in columns)
             }
         }

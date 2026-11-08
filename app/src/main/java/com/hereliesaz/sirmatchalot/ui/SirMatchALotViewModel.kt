@@ -1056,6 +1056,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             firstBeatSeconds = reference?.firstBeatSeconds,
             cycleSeconds = engineDeck.cycleSeconds,
             downbeatOffset = reference?.downbeatOffset ?: 0,
+            beatsPerBar = reference?.beatsPerBar?.takeIf { it > 0 } ?: 4,
         )
     }
 
@@ -1720,6 +1721,7 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
             downbeatOffset = track.downbeatOffset,
             markers = markers,
             scale = scale,
+            beatsPerBar = track.beatsPerBar,
         )
     }
 

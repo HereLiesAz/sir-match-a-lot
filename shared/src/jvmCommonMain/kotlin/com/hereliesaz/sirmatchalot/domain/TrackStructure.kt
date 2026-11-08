@@ -22,6 +22,7 @@ import kotlin.math.abs
  * @param points structural landmarks, from [com.hereliesaz.sirmatchalot.dsp.StructureFinder].
  * @param loops sections that repeat cleanly, ranked by self-similarity.
  * @param energy the measured energy curve, or null when it was never computed.
+ * @param beatsPerBar beats in a bar, as measured; four until it is.
  */
 data class TrackStructure(
     val trackId: String,
@@ -32,6 +33,7 @@ data class TrackStructure(
     val points: List<PointOfInterest> = emptyList(),
     val loops: List<LoopCandidate> = emptyList(),
     val energy: EnergyCurve? = null,
+    val beatsPerBar: Int = BeatGrid.DEFAULT_BEATS_PER_BAR,
 ) {
     /** The measured grid, or null when the tempo was never found. */
     val grid: BeatGrid? = bpm
@@ -40,7 +42,8 @@ data class TrackStructure(
             BeatGrid(
                 bpm = it,
                 firstBeatSeconds = firstBeatSeconds,
-                downbeatOffset = BeatGrid.sanitiseDownbeat(downbeatOffset),
+                beatsPerBar = beatsPerBar.coerceAtLeast(1),
+                downbeatOffset = BeatGrid.sanitiseDownbeat(downbeatOffset, beatsPerBar.coerceAtLeast(1)),
             )
         }
 
@@ -234,6 +237,7 @@ data class TrackStructure(
             points = points,
             loops = loops,
             energy = energy,
+            beatsPerBar = track.beatsPerBar.takeIf { it > 0 } ?: BeatGrid.DEFAULT_BEATS_PER_BAR,
         )
     }
 }

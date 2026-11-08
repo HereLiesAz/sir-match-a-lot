@@ -116,6 +116,7 @@ object TimelineLayout {
         bpm = shape.bpm,
         firstBeatSeconds = shape.firstBeatSeconds,
         downbeatOffset = shape.downbeatOffset,
+        beatsPerBar = shape.beatsPerBar,
         startSeconds = startSeconds,
         inSeconds = inSeconds,
         outSeconds = shape.durationSeconds,

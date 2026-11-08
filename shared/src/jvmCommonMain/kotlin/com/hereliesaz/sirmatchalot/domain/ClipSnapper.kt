@@ -78,12 +78,14 @@ data class ClipMusic(
             downbeatOffset: Int,
             markers: List<PlanMarker>,
             scale: Double,
+            beatsPerBar: Int = BeatGrid.DEFAULT_BEATS_PER_BAR,
         ): ClipMusic {
             val s = if (scale > 0.0 && scale.isFinite()) scale else 1.0
             return ClipMusic(
                 bpm = bpm?.takeIf { it > 0.0 }?.let { it / s },
                 firstBeatSeconds = firstBeatSeconds * s,
-                downbeatOffset = BeatGrid.sanitiseDownbeat(downbeatOffset),
+                beatsPerBar = beatsPerBar.coerceAtLeast(1),
+                downbeatOffset = BeatGrid.sanitiseDownbeat(downbeatOffset, beatsPerBar.coerceAtLeast(1)),
                 markers = markers.map { it.copy(fileSeconds = it.fileSeconds * s) },
             )
         }

@@ -36,7 +36,7 @@ import com.hereliesaz.sirmatchalot.dsp.BeatGrid
  * cost that track its downbeat phase, not cost the user their session. So this
  * sanitises on the way in, and is the only path stored values take.
  */
-fun Track.beatGrid(beatsPerBar: Int = BeatGrid.DEFAULT_BEATS_PER_BAR): BeatGrid? {
+fun Track.beatGrid(beatsPerBar: Int = this.beatsPerBar.takeIf { it > 0 } ?: BeatGrid.DEFAULT_BEATS_PER_BAR): BeatGrid? {
     val tempo = bpm ?: return null
     if (tempo <= 0.0) return null
     return BeatGrid(

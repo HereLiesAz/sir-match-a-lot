@@ -124,9 +124,22 @@ data class BeatGrid(
             beatsPerBar: Int = 4,
         ): Int {
             if (envelope.size == 0) return 0
-            val beatDuration = 60.0 / bpm
+            val strengths = beatStrengths(envelope, bpm, firstBeatSeconds)
             val sums = DoubleArray(beatsPerBar)
+            for ((i, s) in strengths.withIndex()) sums[i % beatsPerBar] += s
 
+            var best = 0
+            for (i in 1 until beatsPerBar) if (sums[i] > sums[best]) best = i
+            return best
+        }
+
+        /**
+         * Onset strength at each beat from the first one at or after zero: the
+         * strongest envelope value within [BEAT_SEARCH_FRAMES] of the beat's frame.
+         */
+        private fun beatStrengths(envelope: OnsetEnvelope, bpm: Double, firstBeatSeconds: Double): DoubleArray {
+            val beatDuration = 60.0 / bpm
+            val out = ArrayList<Double>()
             var index = 0
             while (true) {
                 val time = firstBeatSeconds + index * beatDuration
@@ -138,13 +151,59 @@ data class BeatGrid(
                     (frame + BEAT_SEARCH_FRAMES).coerceAtMost(envelope.size - 1)) {
                     if (envelope.values[f] > strongest) strongest = envelope.values[f]
                 }
-                sums[index % beatsPerBar] += strongest.toDouble()
+                out.add(strongest.toDouble())
                 index++
             }
+            return out.toDoubleArray()
+        }
 
-            var best = 0
-            for (i in 1 until beatsPerBar) if (sums[i] > sums[best]) best = i
-            return best
+        /** Beats a track needs before a meter is worth reading: two full cycles of three-and-four. */
+        private const val METER_MIN_BEATS = 24
+
+        /** A three-beat reading needs at least this much accent contrast... */
+        private const val METER_MIN_CONTRAST = 0.2
+
+        /** ...and must beat the four-beat reading's contrast by this factor, plus [METER_MARGIN]. */
+        private const val METER_RATIO = 2.0
+        private const val METER_MARGIN = 0.1
+
+        /**
+         * Whether the beats come in threes or fours, as 3 or [DEFAULT_BEATS_PER_BAR].
+         *
+         * Folds the strength of every beat into bars of three and of four and asks
+         * how much one beat of the bar stands out from the others. The wrong fold
+         * smears an accent across every position (accents every third beat fall
+         * on every residue mod four), so the right one is the one with contrast.
+         *
+         * Four is the answer unless three wins clearly: it is most of the music
+         * this app will see, and calling a four four track three four moves every
+         * bar line in it, where the reverse merely leaves a three four track on
+         * a longer bar. Short tracks, and anything without a clear accent, read
+         * as four. Only synthetic click tracks stand behind the thresholds so
+         * far; real music has not been run through this.
+         */
+        fun inferBeatsPerBar(envelope: OnsetEnvelope, bpm: Double, firstBeatSeconds: Double): Int {
+            if (envelope.size == 0 || bpm <= 0.0) return DEFAULT_BEATS_PER_BAR
+            val strengths = beatStrengths(envelope, bpm, firstBeatSeconds)
+            if (strengths.size < METER_MIN_BEATS) return DEFAULT_BEATS_PER_BAR
+            val three = accentContrast(strengths, 3)
+            val four = accentContrast(strengths, 4)
+            return if (three >= METER_MIN_CONTRAST && three > METER_RATIO * four + METER_MARGIN) 3
+            else DEFAULT_BEATS_PER_BAR
+        }
+
+        /** How far the strongest position of a [perBar]-beat bar stands above the average one, relative to it. */
+        private fun accentContrast(strengths: DoubleArray, perBar: Int): Double {
+            val sums = DoubleArray(perBar)
+            val counts = IntArray(perBar)
+            for ((i, s) in strengths.withIndex()) {
+                sums[i % perBar] += s
+                counts[i % perBar]++
+            }
+            val means = DoubleArray(perBar) { sums[it] / counts[it].coerceAtLeast(1) }
+            val average = means.average()
+            if (average <= 0.0) return 0.0
+            return (means.max() - average) / average
         }
     }
 }
