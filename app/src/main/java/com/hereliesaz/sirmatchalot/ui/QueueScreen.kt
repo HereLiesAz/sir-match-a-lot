@@ -120,6 +120,19 @@ fun QueueScreen(
             Spacer(Modifier.height(8.dp))
         }
 
+        if (steps.size >= 2) {
+            item {
+                // Redrawn when the order or a pin changes; the landmarks that size
+                // a blend arrive after the first draw, so it is not cached beyond that.
+                val timeline = remember(plan, pins) { plan?.let { viewModel.timelineFor(it) } }
+                if (timeline != null) {
+                    val titles = steps.associate { it.track.id to it.track.title }
+                    QueueTimeline(timeline, titleOf = { titles[it].orEmpty() })
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+
         if (steps.isEmpty()) {
             item {
                 Text(

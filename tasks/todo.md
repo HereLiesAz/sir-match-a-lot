@@ -81,7 +81,10 @@ tier.
       picked from the places the planner itself would consider
       (`TrackStructure.pinOptions`), applied in `structureFor` so the director
       and the timeline both honour them. Session only: pins are not saved.
-      Not done: lanes and a bar ruler.
+      A read-only strip above the list draws the plan (`TimelineLayout`): one
+      lane per deck, the blends, and a bar ruler. Not done: dragging clips on it
+      (the plan is still edited as a list), and nothing here has been looked at
+      on a device.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 

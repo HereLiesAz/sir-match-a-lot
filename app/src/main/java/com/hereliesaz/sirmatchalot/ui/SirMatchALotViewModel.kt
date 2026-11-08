@@ -2253,6 +2253,10 @@ class SirMatchALotViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /** The plan laid out on a master timeline: where each clip sits and where the blends run. */
+    fun timelineFor(plan: MixPlan): com.hereliesaz.sirmatchalot.domain.MixTimeline =
+        com.hereliesaz.sirmatchalot.domain.TimelineLayout.layout(plan) { track -> structureFor(track) }
+
     /** What [track] can be pinned at, or null when it has no measured shape. */
     fun pinOptions(track: Track): PinOptions? {
         if (track.durationMs <= 0L || track.bpm == null) return null
