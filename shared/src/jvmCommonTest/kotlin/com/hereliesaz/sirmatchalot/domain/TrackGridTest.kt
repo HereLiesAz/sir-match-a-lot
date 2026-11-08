@@ -101,6 +101,20 @@ class TrackGridTest {
     // --- Not measured is an answer ---
 
     @Test
+    fun `a stored time signature is carried into the grid`() {
+        val grid = track(bpm = 120.0, downbeat = 1).copy(beatsPerBar = 3).beatGrid()!!
+        assertEquals(3, grid.beatsPerBar)
+        assertEquals(1.5, grid.barDuration, 1e-9)
+        assertEquals(1, grid.downbeatOffset)
+    }
+
+    @Test
+    fun `a stored time signature that makes no sense falls back to four`() {
+        assertEquals(4, track().copy(beatsPerBar = 0).beatGrid()!!.beatsPerBar)
+        assertEquals(4, track().copy(beatsPerBar = -2).beatGrid()!!.beatsPerBar)
+    }
+
+    @Test
     fun `a track with no tempo has no grid`() {
         assertNull(track(bpm = null).beatGrid())
         assertNull(track(bpm = 0.0).beatGrid())

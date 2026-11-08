@@ -33,6 +33,15 @@ class TrackAnalyzerTest {
     }
 
     @Test
+    fun `the time signature is read from the accents`() {
+        val waltz = analyzer.analyse(pcmOf(SignalFixtures.clickTrack(120.0, 60.0, beatsPerBar = 3)))
+        assertEquals(3, requireNotNull(waltz.beatGrid).beatsPerBar)
+
+        val common = analyzer.analyse(pcmOf(SignalFixtures.clickTrack(120.0, 60.0, beatsPerBar = 4)))
+        assertEquals(4, requireNotNull(common.beatGrid).beatsPerBar)
+    }
+
+    @Test
     fun `the same audio always measures the same tempo`() {
         // The previous implementation used `(90..150).random()` for store
         // imports, so re-importing a pack changed its tempo. Determinism is the

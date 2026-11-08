@@ -65,7 +65,7 @@ interface TrackDao {
      */
     @Query(
         "UPDATE tracks SET bpm = :bpm, tempoConfidence = :tempoConfidence, " +
-            "firstBeatSeconds = :firstBeatSeconds, downbeatOffset = :downbeatOffset, " +
+            "firstBeatSeconds = :firstBeatSeconds, downbeatOffset = :downbeatOffset, beatsPerBar = :beatsPerBar, " +
             "camelotKey = :camelotKey, keyName = :keyName, keyConfidence = :keyConfidence, " +
             "energyLevel = :energyLevel, durationMs = :durationMs, sampleRate = :sampleRate, " +
             "trimStartMs = :trimStartMs, trimEndMs = :trimEndMs, peaksPath = :peaksPath, " +
@@ -77,6 +77,7 @@ interface TrackDao {
         tempoConfidence: Float,
         firstBeatSeconds: Double?,
         downbeatOffset: Int,
+        beatsPerBar: Int,
         camelotKey: String?,
         keyName: String?,
         keyConfidence: Float,
@@ -98,6 +99,7 @@ interface TrackDao {
         tempoConfidence = columns.tempoConfidence,
         firstBeatSeconds = columns.firstBeatSeconds,
         downbeatOffset = columns.downbeatOffset,
+        beatsPerBar = columns.beatsPerBar,
         camelotKey = columns.camelotKey,
         keyName = columns.keyName,
         keyConfidence = columns.keyConfidence,

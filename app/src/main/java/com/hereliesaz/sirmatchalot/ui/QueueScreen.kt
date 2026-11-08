@@ -25,11 +25,16 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +47,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hereliesaz.sirmatchalot.domain.MixStep
+import com.hereliesaz.sirmatchalot.domain.PinOption
+import com.hereliesaz.sirmatchalot.domain.TrackPins
 
 /**
  * The mix as a queue: what is playing, what comes next, and why each handover
@@ -64,6 +71,7 @@ fun QueueScreen(
     val isAutoMixing by viewModel.isAutoMixing.collectAsState()
     val queueIndex by viewModel.queueIndex.collectAsState()
     val platterState by viewModel.platterState.collectAsState()
+    val pins by viewModel.pins.collectAsState()
     val wipeGuard = rememberWipeGuard(hasClips = !platterState.isEmpty && !isAutoMixing)
 
     val steps = plan?.steps.orEmpty()
@@ -112,6 +120,19 @@ fun QueueScreen(
             Spacer(Modifier.height(8.dp))
         }
 
+        if (steps.size >= 2) {
+            item {
+                // Redrawn when the order or a pin changes; the landmarks that size
+                // a blend arrive after the first draw, so it is not cached beyond that.
+                val timeline = remember(plan, pins) { plan?.let { viewModel.timelineFor(it) } }
+                if (timeline != null) {
+                    val titles = steps.associate { it.track.id to it.track.title }
+                    QueueTimeline(timeline, titleOf = { titles[it].orEmpty() })
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+
         if (steps.isEmpty()) {
             item {
                 Text(
@@ -125,6 +146,8 @@ fun QueueScreen(
         }
 
         itemsIndexed(steps, key = { _, step -> step.track.id }) { index, step ->
+            // Not remembered: the landmarks arrive after the row first draws.
+            val options = viewModel.pinOptions(step.track)
             QueueRow(
                 index = index,
                 step = step,
@@ -138,6 +161,11 @@ fun QueueScreen(
                 onUp = { viewModel.queueMove(index, index - 1) },
                 onDown = { viewModel.queueMove(index, index + 1) },
                 onRemove = { viewModel.queueRemove(index) },
+                pins = pins[step.track.id],
+                entryOptions = options?.entries.orEmpty(),
+                exitOptions = options?.exits.orEmpty(),
+                onPinEntry = { viewModel.pinEntry(step.track.id, it) },
+                onPinExit = { viewModel.pinExit(step.track.id, it) },
             )
         }
 
@@ -195,8 +223,14 @@ private fun QueueRow(
     onUp: () -> Unit,
     onDown: () -> Unit,
     onRemove: () -> Unit,
+    pins: TrackPins?,
+    entryOptions: List<PinOption>,
+    exitOptions: List<PinOption>,
+    onPinEntry: (Double?) -> Unit,
+    onPinExit: (Double?) -> Unit,
 ) {
     val track = step.track
+    var choosing by remember { mutableStateOf<PinKind?>(null) }
     val accent = if (isCurrent) Color.Cyan else Color(0xFF27272A)
     val textColor = if (isPast) Color(0xFF6B7280) else Color.White
 
@@ -245,7 +279,103 @@ private fun QueueRow(
                 QueueIcon(Icons.Default.Close, "Remove ${track.title} from the queue", enabled = true, onClick = onRemove)
             }
         }
+        if (!locked && (entryOptions.isNotEmpty() || exitOptions.isNotEmpty())) {
+            Row(
+                modifier = Modifier.padding(start = 28.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // The first track has nothing to come in over, and the last nothing to leave for.
+                if (!isFirst && entryOptions.isNotEmpty()) {
+                    PinChip("IN", pins?.entrySeconds, "Choose where ${track.title} comes in") { choosing = PinKind.ENTRY }
+                }
+                if (!isLast && exitOptions.isNotEmpty()) {
+                    PinChip("OUT", pins?.exitSeconds, "Choose where ${track.title} leaves") { choosing = PinKind.EXIT }
+                }
+            }
+        }
     }
+
+    when (choosing) {
+        PinKind.ENTRY -> PinDialog(
+            title = "Come in on ${track.title}",
+            options = entryOptions,
+            selected = pins?.entrySeconds,
+            onChoose = { onPinEntry(it); choosing = null },
+            onDismiss = { choosing = null },
+        )
+        PinKind.EXIT -> PinDialog(
+            title = "Leave ${track.title}",
+            options = exitOptions,
+            selected = pins?.exitSeconds,
+            onChoose = { onPinExit(it); choosing = null },
+            onDismiss = { choosing = null },
+        )
+        null -> Unit
+    }
+}
+
+private enum class PinKind { ENTRY, EXIT }
+
+/** "IN auto" until a point is pinned, then "IN 1:32". */
+@Composable
+private fun PinChip(label: String, seconds: Double?, description: String, onClick: () -> Unit) {
+    val pinned = seconds != null
+    Text(
+        "$label ${if (seconds != null) clock(seconds) else "auto"}",
+        color = if (pinned) Color.Cyan else Color(0xFF9CA3AF),
+        fontSize = 9.sp,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier
+            .sizeIn(minHeight = 32.dp)
+            .clickable(onClickLabel = description, onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 8.dp)
+            .semantics { contentDescription = description },
+    )
+}
+
+@Composable
+private fun PinDialog(
+    title: String,
+    options: List<PinOption>,
+    selected: Double?,
+    onChoose: (Double?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, fontSize = 15.sp) },
+        text = {
+            Column {
+                PinChoice("Automatic — let the planner pick", selected == null) { onChoose(null) }
+                for (option in options) {
+                    PinChoice("${clock(option.seconds)} · ${option.label}", selected == option.seconds) { onChoose(option.seconds) }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("CANCEL") } },
+    )
+}
+
+@Composable
+private fun PinChoice(text: String, isSelected: Boolean, onClick: () -> Unit) {
+    Text(
+        text,
+        color = if (isSelected) Color.Cyan else Color.Unspecified,
+        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .sizeIn(minHeight = 44.dp)
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+    )
+}
+
+private fun clock(seconds: Double): String {
+    val whole = seconds.toInt().coerceAtLeast(0)
+    return "%d:%02d".format(whole / 60, whole % 60)
 }
 
 @Composable

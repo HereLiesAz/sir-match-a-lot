@@ -23,6 +23,7 @@ import java.util.UUID
  * @param camelotKey measured key as a Camelot code, null if none was found.
  * @param firstBeatSeconds phase of the beat grid.
  * @param downbeatOffset which beat of the bar carries the downbeat.
+ * @param beatsPerBar beats in a bar: 3 or 4, as read from the accents; 4 until measured.
  * @param peaksPath file holding the serialised [com.hereliesaz.sirmatchalot.dsp.PeakEnvelope].
  * @param energyPath file holding the serialised energy curve.
  * @param analysisVersion which analyser produced these values, so a future
@@ -40,6 +41,7 @@ data class Track(
     @ColumnInfo(defaultValue = "0") val tempoConfidence: Float = 0f,
     val firstBeatSeconds: Double? = null,
     @ColumnInfo(defaultValue = "0") val downbeatOffset: Int = 0,
+    @ColumnInfo(defaultValue = "4") val beatsPerBar: Int = 4,
     val camelotKey: String? = null,
     val keyName: String? = null,
     @ColumnInfo(defaultValue = "0") val keyConfidence: Float = 0f,
@@ -118,7 +120,7 @@ data class Track(
          * Bump when the analysis pipeline changes in a way that invalidates
          * stored results, so existing rows are re-analysed rather than trusted.
          */
-        const val CURRENT_ANALYSIS_VERSION = 2
+        const val CURRENT_ANALYSIS_VERSION = 3
 
         /**
          * Encodes cue slots positionally: an empty slot before the last set

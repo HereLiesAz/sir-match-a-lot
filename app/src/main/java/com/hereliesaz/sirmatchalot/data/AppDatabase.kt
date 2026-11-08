@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Track::class], version = 5, exportSchema = true)
+@Database(entities = [Track::class], version = 6, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
 
@@ -184,6 +184,23 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * Adds the time signature read from the accents at analysis.
+         *
+         * Existing rows were measured in four four by assumption, so they get 4,
+         * and [Track.CURRENT_ANALYSIS_VERSION] is bumped with it so they are
+         * re-analysed and read properly.
+         */
+        val MIGRATION_5_6_STATEMENTS: List<String> = listOf(
+            "ALTER TABLE `tracks` ADD COLUMN `beatsPerBar` INTEGER NOT NULL DEFAULT 4",
+        )
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_5_6_STATEMENTS.forEach(db::execSQL)
+            }
+        }
+
+        /**
          * Every migration, in order, exactly as handed to Room in [getDatabase].
          *
          * A value rather than an inline list so the test can check the chain
@@ -191,7 +208,7 @@ abstract class AppDatabase : RoomDatabase() {
          * a migration written and tested but never registered would otherwise
          * pass every test and still crash upgrading users.
          */
-        val ALL_MIGRATIONS: Array<Migration> by lazy { arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5) }
+        val ALL_MIGRATIONS: Array<Migration> by lazy { arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6) }
 
         /**
          * The version 2 `tracks` table, as shipped.

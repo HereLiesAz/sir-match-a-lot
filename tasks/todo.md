@@ -49,7 +49,14 @@ tier.
       BPM, grid within 40 ms after 300 s (was 0.3% off and 80 ms+). Real music
       is untested, and a track whose tempo genuinely drifts needs per-beat
       anchors, which this does not provide.
-- [ ] Time signature: no meter detector; four four is assumed everywhere.
+- [x] Time signature: `BeatGrid.inferBeatsPerBar` folds beat strengths into bars
+      of three and of four and reads three only when it clearly beats four
+      (contrast >= 0.2 and over twice four's, with 24+ beats); anything else is
+      four. Stored as `Track.beatsPerBar` (Room v6, migration 5->6, analysis
+      version 3 so tracks are re-read), carried through `TrackStructure`,
+      `TimelineLayout` and `ClipMusic` so bars and snapping use the real length.
+      Synthetic click tracks only; real music is untested, and no other meter
+      (6/8, 5/4, 7/8) is read. Session files do not record it yet.
 - [x] Octave errors: every tempo from 90 to 149 BPM on synthetic clicks is now
       read as itself (the lag is chosen on a smoothed envelope; 18 of 86 were
       read as their half before, all from 121 BPM up). 150 BPM and up is still
@@ -60,7 +67,8 @@ tier.
       land on bars and drops on drops. Over empty timeline the old session-grid
       snap still applies. Cues are quantised to the nearest beat
       (`ClipMusic.nearestBeat`). Not done: pinch-stretch (`snapRatio` still
-      rounds to whole beats of the session grid), desktop.
+      rounds to whole beats of the session grid). Desktop has nothing to snap: it
+      has two decks, a crossfader and a sampler, but no timeline or clip placement.
 - [x] Plan screen (first cut): the Queue tab lists the plan, one row per track
       with the score and advice of the transition into it, the track playing
       highlighted, and the tracks the planner left out. Move / remove / shuffle
@@ -69,7 +77,14 @@ tier.
       reordered, removed or shuffled (`MixDirector.replaceUpcoming`). QUEUE and
       RADIO on every library track. NEXT blends into the next track when it is
       already on its deck (`MixDirector.beginTransitionNow`), otherwise cuts.
-      Not done: lanes and a bar ruler, pinning entry and exit points.
+      Entry and exit points can be pinned per track (IN / OUT chips on a row):
+      picked from the places the planner itself would consider
+      (`TrackStructure.pinOptions`), applied in `structureFor` so the director
+      and the timeline both honour them. Session only: pins are not saved.
+      A read-only strip above the list draws the plan (`TimelineLayout`): one
+      lane per deck, the blends, and a bar ruler. Not done: dragging clips on it
+      (the plan is still edited as a list), and nothing here has been looked at
+      on a device.
 - [ ] Player: queue, now playing, next/previous, shuffle, radio — driven by the
       timeline, scheduled on the audio thread.
 
